@@ -7,7 +7,11 @@
 - Initial agent-browser branch: `feat/camoufox-gestures`, based on `8c15ff9f71ae60c7e99e66afe1e2d4b9bf414fe2` (0.37.1).
 - Initial Camoufox source baseline: `041ceb0af13c36313a987695e2e46d7a7b366148`, with no source patches in this integration.
 
-Keep `origin` for the personal fork and `upstream` for the original repository. Do not push directly to upstream, rewrite shared branches, automatically rebase releases, or replace the old `camofox-browser` workspace/configuration. No fork release is created merely by changing source. A local macOS release build and bounded real-browser acceptance have completed; the scope and remaining gaps are recorded in `camoufox-backend/PROTOCOL.md`. This is not a published release or acceptance on other platforms/applications.
+Keep `origin` for the personal fork and `upstream` for the original repository. Use the fork's `main` branch for accepted Camoufox work and short-lived feature or integration branches for new changes. Do not push directly to upstream, rewrite shared branches, automatically rebase releases, or reset the fork's `main` to `upstream/main`.
+
+Retiring an old workspace or configuration requires explicit approval, a verified backup of uncommitted work, and preservation of browser profile data. Do not recreate the retired `camofox-browser` setup as an automatic fallback.
+
+No fork release is created merely by changing or pushing source. A local macOS release build and bounded real-browser acceptance have completed; the scope and remaining gaps are recorded in `camoufox-backend/PROTOCOL.md`. This is not a published release or acceptance on other platforms/applications.
 
 ## Deliberate integration boundary
 
@@ -42,6 +46,8 @@ Keep the bundled skill, protocol reference, README, CLI help, MCP descriptions, 
 This fork's postinstall looks only at `BraitoRX/agent-browser` releases. No upstream binary fallback is used. Existing package version 0.37.1 is the integration base, not a new fork release. Until a fork release is intentionally prepared, use `cli/target/release/agent-browser` from a build of this repository and retain the surrounding skill-data layout. Upstream npm/Cargo/Homebrew installation commands still install upstream software. With the Camoufox engine selected, `upgrade` is refused instead of replacing the backend with upstream packages.
 
 Publishing packages, creating release tags, pushing implementation commits, installing runtimes, and changing a client's MCP configuration are separate authorized operations. For initial activation, point a new MCP entry at the absolute built fork binary with `--engine camoufox --session camoufox-task mcp --tools core,gestures`; leave the previous browser entry untouched until the new path has been accepted.
+
+The Release workflow in `.github/workflows/release.yml` is manual-only through `workflow_dispatch`. Pushes and pull requests to `main` still run normal CI, but do not publish a release. Before explicitly dispatching Release from `main`, review the inherited npm package names, package ownership, publishing credentials, target repository, and version. A source integration or branch transition is not authorization to publish.
 
 ## Local lifecycle regression acceptance
 

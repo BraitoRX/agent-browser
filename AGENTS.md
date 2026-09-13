@@ -50,8 +50,11 @@ To prepare a release:
 4. Write the changelog entry in `CHANGELOG.md` at the top, under a new `## <version>` heading, wrapped in `<!-- release:start -->` and `<!-- release:end -->` markers. Remove the `<!-- release:start -->` and `<!-- release:end -->` markers from the previous release entry so only the new release has markers.
 5. Add a matching entry to `docs/src/app/changelog/page.mdx` at the top (below the `# Changelog` heading)
 6. Open a PR and merge to `main`
+7. After reviewing package ownership, publishing credentials, the target repository, and the version, explicitly dispatch `.github/workflows/release.yml` from `main`
 
-When the PR merges, CI compares `package.json` version to what's on npm. If it differs, it builds all 7 platform binaries, publishes to npm, and creates the GitHub release automatically. The GitHub release body is extracted from the content between the `<!-- release:start -->` and `<!-- release:end -->` markers in `CHANGELOG.md`.
+Merging or pushing to `main` runs normal CI but does not publish packages or create a GitHub release. The fork's Release workflow is manual-only. Do not dispatch it merely to verify a branch transition or source change. Its inherited npm package names must be reviewed before publishing; do not assume the fork can publish packages owned by upstream.
+
+An explicitly dispatched release run compares the `package.json` version to what's on npm. If it differs, it builds all 7 platform binaries, publishes to npm, and creates the GitHub release. If the npm version already matches but the GitHub release is missing, the workflow can rebuild binaries and create that release. The GitHub release body is extracted from the content between the `<!-- release:start -->` and `<!-- release:end -->` markers in `CHANGELOG.md`.
 
 ### Writing the changelog
 
