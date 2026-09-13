@@ -1051,6 +1051,7 @@ pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
 /// listening, so backing off cannot help. Callers use daemon_unreachable()
 /// to respawn via ensure_daemon and retry once instead.
 fn is_transient_error(error: &str) -> bool {
+    if error.starts_with("camoufox_no_replay:") { return false; }
     has_os_error(error, 35) // EAGAIN on macOS
         || has_os_error(error, 11) // EAGAIN on Linux
         || error.contains("WouldBlock")
@@ -1068,6 +1069,7 @@ fn is_transient_error(error: &str) -> bool {
 /// (exited or never started), as opposed to a live-but-busy daemon. The
 /// remedy is a respawn through ensure_daemon, not a retry.
 pub fn daemon_unreachable(error: &str) -> bool {
+    if error.starts_with("camoufox_no_replay:") { return false; }
     error.contains("Failed to connect")
         || has_os_error(error, 2) // No such file or directory (socket gone)
         || has_os_error(error, 61) // Connection refused (macOS)
@@ -1102,6 +1104,15 @@ fn read_timeout_for(cmd: &Value) -> Duration {
 
 fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
     let mut stream = connect(session)?;
+    let camoufox = cmd.get("engine").and_then(Value::as_str) == Some("camoufox")
+        || env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox")
+        || fs::read_to_string(get_socket_dir().join(format!("{}.engine", session)))
+            .is_ok_and(|engine| engine.trim() == "camoufox");
+    let transport_error = |message: String| {
+        if camoufox {
+            format!("camoufox_no_replay: {message}. Input outcome may be ambiguous; do not retry. Close the session and inspect application state.")
+        } else { message }
+    };
 
     stream.set_read_timeout(Some(read_timeout_for(cmd))).ok();
     stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
@@ -1111,15 +1122,15 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
 
     stream
         .write_all(json_str.as_bytes())
-        .map_err(|e| format!("Failed to send: {}", e))?;
+        .map_err(|e| transport_error(format!("Failed to send: {}", e)))?;
 
     let mut reader = BufReader::new(stream);
     let mut response_line = String::new();
     reader
         .read_line(&mut response_line)
-        .map_err(|e| format!("Failed to read: {}", e))?;
+        .map_err(|e| transport_error(format!("Failed to read: {}", e)))?;
 
-    serde_json::from_str(&response_line).map_err(|e| format!("Invalid response: {}", e))
+    serde_json::from_str(&response_line).map_err(|e| transport_error(format!("Invalid response: {}", e)))
 }
 
 #[cfg(test)]

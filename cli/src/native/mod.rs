@@ -6,6 +6,7 @@ pub mod actions;
 pub mod auth;
 #[allow(dead_code)]
 pub mod browser;
+pub mod camoufox;
 #[allow(dead_code)]
 pub mod cdp;
 #[allow(dead_code)]

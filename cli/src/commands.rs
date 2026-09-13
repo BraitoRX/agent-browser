@@ -109,6 +109,8 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "uncheck"
             | "select"
             | "drag"
+            | "gesture"
+            | "gestures"
             | "upload"
             | "download"
             | "press"
@@ -342,6 +344,25 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         }
     }
     attach_ca_cert_to_launch_command(&mut result, flags);
+    if flags.engine.as_deref() == Some("camoufox") {
+        let action = result.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+        if !matches!(action.as_str(), "close" | "confirm" | "deny") {
+            crate::native::camoufox::validate_flags(flags).map_err(|message| ParseError::InvalidValue {
+                message, usage: "--engine camoufox <command>",
+            })?;
+        }
+        result["engine"] = json!("camoufox");
+        if flags.headed || flags.cli_headed {
+            result["headless"] = json!(!flags.headed);
+        } else if action == "launch" {
+            result.as_object_mut().expect("parsed command is an object").remove("headless");
+        }
+        if !matches!(action.as_str(), "batch" | "confirm" | "deny") {
+            crate::native::camoufox::normalize_command(&result).map_err(|message| ParseError::InvalidValue {
+                message, usage: "--engine camoufox <supported-command>",
+            })?;
+        }
+    }
 
     Ok(result)
 }
@@ -426,6 +447,15 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         "forward" => Ok(json!({ "id": id, "action": "forward" })),
         "reload" => Ok(json!({ "id": id, "action": "reload" })),
         "read" => parse_read(&rest, &id, flags),
+        "gestures" => {
+            if rest.len() > 1 || rest.first().is_some_and(|name| name.starts_with('-')) {
+                return Err(ParseError::InvalidValue { message: "Expected at most one gesture name".to_string(), usage: "gestures [name]" });
+            }
+            let mut command = json!({"id": id, "action": "gestures"});
+            if let Some(name) = rest.first() { command["name"] = json!(name); }
+            Ok(command)
+        }
+        "gesture" => parse_gesture(&rest, &id),
         "webmcp" => parse_webmcp(&rest, &id),
 
         // === Core Actions ===
@@ -2213,7 +2243,47 @@ fn parse_webmcp(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
 }
 
+/// CLI and MCP share this envelope parser; modules own parameter schemas.
+fn parse_gesture(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "gesture <name> --params '<JSON object>' [--observe none|snapshot|screenshot]";
+    let name = rest.first().filter(|name| !name.starts_with('-')).ok_or_else(|| ParseError::MissingArguments {
+        context: "gesture".to_string(), usage: USAGE,
+    })?;
+    let mut params = None;
+    let mut observe = None;
+    let mut index = 1;
+    while index < rest.len() {
+        let value = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+            context: rest[index].to_string(), usage: USAGE,
+        })?;
+        match rest[index] {
+            "--params" if params.is_none() => {
+                let parsed: Value = serde_json::from_str(value).map_err(|_| ParseError::InvalidValue {
+                    message: "--params must be a valid JSON object".to_string(), usage: USAGE,
+                })?;
+                if !parsed.is_object() {
+                    return Err(ParseError::InvalidValue { message: "--params must be a JSON object".to_string(), usage: USAGE });
+                }
+                params = Some(parsed);
+            }
+            "--observe" if observe.is_none() && matches!(*value, "none" | "snapshot" | "screenshot") => observe = Some(*value),
+            _ => return Err(ParseError::InvalidValue { message: "Unknown, repeated, or invalid gesture option".to_string(), usage: USAGE }),
+        }
+        index += 2;
+    }
+    let params = params.ok_or_else(|| ParseError::MissingArguments { context: "gesture --params".to_string(), usage: USAGE })?;
+    Ok(json!({"id": id, "action": "gesture", "name": name, "params": params, "observe": observe.unwrap_or("none")}))
+}
+
 fn parse_read(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseError> {
+    if flags.engine.as_deref() == Some("camoufox") {
+        if !rest.is_empty() {
+            return Err(ParseError::InvalidValue {
+                message: "Camoufox V1 read returns rendered text of the current page only; navigate first and omit read options".to_string(), usage: "read",
+            });
+        }
+        return Ok(json!({"id": id, "action": "read"}));
+    }
     const READ_USAGE: &str =
         "read [url] [--raw] [--require-md] [--llms <index|full>] [--outline] [--filter <text>] [--timeout <ms>]";
     let mut cmd = json!({

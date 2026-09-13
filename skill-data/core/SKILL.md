@@ -6,7 +6,13 @@ allowed-tools: Bash(agent-browser:*), Bash(npx agent-browser:*)
 
 # agent-browser core
 
-Fast browser automation CLI for AI agents. Chrome/Chromium via CDP, no Playwright or Puppeteer dependency. Accessibility-tree snapshots with compact `@eN` refs let agents interact with pages in ~200-400 tokens instead of parsing raw HTML.
+Fast browser automation CLI for AI agents. The default Chrome/Chromium backend uses CDP without a Playwright or Puppeteer dependency. This fork also has an explicit Camoufox backend using a private Python/Playwright worker. Accessibility-tree snapshots with compact refs avoid parsing raw HTML.
+
+## Camoufox routing
+
+If the selected engine is `camoufox`, load `agent-browser skills get camoufox` before acting. The examples below otherwise describe upstream Chrome behavior, not Camoufox parity. In particular, Camoufox uses native AI snapshots without `-i` or `-c`, viewport-only PNG captures, fresh capture IDs for coordinates, and stable `tN` tabs. Evaluation uses Camoufox's default isolated world; read shared DOM state rather than page-owned globals. It rejects network containment, existing profiles, restore/auth, CDP, and other unsupported features rather than switching engines. See [the Camoufox reference](references/camoufox.md). A source-built binary passed bounded local macOS acceptance, not full release certification; do not substitute an upstream installed binary or infer acceptance on another platform/application.
+
+For Camoufox closed-target errors, inspect `session info` and `tab list`; daemon activity alone does not establish browser liveness. A closed active tab requires an explicit tab switch or new tab. `camoufox_session_closed` requires explicit close/open of the affected task-owned session, not repeated `open` calls. Never replay ambiguous input or close unrelated sessions. Follow the specialized skill's bounded recovery workflow.
 
 Most normal web tasks (navigate, read, click, fill, extract, screenshot) are covered here. Load a specialized skill when the task falls outside browser web pages — see [When to load another skill](#when-to-load-another-skill).
 
@@ -66,9 +72,12 @@ For tools that support Model Context Protocol servers, start the stdio server:
 agent-browser mcp
 agent-browser mcp --tools all
 agent-browser mcp --tools core,network,react
+agent-browser --engine camoufox --session camoufox-task mcp --tools core,gestures
 ```
 
 Configure the MCP client to launch `agent-browser` with `["mcp"]`. The server defaults to MCP protocol 2025-11-25 and accepts older supported client protocol versions during initialization. The default tools profile is `core`, which keeps MCP context small for everyday browser automation. Use `--tools all` for the full typed CLI parity surface, or combine profiles with commas, such as `--tools core,network,react`. Profiles are `core`, `network`, `state`, `debug`, `tabs`, `react`, `mobile`, and `all`; the `debug` profile includes accessibility audits, plugin registry, and command.run tools. Each tool accepts typed arguments plus `extraArgs` for advanced CLI flags and exact CLI parity. The common `allowedDomains` array maps to `--allowed-domains` and activates the same WebRTC containment and launch-mode restrictions, while `idleTimeout` maps to `--idle-timeout`. Tool discovery is paginated and includes read-only/open-world annotations so modern MCP clients can load the large typed surface incrementally. Use the tool `session` argument or `AGENT_BROWSER_SESSION` to isolate browser sessions.
+
+For Camoufox, the `gestures` MCP profile exposes schema discovery, generic execution, installation, session information, and skill retrieval. Common `engine` arguments are forwarded to the CLI. Use `agent_browser_gestures` before `agent_browser_gesture`; extensions are trusted code, and generic gestures cannot run under action policies or confirm-actions. Camoufox installation and session-motion settings are described in the specialized skill.
 
 ## eve agent integration
 

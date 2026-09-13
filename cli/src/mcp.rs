@@ -173,6 +173,8 @@ const TOOL_DOCTOR: &str = "agent_browser_doctor";
 const TOOL_DASHBOARD_START: &str = "agent_browser_dashboard_start";
 const TOOL_DASHBOARD_STOP: &str = "agent_browser_dashboard_stop";
 const TOOL_INSTALL: &str = "agent_browser_install";
+const TOOL_GESTURES: &str = "agent_browser_gestures";
+const TOOL_GESTURE: &str = "agent_browser_gesture";
 const TOOL_UPGRADE: &str = "agent_browser_upgrade";
 const TOOL_CHAT: &str = "agent_browser_chat";
 const TOOL_EVAL: &str = "agent_browser_eval";
@@ -227,6 +229,7 @@ enum ToolProfile {
     React,
     Mobile,
     Webmcp,
+    Gestures,
     All,
 }
 
@@ -241,6 +244,7 @@ impl ToolProfile {
             "react" | "web" => Some(Self::React),
             "mobile" | "ios" => Some(Self::Mobile),
             "webmcp" => Some(Self::Webmcp),
+            "gestures" => Some(Self::Gestures),
             "all" | "full" => Some(Self::All),
             _ => None,
         }
@@ -256,6 +260,7 @@ impl ToolProfile {
             Self::React => "react",
             Self::Mobile => "mobile",
             Self::Webmcp => "webmcp",
+            Self::Gestures => "gestures",
             Self::All => "all",
         }
     }
@@ -270,6 +275,7 @@ impl ToolProfile {
             Self::React => "React tree inspection, render recording, Suspense inspection, Web Vitals, SPA pushstate, and init-script removal.",
             Self::Mobile => "Viewport/device/geolocation/media emulation plus touch, swipe, and lower-level mouse tools.",
             Self::Webmcp => "Experimental page-provided WebMCP discovery, invocation, detached results, and cancellation.",
+            Self::Gestures => "Camoufox gesture discovery and execution, runtime installation, session information, and bundled skills. Combine with core for normal browsing.",
             Self::All => "Every MCP tool, including the full typed CLI parity surface.",
         }
     }
@@ -284,6 +290,7 @@ impl ToolProfile {
             Self::React => REACT_PROFILE_TOOLS,
             Self::Mobile => MOBILE_PROFILE_TOOLS,
             Self::Webmcp => WEBMCP_PROFILE_TOOLS,
+            Self::Gestures => GESTURES_PROFILE_TOOLS,
             Self::All => &[],
         }
     }
@@ -366,6 +373,10 @@ const CORE_PROFILE_TOOLS: &[&str] = &[
     TOOL_TAB_CLOSE,
     TOOL_EVAL,
     TOOL_CLOSE,
+];
+
+const GESTURES_PROFILE_TOOLS: &[&str] = &[
+    TOOL_GESTURES, TOOL_GESTURE, TOOL_INSTALL, TOOL_SESSION_INFO, TOOL_SKILLS_LIST, TOOL_SKILLS_GET,
 ];
 
 const WEBMCP_PROFILE_TOOLS: &[&str] = &[
@@ -722,6 +733,7 @@ fn tool_profile_names() -> Vec<&'static str> {
         ToolProfile::React,
         ToolProfile::Mobile,
         ToolProfile::Webmcp,
+        ToolProfile::Gestures,
         ToolProfile::All,
     ]
     .iter()
@@ -739,6 +751,7 @@ fn tool_profile_summaries() -> Vec<Value> {
         ToolProfile::React,
         ToolProfile::Mobile,
         ToolProfile::Webmcp,
+        ToolProfile::Gestures,
         ToolProfile::All,
     ]
     .iter()
@@ -761,6 +774,24 @@ fn tool_profile_summaries() -> Vec<Value> {
 fn tools() -> Vec<Value> {
     let mut tools = vec![
         tool(
+            TOOL_GESTURES,
+            "Discover gestures",
+            "List trusted Camoufox gesture modules, or get one module's schema and examples. Requires the Camoufox engine. Does not launch a browser.",
+            json!({"name": {"type": "string", "description": "Optional gesture name; omit to list available gestures."}}),
+            &[],
+        ),
+        tool(
+            TOOL_GESTURE,
+            "Execute gesture",
+            "Execute a schema-validated native Camoufox gesture. Discover its schema first. Coordinates require a fresh screenshot captureId. Optional observation is returned in the same call. Input diagnostics do not assert application success. A poisoned/ambiguous input must not be retried; close the session. Disabled when action policies or confirm-actions are active.",
+            json!({
+                "name": {"type": "string"},
+                "params": {"type": "object", "description": "Parameters matching the discovered gesture schema."},
+                "observe": {"type": "string", "enum": ["none", "snapshot", "screenshot"], "default": "none"}
+            }),
+            &["name", "params"],
+        ),
+        tool(
             TOOL_TOOLS_PROFILES,
             "MCP tool profiles",
             "List MCP startup tool profiles and how to enable them.",
@@ -770,7 +801,7 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_OPEN,
             "Open page",
-            "Launch the browser and optionally navigate to a URL. On Windows, owned headless Chrome uses a private desktop and its process tree closes with the daemon, including forced termination. Headed browsers use the interactive desktop. Successful navigation responses include WebMCP availability metadata when the page exposes allowed tools.",
+            "Launch the browser and optionally navigate to a URL. Camoufox requires explicit close/open after session loss; a closed active tab needs tab_switch or tab_new instead. Never replay ambiguous input. On Windows, owned headless Chrome uses a private desktop and its process tree closes with the daemon, including forced termination. Headed browsers use the interactive desktop. Successful navigation responses include WebMCP availability metadata when the page exposes allowed tools.",
             json!({
                 "url": { "type": "string", "description": "URL to open. Omit to launch about:blank." },
                 "headed": { "type": "boolean", "description": "Show the browser window. Explicit true/false overrides AGENT_BROWSER_HEADED and config; omit to use those defaults." },
@@ -838,7 +869,7 @@ fn tools() -> Vec<Value> {
             "Snapshot page",
             "Return an accessibility-tree snapshot with stable element refs.",
             json!({
-                "interactive": { "type": "boolean", "default": true, "description": "Only include interactive elements." },
+                "interactive": { "type": "boolean", "description": "Only include interactive elements. Defaults to false for Camoufox and true for other engines. Camoufox rejects explicit true." },
                 "compact": { "type": "boolean", "default": false, "description": "Remove empty structural elements." },
                 "depth": { "type": "integer", "minimum": 0, "description": "Limit tree depth." },
                 "selector": { "type": "string", "description": "Scope the snapshot to a CSS selector." },
@@ -1282,7 +1313,7 @@ fn parity_tools() -> Vec<Value> {
             json!({ "url": { "type": "string" }, "label": { "type": "string" } }),
             &[],
         ),
-        tool(TOOL_TAB_LIST, "Tab list", "List tabs.", json!({}), &[]),
+        tool(TOOL_TAB_LIST, "Tab list", "List tabs. Camoufox reconciles closed pages and never silently adopts a replacement active tab.", json!({}), &[]),
         tool(
             TOOL_TAB_SWITCH,
             "Tab switch",
@@ -1756,7 +1787,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_SESSION_INFO,
             "Session info",
-            "Show session, daemon, launch, and restore diagnostics.",
+            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; top-level active describes the daemon only.",
             json!({}),
             &[],
         ),
@@ -1857,7 +1888,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_INSTALL,
             "Install",
-            "Install browser binaries.",
+            "Install browser binaries. engine=camoufox explicitly provisions a private Python environment and browser cache (Python 3.10+ required); withDeps is unsupported for Camoufox. Installation may take several minutes and is never automatic at browser startup.",
             json!({ "withDeps": { "type": "boolean" } }),
             &[],
         ),
@@ -1937,6 +1968,10 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
         Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
+    props.insert("engine".to_string(), json!({
+        "type": "string", "enum": ["chrome", "lightpanda", "camoufox"],
+        "description": "Browser engine. Omit to inherit AGENT_BROWSER_ENGINE/config. Camoufox V1 has an explicit supported subset; unsupported commands fail without falling back."
+    }));
     props.insert(
         "session".to_string(),
         json!({
@@ -2065,6 +2100,7 @@ fn is_read_only_tool(name: &str) -> bool {
     matches!(
         name,
         TOOL_SNAPSHOT
+            | TOOL_GESTURES
             | TOOL_READ
             | TOOL_WAIT_MS
             | TOOL_WAIT_FOR_SELECTOR
@@ -2121,6 +2157,7 @@ fn is_open_world_tool(name: &str) -> bool {
     !matches!(
         name,
         TOOL_SESSION
+            | TOOL_GESTURES
             | TOOL_SESSION_LIST
             | TOOL_SESSION_ID
             | TOOL_SESSION_INFO
@@ -2211,6 +2248,8 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_UNCHECK => call_simple_selector(arguments, "uncheck"),
         TOOL_SELECT => call_select(arguments),
         TOOL_DRAG => call_drag(arguments),
+        TOOL_GESTURES => call_gestures(arguments),
+        TOOL_GESTURE => call_gesture(arguments),
         TOOL_UPLOAD => call_upload(arguments),
         TOOL_DOWNLOAD => call_download(arguments),
         TOOL_SCROLL => call_scroll(arguments),
@@ -2594,9 +2633,13 @@ fn call_read(arguments: &Value) -> Result<Value, ProtocolError> {
     call_cli_tool(arguments, args, None)
 }
 
+/// Preserve Chrome's interactive default without requesting unsupported Camoufox filtering.
 fn call_snapshot(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = vec!["snapshot".to_string()];
-    if optional_bool(arguments, "interactive")?.unwrap_or(true) {
+    let camoufox = arguments.get("engine").and_then(Value::as_str)
+        .map(|engine| engine == "camoufox")
+        .unwrap_or_else(|| env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
+    if optional_bool(arguments, "interactive")?.unwrap_or(!camoufox) {
         args.push("-i".to_string());
     }
     if optional_bool(arguments, "compact")?.unwrap_or(false) {
@@ -2664,6 +2707,23 @@ fn call_drag(arguments: &Value) -> Result<Value, ProtocolError> {
     let source = required_string(arguments, "source")?;
     let target = required_string(arguments, "target")?;
     call_cli_tool(arguments, vec!["drag".to_string(), source, target], None)
+}
+
+fn call_gestures(arguments: &Value) -> Result<Value, ProtocolError> {
+    let mut args = vec!["gestures".to_string()];
+    if let Some(name) = optional_string(arguments, "name")? { args.push(name); }
+    call_cli_tool(arguments, args, None)
+}
+
+fn call_gesture(arguments: &Value) -> Result<Value, ProtocolError> {
+    let name = required_string(arguments, "name")?;
+    let params = arguments.get("params").filter(|value| value.is_object())
+        .ok_or_else(|| ProtocolError::invalid_params("params must be a JSON object"))?;
+    let mut args = vec!["gesture".to_string(), name, "--params".to_string(), params.to_string()];
+    if let Some(observe) = optional_string(arguments, "observe")? {
+        args.extend(["--observe".to_string(), observe]);
+    }
+    call_cli_tool(arguments, args, None)
 }
 
 fn call_upload(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -3539,7 +3599,13 @@ fn call_install(arguments: &Value) -> Result<Value, ProtocolError> {
     if optional_bool(arguments, "withDeps")?.unwrap_or(false) {
         args.push("--with-deps".to_string());
     }
-    call_cli_tool(arguments, args, None)
+    let mut arguments = arguments.clone();
+    let camoufox = arguments.get("engine").and_then(Value::as_str) == Some("camoufox")
+        || (arguments.get("engine").is_none() && env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
+    if camoufox && arguments.get("timeoutMs").is_none() {
+        arguments["timeoutMs"] = json!(2_100_000);
+    }
+    call_cli_tool(&arguments, args, None)
 }
 
 fn call_chat(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -3736,6 +3802,12 @@ fn append_common_global_args(
     arguments: &Value,
     session: Option<&str>,
 ) -> Result<(), ProtocolError> {
+    if let Some(engine) = optional_string(arguments, "engine")? {
+        if !matches!(engine.as_str(), "chrome" | "lightpanda" | "camoufox") {
+            return Err(ProtocolError::invalid_params("engine must be chrome, lightpanda, or camoufox"));
+        }
+        args.extend(["--engine".to_string(), engine]);
+    }
     if let Some(namespace) = optional_string(arguments, "namespace")? {
         args.push("--namespace".to_string());
         args.push(namespace);
@@ -3812,6 +3884,17 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
         } else {
             Stdio::null()
         });
+    let selected_engine = args.windows(2).rev().find(|pair| pair[0] == "--engine")
+        .map(|pair| pair[1].clone()).or_else(|| env::var("AGENT_BROWSER_ENGINE").ok());
+    let camoufox = selected_engine.as_deref() == Some("camoufox");
+    if camoufox && timeout_ms < 30_000 {
+        return Err("Camoufox MCP timeoutMs must be at least 30000 so the daemon can report its bounded input outcome".to_string());
+    }
+    #[cfg(unix)]
+    if camoufox {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
 
     let mut child = command.spawn().map_err(|e| e.to_string())?;
 
@@ -3850,6 +3933,11 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
             Ok(Some(status)) => break status,
             Ok(None) => {
                 if started.elapsed() >= timeout {
+                    #[cfg(unix)]
+                    if camoufox {
+                        // The CLI group includes only its installer children, not the detached daemon.
+                        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                    }
                     let _ = child.kill();
                     let _ = child.wait();
                     let stdout = join_output(stdout_thread)?;
@@ -3950,6 +4038,18 @@ fn tool_text(parsed: Option<&Value>, stdout: &str, stderr: &str) -> String {
 fn response_text(value: &Value) -> Option<String> {
     if let Some(obj) = value.as_object() {
         if obj.get("success").and_then(|v| v.as_bool()) == Some(false) {
+            if let Some(code @ ("camoufox_session_closed" | "camoufox_target_closed" | "camoufox_no_active_tab")) =
+                obj.get("code").and_then(Value::as_str)
+            {
+                let error = obj.get("error").and_then(Value::as_str)?;
+                let mut text = format!("{code}: {error}");
+                if obj.get("poisoned").and_then(Value::as_bool) == Some(true)
+                    || value["data"]["poisoned"].as_bool() == Some(true)
+                {
+                    text.push_str("\nInput outcome may be ambiguous; do not replay. Close the session and inspect application state before continuing.");
+                }
+                return Some(text);
+            }
             return obj
                 .get("error")
                 .and_then(|v| v.as_str())
@@ -4804,6 +4904,81 @@ mod tests {
             result["structuredContent"]["response"]["data"]["lastUrl"],
             "https://example.com/path"
         );
+    }
+
+    #[test]
+    fn camoufox_lifecycle_errors_preserve_cli_data_and_expose_codes() {
+        for code in ["camoufox_session_closed", "camoufox_target_closed", "camoufox_no_active_tab"] {
+            let response = json!({
+                "success": false,
+                "code": code,
+                "error": "Inspect session info and tab list before continuing.",
+                "data": {
+                    "browserConnected": false,
+                    "recoveryRequired": true,
+                    "closeReason": "browser_disconnected"
+                }
+            });
+            let result = tool_result_from_run(CliRun {
+                exit_code: Some(1),
+                stdout: response.to_string(),
+                stderr: String::new(),
+            });
+            assert_eq!(result["isError"], true);
+            assert_eq!(result["structuredContent"]["response"], response);
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.starts_with(&format!("{code}:")));
+            assert!(!text.contains("Input outcome may be ambiguous"));
+        }
+    }
+
+    #[test]
+    fn camoufox_lifecycle_poisoning_is_visible_in_text_only_clients() {
+        for top_level in [true, false] {
+            let mut response = json!({
+                "success": false,
+                "code": "camoufox_session_closed",
+                "error": "Browser disconnected; close the session before reopening.",
+                "data": {}
+            });
+            if top_level {
+                response["poisoned"] = json!(true);
+            } else {
+                response["data"]["poisoned"] = json!(true);
+            }
+            let result = tool_result_from_run(CliRun {
+                exit_code: Some(1),
+                stdout: response.to_string(),
+                stderr: String::new(),
+            });
+            assert_eq!(result["structuredContent"]["response"], response);
+            assert!(result["content"][0]["text"].as_str().unwrap().contains("do not replay"));
+        }
+    }
+
+    #[test]
+    fn camoufox_lifecycle_diagnostics_preserve_daemon_browser_distinction() {
+        let response = json!({
+            "success": true,
+            "data": {
+                "active": true,
+                "runtime": {
+                    "engine": "camoufox",
+                    "launched": false,
+                    "browserConnected": false,
+                    "recoveryRequired": true,
+                    "closeReason": "browser_disconnected"
+                }
+            }
+        });
+        let result = tool_result_from_run(CliRun {
+            exit_code: Some(0),
+            stdout: response.to_string(),
+            stderr: String::new(),
+        });
+        assert_eq!(result["isError"], false);
+        assert_eq!(result["structuredContent"]["response"], response);
+        assert!(result["content"][0]["text"].as_str().unwrap().contains("browserConnected"));
     }
 
     #[test]

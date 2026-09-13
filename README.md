@@ -2,6 +2,12 @@
 
 Browser automation CLI for AI agents. Fast native Rust CLI.
 
+## Camoufox fork status
+
+This is the `BraitoRX/agent-browser` fork. It adds an opt-in Camoufox backend and extensible native gestures while retaining the upstream Rust CLI and MCP server. A source-built binary has passed bounded local macOS acceptance, but this is not a published distribution or full release certification. The upstream npm, Cargo, and Homebrew packages shown below do **not** contain this backend. Build this fork before using the Camoufox commands; do not replace an existing browser installation just to try it.
+
+See [Camoufox setup](#camoufox-backend-v1) and the [fork maintenance guide](docs/fork-maintenance.md). This fork's postinstall downloads target `BraitoRX/agent-browser` releases, never an upstream binary as a fallback. Until a fork release exists, use the source-built binary.
+
 [![skills.sh](https://skills.sh/b/vercel-labs/agent-browser)](https://skills.sh/vercel-labs/agent-browser)
 
 ## Installation
@@ -579,6 +585,7 @@ Profiles:
 - `tabs` — Back/forward/reload, tabs, windows, frames, dialogs
 - `react` — React tree/inspect/renders/suspense, vitals, pushstate
 - `mobile` — Viewport/device/geolocation/media, touch, swipe, mouse, keyboard
+- `gestures` — Camoufox gesture discovery/execution, installation, session information, and versioned skills
 - `all` — Every MCP tool, including the full typed CLI parity surface
 
 Common tools include:
@@ -1048,7 +1055,7 @@ This is useful for multimodal AI models that can reason about visual layout, unl
 | `--action-policy <path>` | Path to action policy JSON file (or `AGENT_BROWSER_ACTION_POLICY` env) |
 | `--confirm-actions <list>` | Action categories requiring confirmation (or `AGENT_BROWSER_CONFIRM_ACTIONS` env) |
 | `--confirm-interactive` | Interactive confirmation prompts; auto-denies if stdin is not a TTY (or `AGENT_BROWSER_CONFIRM_INTERACTIVE` env) |
-| `--engine <name>` | Browser engine: `chrome` (default), `lightpanda` (or `AGENT_BROWSER_ENGINE` env) |
+| `--engine <name>` | Browser engine: `chrome` (default), `lightpanda`, or the fork's `camoufox` V1 subset (or `AGENT_BROWSER_ENGINE` env) |
 | `--idle-timeout <time>` | Shut down the daemon after inactivity (`10s`, `3m`, `1h`, or raw ms). Defaults to `1h`; use `0` to disable (or `AGENT_BROWSER_IDLE_TIMEOUT_MS` env) |
 | `--no-auto-dialog` | Disable automatic dismissal of `alert`/`beforeunload` dialogs (or `AGENT_BROWSER_NO_AUTO_DIALOG` env) |
 | `--model <name>` | AI model for chat command (or `AI_GATEWAY_MODEL` env) |
@@ -1659,6 +1666,96 @@ On Chrome, URL messages follow full-document, History API, and fragment navigati
 
 Frames are delivered latest-first: the server picks the newest frame at send time, so frames produced while an earlier one is still being written are skipped rather than queued. `maxFps` (1 to 120, `0` = uncapped) limits delivery for that client only. A client that sends `{"type":"config","pacing":"ack"}` receives one frame at a time and acknowledges it with `{"type":"ack","seq":N}`, so nothing stale reaches the socket even if that client stalls; in the default push pacing, frames already handed to the transport are still delivered in order. Both settings can also be declared on the URL (`ws://127.0.0.1:<port>/?pacing=ack&maxFps=10`), which is the only way to cover the connection's opening frame. Input events are read on a dedicated task per connection, so clicks and keystrokes dispatch immediately even while frames are mid-write to a slow client. They are sent to the browser without waiting for its reply, so a click stays responsive behind a burst of mouse moves, and ordering is preserved.
 
+## Camoufox backend (V1)
+
+The Rust daemon owns one persistent Python worker per browser session over private stdin/stdout JSON lines. The worker uses official `AsyncCamoufox` and Playwright/Juggler. There is no additional REST server, configured port, or emulated CDP endpoint. This is an explicit backend, not a CDP provider plugin. Unsupported commands fail rather than falling back to Chrome.
+
+### Setup without replacing an existing browser
+
+V1 targets macOS and Linux. Windows process-tree ownership is not implemented. Python 3.10+ with `venv` and the platform's Firefox runtime libraries are prerequisites; `--with-deps` is not supported by this installer. The following are setup instructions, not evidence of a completed build or live test:
+
+```bash
+cargo build --release --manifest-path cli/Cargo.toml
+AB="$PWD/cli/target/release/agent-browser"
+"$AB" --engine camoufox install
+export AGENT_BROWSER_ENGINE=camoufox
+export AGENT_BROWSER_SESSION=camoufox-task
+export AGENT_BROWSER_MOTION=human-fast
+"$AB" open https://example.com
+"$AB" snapshot --json
+"$AB" gestures drag --json
+"$AB" skills get camoufox
+```
+
+Installation provisions a managed venv with `camoufox==0.5.6` and `playwright==1.61.0`, fetches `official/stable` once per explicit install, and records the resolved executable and available browser metadata in `runtime.json`. This is not a full browser/transitive dependency lock. Normal startup uses the recorded executable and disables default addon downloads; it never installs or updates packages or browsers. HOME, caches, and temporary browser profiles are private to the managed runtime, not the user's existing Camoufox installation. Shipped Python code is unpacked into a content-addressed directory. Keep the binary in its package/repository layout so the versioned skills remain discoverable.
+
+On macOS, launch configuration reads bundle assets from `Contents/Resources` while starting the recorded executable in `Contents/MacOS`. Unexpected worker import errors identify the missing module in both CLI and MCP output.
+
+<table>
+<thead><tr><th>Environment variable</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>AGENT_BROWSER_CAMOUFOX_RUNTIME</code></td><td>Absolute runtime root. Default: the OS local data directory under <code>agent-browser/camoufox-v1</code>.</td></tr>
+<tr><td><code>AGENT_BROWSER_PYTHON</code></td><td>Python executable used for explicit installation, default <code>python3</code>. Commands subsequently use the managed venv.</td></tr>
+<tr><td><code>AGENT_BROWSER_MOTION</code></td><td>Session-launch profile: <code>human-fast</code> (default), <code>fast</code>, or <code>precision</code>. Close the daemon session before changing it.</td></tr>
+<tr><td><code>AGENT_BROWSER_GESTURES_DIR</code></td><td>Explicit trusted module directories separated by the OS path separator. No implicit CWD scan. Restart the session to reload modules.</td></tr>
+<tr><td><code>AGENT_BROWSER_ACTION_DEADLINE_MS</code></td><td>Worker action deadline, default 22000 ms, clamped to 1000–25000 ms. The daemon has a 28-second hard limit including implicit startup and observation.</td></tr>
+</tbody>
+</table>
+
+`human-fast` sets Camoufox launch-time `humanize=0.25`. This is a motion tuning value, not a measured latency SLA. `fast` and `precision` disable native humanization. No second randomized trajectory is layered on top. These are browser-native events, not control of the physical OS pointer.
+
+### Gestures and observations
+
+```bash
+"$AB" gestures
+"$AB" gestures hold --json
+"$AB" gesture hold --params '{"target":{"selector":"#press-target"},"durationMs":1200}' --observe screenshot --json
+"$AB" gesture drag --params '{"source":{"selector":"#card"},"target":{"selector":"#column"},"reveal":[{"selector":"#panel","settleMs":100}]}' --observe snapshot --json
+"$AB" screenshot --json
+```
+
+Each module exports its name, description, schema, examples, and async implementation. Built-ins are `click`, `hover`, `hold`, `drag`, `scroll`, `type`, and `path`. Copy `camoufox-backend/examples/custom_gesture_example.py` into an explicitly configured trusted directory to add a gesture without editing Rust, MCP schemas, or transport dispatch. Extensions are executable Python with the worker's privileges, **not sandboxed**. Duplicate names and unknown schema keywords fail registration; external modules cannot shadow built-ins. See [the extension and safety reference](skill-data/core/references/camoufox.md).
+
+Gesture helper directories are searched after Python's standard library and installed packages, so a gesture such as `click.py` does not replace the Click dependency.
+
+Gesture bounds use the current rendered viewport, including when Camoufox disables Playwright's fixed viewport. Extensions measure it with `await ctx.viewport_size()`; this does not resize the browser or change its fingerprint.
+
+For coordinates, first take a viewport screenshot. Supply `{"coordinates":{"x":120,"y":80,"captureId":"<returned-id>"}}` instead of a selector target. Coordinates are pixels in that returned PNG; captures use CSS scale, expire after 120 seconds, and are invalidated by input, evaluation, navigation, or a new capture. URL, active tab, scroll, and viewport identity must still match. Coordinate drags require both endpoints from the same capture and no reveal steps. Advanced hold/drag/path targets must be main-frame; standard locator actions can use native iframe refs such as `@f1e2`. A selector target uses its bounding-box center, not a semantic slider value.
+
+`--observe snapshot|screenshot` obtains evidence in the same gesture call; `none` avoids observation cost. Screenshot observations include `data.path` for MCP image delivery. Dispatch diagnostics do not assert that the application changed. Verify the intended application state separately. Any timeout or ambiguous input poisons the worker; no automatic replay or recovery launch is performed. Close the session, inspect application state, and start a new session before further input.
+
+### MCP and versioned skills
+
+Point a separate MCP entry at the **absolute path to this fork's built binary**, leaving existing browser configuration unchanged:
+
+```json
+{
+  "mcpServers": {
+    "agent-browser-camoufox": {
+      "command": "/absolute/path/to/agent-browser/cli/target/release/agent-browser",
+      "args": ["--engine", "camoufox", "--session", "camoufox-task", "mcp", "--tools", "core,gestures"],
+      "env": {"AGENT_BROWSER_MOTION": "human-fast"}
+    }
+  }
+}
+```
+
+The `gestures` profile adds `agent_browser_gestures`, `agent_browser_gesture`, installation, session information, and skill retrieval. Common MCP `engine` arguments delegate through the canonical CLI parser, including `agent_browser_install` with `engine: "camoufox"`. Normal tool calls default to 120 seconds; Camoufox rejects `timeoutMs` below 30000 so the daemon can report its bounded outcome. Explicit Camoufox installation defaults to a longer MCP deadline. Load `agent_browser_skills_get` with `names: ["camoufox"]` before using this backend. Use native AI `snapshot` without Chrome's `-i`, `-c`, URL, or cursor filtering options. MCP snapshots default to `interactive: false` for Camoufox; explicit `true` is rejected. Other engines retain the interactive default.
+
+### Supported subset and non-goals
+
+V1 covers launch/close, navigation/history, rendered text, evaluation, native AI snapshots, viewport PNG screenshots, ordinary click/fill/type/press/hover/focus/check/select/drag/scroll actions, bounded waits, basic element queries, stable tabs, and gesture discovery/execution. Tabs have never-reused `tN` identifiers; popups do not steal focus, and closing the active tab requires an explicit tab switch or new tab.
+
+Camoufox session diagnostics distinguish daemon activity from browser liveness: `launched`, `browserConnected`, `recoveryRequired`, and `closeReason` reflect browser/context closure, while `tab list` reconciles closed pages. `camoufox_no_active_tab` requires an explicit switch to a live tab or a new tab. `camoufox_session_closed` requires explicit `close` followed by `open` for the affected session; repeated `open` calls do not silently replace a dead browser. Closed targets invalidate their refs and captures. Reset only a task-owned session, re-observe after recovery, and never replay ambiguous input. See the [bounded recovery workflow](skill-data/camoufox/SKILL.md#closed-targets-and-recovery). Rebuilding the fork and starting a fresh daemon is necessary to activate backend source changes; no reinstall is needed.
+
+`camoufox_target_closed` means an action encountered a closed target whose scope is not yet confirmed. Inspect `session info` and `tab list`; do not infer that the whole browser died. Lifecycle failures include reconciled diagnostics in JSON `data`, and poisoned failures retain the no-replay requirement.
+
+Evaluation retains Camoufox's default isolated world. Read shared DOM state rather than page-owned `window` globals; V1 does not expose the detectable main-world evaluation opt-in. See [Camoufox's execution-world documentation](https://camoufox.com/python/main-world-eval/).
+
+V1 does not implement full CLI parity, existing-profile/auth/state restoration, network interception or domain containment, CDP connection/debugging, provider or launch plugins, recording, downloads/uploads, mobile/OS-pointer gestures, or dashboard control. Generic gestures are disabled under action policies or confirm-actions; typed actions retain the daemon's existing gates. Camoufox is not a network sandbox and does not guarantee evasion of anti-bot systems. Use a separately secured environment when needed.
+
+Local macOS acceptance covered the release build, the managed runtime, MCP startup and native refs, trusted click/type/hold/HTML5 drag events, the example extension and modifier release, CSS-scale screenshots and stale capture refusal, matching CLI/MCP unsupported-option errors, timeout poisoning, and owned-process cleanup. It used controlled local pages with `human-fast`, not external anti-bot challenges. Linux, high-DPI capture mapping, popup/iframe routing, other motion profiles, and forced-termination cleanup remain unverified. See [the detailed acceptance record](camoufox-backend/PROTOCOL.md#acceptance-evidence); authorize platform/application-specific checks before relying on broader behavior.
+
 ## Architecture
 
 agent-browser uses a client-daemon architecture:
@@ -1668,7 +1765,7 @@ agent-browser uses a client-daemon architecture:
 
 The daemon starts automatically on first command and persists between commands for fast subsequent operations. After **1 hour** with no commands or dashboard input it saves configured restore state, closes the browser, and exits, so an integration that dies without calling `close` cannot leak the daemon and its browser indefinitely; the next command starts a fresh daemon and configured state restore works as usual. A session without `--restore` or another restore key does not save browser state, so its transient state and open tabs are discarded at shutdown. Set `--idle-timeout` to a duration such as `30s`, `5m`, or `1h`, or set `AGENT_BROWSER_IDLE_TIMEOUT_MS` to a value in milliseconds. Use `0` to disable idle shutdown entirely. The default never closes a headed browser, including Safari and iOS WebDriver sessions, or a user-attached browser because those may be in direct human use. Provider-owned cloud browsers remain eligible for cleanup. An explicitly set timeout applies to every browser.
 
-**Browser Engine:** Uses Chrome (from Chrome for Testing) by default. The `--engine` flag selects between `chrome` and `lightpanda`. Supported browsers: Chromium/Chrome (via CDP) and Safari (via WebDriver for iOS).
+**Browser Engine:** Uses Chrome (from Chrome for Testing) by default. The `--engine` flag selects `chrome`, `lightpanda`, or this fork's opt-in `camoufox` subset. Chromium/Chrome use CDP, Safari uses WebDriver, and Camoufox uses a private persistent Python worker with Playwright/Juggler.
 
 ## Platforms
 

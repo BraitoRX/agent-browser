@@ -516,6 +516,8 @@ impl SessionSetup {
 
 pub struct DaemonState {
     pub browser: Option<BrowserManager>,
+    /// Separate Juggler worker; never represented by a CDP BrowserManager.
+    pub camoufox: Option<super::camoufox::CamoufoxBackend>,
     pub appium: Option<AppiumManager>,
     pub safari_driver: Option<safari::SafariDriverProcess>,
     pub webdriver_backend: Option<super::webdriver::backend::WebDriverBackend>,
@@ -609,7 +611,7 @@ pub struct DaemonState {
     /// Whether browser-level auto-attach has been enabled for the current
     /// browser so top-level popups pause before their first request.
     network_auto_attach_installed: bool,
-    /// Browser engine name (e.g. "chrome", "lightpanda") for observability.
+    /// Browser engine name (e.g. "chrome", "lightpanda", "camoufox") for observability.
     pub engine: String,
     /// Default timeout for wait operations, from AGENT_BROWSER_DEFAULT_TIMEOUT env var.
     pub default_timeout_ms: u64,
@@ -661,6 +663,7 @@ impl DaemonState {
             .is_some_and(|b| b.pinned);
         Self {
             browser: None,
+            camoufox: None,
             appium: None,
             safari_driver: None,
             webdriver_backend: None,
@@ -751,6 +754,9 @@ impl DaemonState {
     /// sessions delegate the decision to BrowserManager. Provider-owned CDP
     /// connections remain eligible because the daemon owns their lifecycle.
     pub(crate) fn blocks_default_idle_shutdown(&self) -> bool {
+        if let Some(backend) = &self.camoufox {
+            return backend.headed;
+        }
         default_idle_shutdown_is_blocked(
             matches!(self.backend_type, BackendType::WebDriver),
             self.active_provider_connection,
@@ -2295,7 +2301,7 @@ fn command_changes_restore_key(cmd: &Value, state: &DaemonState) -> bool {
 }
 
 fn has_active_browser_session(state: &DaemonState) -> bool {
-    state.browser.is_some() || state.active_provider_session.is_some()
+    state.browser.is_some() || state.active_provider_session.is_some() || state.camoufox.is_some()
 }
 
 async fn apply_restore_config_after_confirmation(
@@ -2334,6 +2340,9 @@ async fn close_active_provider_session(state: &mut DaemonState) {
 }
 
 pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(), String> {
+    if let Some(mut backend) = state.camoufox.take() {
+        backend.close().await;
+    }
     let close_error = if let Some(mut mgr) = state.browser.take() {
         mgr.close().await.err()
     } else {
@@ -2439,6 +2448,8 @@ fn skip_launch_action(action: &str) -> bool {
             | "stream_disable"
             | "stream_status"
             | "session_info"
+            | "gestures"
+            | "gesture"
             | "webmcp_result"
             | "webmcp_cancel"
     )
@@ -2497,6 +2508,61 @@ fn policy_actions_for_command(
     actions
 }
 
+async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value {
+    use super::camoufox::{failure, normalize_command, CamoufoxBackend, HARD_DEADLINE};
+    let id = cmd.get("id").and_then(Value::as_str).unwrap_or("");
+    let action = cmd.get("action").and_then(Value::as_str).unwrap_or("");
+    if action == "close" {
+        return match handle_close(state).await {
+            Ok(data) => success_response(id, data),
+            Err(error) => error_response(id, &error),
+        };
+    }
+    let mut command = match normalize_command(cmd) {
+        Ok(command) => command,
+        Err(error) => return failure(id, "camoufox_unsupported", &error, false),
+    };
+    state.engine = "camoufox".to_string();
+    write_engine_file(&state.session_id, &state.engine);
+    if state.camoufox.is_none() {
+        match CamoufoxBackend::spawn() {
+            Ok(backend) => state.camoufox = Some(backend),
+            Err(error) => return failure(id, "camoufox_not_launched", &error, false),
+        }
+    }
+    let backend = state.camoufox.as_mut().expect("Camoufox worker was just created");
+    let requested_headless = cmd.get("headless").and_then(Value::as_bool);
+    if backend.launched && requested_headless.is_some_and(|headless| headless == backend.headed) {
+        return failure(id, "camoufox_unsupported", "Close the session before changing headed mode", false);
+    }
+    let headless = requested_headless.unwrap_or_else(|| {
+        if backend.launched { !backend.headed } else {
+            !env::var("AGENT_BROWSER_HEADED").is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        }
+    });
+    if action == "launch" {
+        command["headless"] = json!(headless);
+    }
+    let outcome = tokio::time::timeout(HARD_DEADLINE, async {
+        if !backend.launched && !matches!(action, "launch" | "session_info" | "gestures" | "tab_list" | "read") {
+            let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless})).await;
+            if launched.get("success").and_then(Value::as_bool) != Some(true) {
+                launched["id"] = json!(id);
+                return launched;
+            }
+        }
+        backend.execute(&command).await
+    }).await;
+    match outcome {
+        Ok(response) => response,
+        Err(_) => {
+            let reason = "Camoufox command exceeded 28s including startup. Input outcome is ambiguous; no replay. Close the session to recover.";
+            backend.poison(reason);
+            failure(id, "camoufox_poisoned", reason, true)
+        }
+    }
+}
+
 pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     let action = cmd.get("action").and_then(|v| v.as_str()).unwrap_or("");
     // Unlike normal auth login, no-navigation mode must never launch a
@@ -2513,6 +2579,29 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .to_string();
 
     let cmd_start = std::time::Instant::now();
+    let requested_engine = cmd.get("engine").and_then(Value::as_str);
+    let use_camoufox = state.camoufox.is_some()
+        || requested_engine.unwrap_or(&state.engine) == "camoufox";
+    if use_camoufox && !matches!(action, "close" | "confirm" | "deny" | INTERNAL_DAEMON_SHUTDOWN_ACTION) {
+        if state.browser.is_some() || state.webdriver_backend.is_some() || state.active_provider_connection
+            || requested_engine.is_some_and(|engine| engine != "camoufox") {
+            return super::camoufox::failure(&id, "camoufox_unsupported", "Close the current session before changing browser engines", false);
+        }
+        let validation = super::camoufox::validate_environment()
+            .and_then(|_| super::camoufox::normalize_command(cmd).map(|_| ()));
+        if let Err(error) = validation {
+            return super::camoufox::failure(&id, "camoufox_unsupported", &error, false);
+        }
+        if state.domain_filter.read().await.is_some() || state.session_name.is_some() || state.pin_tab {
+            return super::camoufox::failure(&id, "camoufox_unsupported", "Camoufox V1 cannot enforce domain containment, restore, or pin-tab settings", false);
+        }
+        if action == "gesture" && (state.policy.is_some() || state.confirm_actions.is_some()) {
+            return super::camoufox::failure(&id, "camoufox_unsupported", "Generic gestures are disabled when action policies or confirm-actions are active; use typed actions", false);
+        }
+    }
+    if !use_camoufox && matches!(action, "gesture" | "gestures") {
+        return error_response(&id, "Gesture commands require --engine camoufox");
+    }
 
     if let Err(err) = validate_restore_config_from_command(cmd) {
         return error_response(&id, &err);
@@ -2629,6 +2718,8 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         // actions are gated when recovery relaunches would invoke plugins.
         if restore_key_change_needs_launch {
             true
+        } else if use_camoufox {
+            state.camoufox.as_ref().is_none_or(|backend| !backend.launched)
         } else if let Some(ref mut mgr) = state.browser {
             mgr.has_process_exited() || !mgr.is_connection_alive().await
         } else {
@@ -2707,6 +2798,15 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 }
             }
         }
+    }
+
+    if use_camoufox && !matches!(action, "confirm" | "deny") {
+        let mut response = execute_camoufox_command(cmd, state).await;
+        if let Some(data) = response.get_mut("data").and_then(Value::as_object_mut) {
+            data.insert("engine".to_string(), json!("camoufox"));
+        }
+        state.last_command_finished = Some(std::time::Instant::now());
+        return response;
     }
 
     let restore_transition_closed_browser = match async {

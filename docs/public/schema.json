@@ -191,7 +191,7 @@
     },
     "engine": {
       "type": "string",
-      "enum": ["chrome", "lightpanda"],
+      "enum": ["chrome", "lightpanda", "camoufox"],
       "default": "chrome",
       "description": "Browser engine to use."
     },

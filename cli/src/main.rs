@@ -242,6 +242,9 @@ fn incompatible_launch_mode_error(flags: &Flags) -> Option<&'static str> {
 }
 
 fn should_send_local_launch_config(flags: &Flags, command: &serde_json::Value) -> bool {
+    if flags.engine.as_deref() == Some("camoufox") {
+        return false;
+    }
     (flags.headed
         || flags.cli_headed
         || flags.executable_path.is_some()
@@ -715,8 +718,23 @@ fn run_session_info(session: &str, json_mode: bool) {
         if let Some(engine) = data.get("engine").and_then(|v| v.as_str()) {
             println!("Engine: {}", engine);
         }
-        if let Some(launched) = data.get("browserLaunched").and_then(|v| v.as_bool()) {
+        let camoufox = data.get("engine").and_then(|v| v.as_str()) == Some("camoufox");
+        let browser_launched = data.get("browserLaunched").and_then(|v| v.as_bool()).or_else(|| {
+            if camoufox { data.get("launched").and_then(|v| v.as_bool()) } else { None }
+        });
+        if let Some(launched) = browser_launched {
             println!("Browser launched: {}", launched);
+        }
+        if camoufox {
+            if let Some(connected) = data.get("browserConnected").and_then(|v| v.as_bool()) {
+                println!("Browser connected: {}", connected);
+            }
+            if let Some(required) = data.get("recoveryRequired").and_then(|v| v.as_bool()) {
+                println!("Recovery required: {}", required);
+            }
+            if let Some(reason) = data.get("closeReason").and_then(|v| v.as_str()) {
+                println!("Close reason: {} (close the affected session before reopening)", reason);
+            }
         }
     } else if let Some(err) = runtime_error {
         println!("Runtime info unavailable: {}", err);
@@ -1398,12 +1416,35 @@ fn main() {
     // Handle install separately
     if clean.first().map(|s| s.as_str()) == Some("install") {
         let with_deps = args.iter().any(|a| a == "--with-deps" || a == "-d");
+        if flags.engine.as_deref() == Some("camoufox") {
+            let result = if with_deps {
+                Err("Camoufox install does not support --with-deps; provision OS libraries separately".to_string())
+            } else {
+                native::camoufox::install()
+            };
+            match result {
+                Ok(data) => {
+                    if flags.json { println!("{}", json!({"success": true, "data": data})); }
+                    else { println!("Camoufox runtime installed at {}", data["runtimeDir"].as_str().unwrap_or("")); }
+                }
+                Err(error) => {
+                    if flags.json { print_json_error(error); }
+                    else { eprintln!("{} {}", color::error_indicator(), error); }
+                    exit(1);
+                }
+            }
+            return;
+        }
         run_install(with_deps);
         return;
     }
 
     // Handle upgrade separately
     if clean.first().map(|s| s.as_str()) == Some("upgrade") {
+        if flags.engine.as_deref() == Some("camoufox") {
+            eprintln!("{} Camoufox fork updates are manual. Follow docs/fork-maintenance.md; upstream package-manager upgrades do not contain this backend.", color::error_indicator());
+            exit(1);
+        }
         run_upgrade();
         return;
     }
@@ -1498,6 +1539,19 @@ fn main() {
     // Handle MCP stdio server mode. This must never share stdout with normal
     // CLI output because stdout is reserved for JSON-RPC protocol messages.
     if clean.first().map(|s| s.as_str()) == Some("mcp") {
+        if flags.engine.as_deref() == Some("camoufox") {
+            if let Err(error) = native::camoufox::validate_flags(&flags) {
+                eprintln!("{} {}", color::error_indicator(), error);
+                exit(1);
+            }
+            env::set_var("AGENT_BROWSER_ENGINE", "camoufox");
+            env::set_var("AGENT_BROWSER_SESSION", &flags.session);
+            if flags.headed || flags.cli_headed {
+                env::set_var("AGENT_BROWSER_HEADED", if flags.headed { "1" } else { "0" });
+            }
+            if let Some(policy) = &flags.action_policy { env::set_var("AGENT_BROWSER_ACTION_POLICY", policy); }
+            if let Some(actions) = &flags.confirm_actions { env::set_var("AGENT_BROWSER_CONFIRM_ACTIONS", actions); }
+        }
         if let Err(err) = mcp::run_mcp(&clean[1..]) {
             eprintln!("{} {}", color::error_indicator(), err);
             exit(1);

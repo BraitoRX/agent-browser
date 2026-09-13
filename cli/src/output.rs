@@ -2,6 +2,7 @@ use std::sync::OnceLock;
 
 use crate::color;
 use crate::connection::Response;
+use serde_json::Value;
 
 static BOUNDARY_NONCE: OnceLock<String> = OnceLock::new();
 
@@ -496,6 +497,19 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
 
     if let Some(data) = &resp.data {
         print_lifecycle_note(data);
+        if action == Some("snapshot") && data.get("engine").and_then(Value::as_str) == Some("camoufox") {
+            if let Some(snapshot) = data.get("snapshot").and_then(Value::as_str) {
+                print_with_boundaries(snapshot, boundary_origin(data), opts);
+            }
+            return;
+        }
+        if matches!(action, Some("gesture" | "gestures"))
+            || (data.get("engine").and_then(Value::as_str) == Some("camoufox")
+                && matches!(action, Some("screenshot" | "session_info" | "tab_list" | "tab_new" | "tab_switch"))) {
+            let text = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
+            println!("{}", format_with_boundaries(&text, boundary_origin(data), opts));
+            return;
+        }
 
         // Dialog status response
         if action == Some("dialog") {
@@ -1806,6 +1820,43 @@ Examples:
   agent-browser select "#menu" "opt1" "opt2" "opt3"
 "##
         }
+        "gesture" | "gestures" => {
+            r##"
+agent-browser gestures - Discover Camoufox gesture schemas
+agent-browser gesture - Execute a trusted native gesture
+
+Usage:
+  agent-browser --engine camoufox gestures [name]
+  agent-browser --engine camoufox gesture <name> --params '<JSON object>'
+    [--observe none|snapshot|screenshot]
+
+Built-ins: click, hover, hold, drag, scroll, type, path.
+Discover a schema before executing it. External modules from
+AGENT_BROWSER_GESTURES_DIR own their schema and implementation; no transport
+or MCP edits are needed. They are trusted Python code, not sandboxed.
+
+Targets are selector objects or coordinates from a fresh viewport screenshot:
+  {"selector":"@e2"}
+  {"coordinates":{"x":120,"y":80,"captureId":"<returned-id>"}}
+Coordinate captures expire after 120s and after input/evaluation/navigation.
+Coordinate drags require two endpoints from one capture, without reveal steps.
+Selector drags can use 1-4 CSS-selector reveal hover steps before resolution.
+
+--observe adds evidence to the same call; diagnostics do not assert app success.
+Screenshot observations include data.path for MCP image delivery.
+Generic gestures are disabled with action policies or confirm-actions.
+After timeout/ambiguous input, do not replay; close and inspect the session.
+
+Motion is launch-time AGENT_BROWSER_MOTION: human-fast (native humanize=0.25),
+fast, precision. The value 0.25 is tuning, not a measured latency guarantee.
+The path gesture requires fast/precision. Hold duration is at most 20000ms.
+
+Examples:
+  agent-browser --engine camoufox gestures drag --json
+  agent-browser --engine camoufox gesture hold --params '{"target":{"selector":"#press-target"},"durationMs":1200}' --observe screenshot --json
+  agent-browser skills get camoufox
+"##
+        }
         "drag" => {
             r##"
 agent-browser drag - Drag and drop
@@ -3003,6 +3054,14 @@ Operations:
   info                 Show daemon, launch, and restore diagnostics
   list                 List all active sessions
 
+Camoufox diagnostics:
+  JSON data.active describes the daemon, not browser liveness. Inspect
+  data.runtime.launched, browserConnected, recoveryRequired, and closeReason.
+  camoufox_no_active_tab needs an explicit tab switch or new tab.
+  camoufox_session_closed needs explicit close then open of the affected session.
+  camoufox_target_closed has unconfirmed scope; inspect session info and tab list.
+  Never replay timed-out or possibly dispatched input after recovery.
+
 Environment:
   AGENT_BROWSER_SESSION    Default session name
   AGENT_BROWSER_NAMESPACE  Namespace for daemon sockets and restore state
@@ -3030,12 +3089,22 @@ Usage: agent-browser install [--with-deps]
 
 Downloads and installs browser binaries required for automation.
 
+This fork also supports --engine camoufox install on macOS/Linux. It requires
+Python 3.10+ and venv, provisions a private runtime, pins camoufox 0.5.6 and
+playwright 1.61.0, fetches official/stable, and records the executable.
+Startup never installs or updates packages/browser/default addons.
+AGENT_BROWSER_CAMOUFOX_RUNTIME overrides the absolute runtime root;
+AGENT_BROWSER_PYTHON chooses the installer interpreter (default python3).
+Camoufox does not support --with-deps or Windows process ownership in V1.
+Build this fork first; upstream package binaries do not include this backend.
+
 Options:
   -d, --with-deps      Also install system dependencies (Linux only; fails if deps fail)
 
 Examples:
   agent-browser install
   agent-browser install --with-deps
+  agent-browser --engine camoufox install
 "##
         }
 
@@ -3049,6 +3118,9 @@ Usage: agent-browser upgrade
 Detects the current installation method (npm, Homebrew, or Cargo) and runs
 the appropriate update command. Displays the version change on success, or
 informs you if you are already on the latest version.
+
+With engine camoufox, upgrade is refused: upstream package-manager releases do
+not contain the fork backend. Follow docs/fork-maintenance.md instead.
 
 Examples:
   agent-browser upgrade
@@ -3509,6 +3581,7 @@ Tool profiles:
   tabs       Back/forward/reload, tabs, windows, frames, dialogs
   react      React tree/inspect/renders/suspense, vitals, pushstate
   mobile     Viewport/device/geolocation/media, touch, swipe, mouse, keyboard
+  gestures   Camoufox gesture discovery/execution, install, session info, skills
   all        Every MCP tool, including the full typed CLI parity surface
 
 Common tools include:
@@ -3518,10 +3591,20 @@ Common tools include:
   agent_browser_click      Click an element by @ref or selector
   agent_browser_fill       Fill an input
   agent_browser_screenshot Take a screenshot
+  agent_browser_gestures   Discover Camoufox schemas (gestures profile)
+  agent_browser_gesture    Execute a Camoufox gesture with optional observation
   agent_browser_get_url    Read the current URL
   agent_browser_close      Close the browser session
 
-Each tool has typed fields such as url, selector, text, key, and session.
+Each tool has typed fields such as url, selector, text, key, session, and engine.
+For this fork's Camoufox subset: --engine camoufox --session camoufox-task mcp
+--tools core,gestures. Load skills get camoufox first. Unsupported surfaces fail
+without Chrome fallback. Camoufox timeoutMs must be at least 30000.
+MCP snapshots default to interactive=false for Camoufox; explicit true is rejected.
+Retrieve the skill with agent_browser_skills_get using names: ["camoufox"].
+Unexpected Camoufox worker import errors identify the missing module.
+Gesture helper imports do not take precedence over installed Python packages.
+Gesture bounds measure the rendered viewport without forcing a fixed browser size.
 Each tool also accepts extraArgs for advanced CLI flags and exact CLI parity.
 Tool discovery is paginated and includes read-only/open-world annotations so
 modern MCP clients can load the large typed surface incrementally.
@@ -3697,6 +3780,8 @@ Core Commands:
   uncheck <sel>              Uncheck checkbox
   select <sel> <val...>      Select dropdown by value or visible label
   drag <src> <dst>           Drag and drop
+  gestures [name]           Discover Camoufox gesture schemas
+  gesture <name> --params <json> [--observe none|snapshot|screenshot]
   upload <sel> <files...>    Upload files
   download <sel> <path>      Download file by clicking element
   scroll <dir> [px]          Scroll (up/down/left/right)
@@ -3930,7 +4015,7 @@ Options:
   --action-policy <path>     Action policy JSON file (or AGENT_BROWSER_ACTION_POLICY)
   --confirm-actions <list>   Categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
   --confirm-interactive      Interactive confirmation prompts; auto-denies if stdin is not a TTY (or AGENT_BROWSER_CONFIRM_INTERACTIVE)
-  --engine <name>            Browser engine: chrome (default), lightpanda (or AGENT_BROWSER_ENGINE)
+  --engine <name>            Browser engine: chrome (default), lightpanda, camoufox V1 subset
   --idle-timeout <time>      Shut down daemon after inactivity: 10s, 3m, 1h, or raw ms
                              (default: 1h; 0 disables; dashboard input resets the timer)
   --no-auto-dialog           Disable automatic dismissal of alert/beforeunload dialogs (or AGENT_BROWSER_NO_AUTO_DIALOG)
@@ -4023,7 +4108,12 @@ Environment:
   AGENT_BROWSER_CONFIRM_ACTIONS  Action categories requiring confirmation
   AGENT_BROWSER_CONFIRM_INTERACTIVE Enable interactive confirmation prompts
   AGENT_BROWSER_NO_AUTO_DIALOG   Disable automatic dismissal of alert/beforeunload dialogs
-  AGENT_BROWSER_ENGINE           Browser engine: chrome (default), lightpanda
+  AGENT_BROWSER_ENGINE           Browser engine: chrome (default), lightpanda, camoufox
+  AGENT_BROWSER_CAMOUFOX_RUNTIME Absolute private Camoufox runtime root
+  AGENT_BROWSER_PYTHON           Install-time Python executable (default python3)
+  AGENT_BROWSER_MOTION           Camoufox launch profile: human-fast, fast, precision
+  AGENT_BROWSER_GESTURES_DIR     Explicit trusted gesture directories (OS path separator)
+  AGENT_BROWSER_ACTION_DEADLINE_MS Camoufox deadline: default 22000, clamp 1000-25000; Rust hard cap 28s
   AGENT_BROWSER_PLUGINS          JSON plugin registry override
   HTTP_PROXY / HTTPS_PROXY       Standard proxy env vars (fallback if AGENT_BROWSER_PROXY not set)
   ALL_PROXY                      SOCKS proxy (fallback for proxy)
@@ -4040,6 +4130,17 @@ Install:
   brew install agent-browser             # Homebrew
   cargo install agent-browser            # Cargo
   agent-browser install                  # Download Chrome (first time)
+  agent-browser --engine camoufox install # Private runtime (built fork required)
+
+Camoufox V1 (macOS/Linux only):
+  Load skills get camoufox. Use snapshot without -i/-c and viewport PNG captures.
+  No CDP, profiles/restore/auth, domain containment, launch plugins, or mobile.
+  Generic gestures cannot run under action policies/confirm-actions.
+  session info --json reports browserConnected, recoveryRequired, and closeReason.
+  A closed active tab needs tab <id> or tab new, not a browser restart.
+  camoufox_session_closed needs explicit close then open of the affected session.
+  camoufox_target_closed has unconfirmed scope; inspect session info and tab list.
+  Never replay timed-out or ambiguous input; close and inspect before continuing.
 
 Examples:
   agent-browser open example.com

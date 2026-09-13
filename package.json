@@ -12,6 +12,8 @@
     "bin",
     "scripts",
     "skill-data",
+    "camoufox-backend",
+    "docs/fork-maintenance.md",
     "skills",
     "cli/src/native/a11y/LICENSE-axe-core.txt",
     "cli/src/native/a11y/LICENSE-axe-core-THIRD-PARTY.txt"
@@ -45,10 +47,10 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/vercel-labs/agent-browser.git"
+    "url": "git+https://github.com/BraitoRX/agent-browser.git"
   },
   "bugs": {
-    "url": "https://github.com/vercel-labs/agent-browser/issues"
+    "url": "https://github.com/BraitoRX/agent-browser/issues"
   },
   "homepage": "https://agent-browser.dev",
   "devDependencies": {}

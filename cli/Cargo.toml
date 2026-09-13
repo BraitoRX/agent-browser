@@ -36,7 +36,7 @@ hmac = "0.12"
 hex = "0.4"
 chrono = "0.4"
 urlencoding = "2"
-rust-embed = "8"
+rust-embed = { version = "8", features = ["include-exclude"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
