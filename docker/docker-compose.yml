@@ -14,6 +14,7 @@ services:
     volumes:
       - ../cli:/build
       - ../bin:/output
+      - ../camoufox-backend:/camoufox-backend:ro
     command: |
       -c '
         set -euo pipefail
@@ -47,6 +48,7 @@ services:
     volumes:
       - ../cli:/build
       - ../bin:/output
+      - ../camoufox-backend:/camoufox-backend:ro
     command: |
       -c '
         set -euo pipefail
@@ -71,6 +73,7 @@ services:
     volumes:
       - ../cli:/build
       - ../bin:/output
+      - ../camoufox-backend:/camoufox-backend:ro
     environment:
       - TARGET=${TARGET:-}
       - RUST_TARGET=${RUST_TARGET:-}

@@ -1,0 +1,18 @@
+services:
+  runtime:
+    platform: linux/arm64
+    build:
+      context: ../..
+      dockerfile: agent-browser/docker/Dockerfile.runtime
+      args:
+        BROWSER_BINARY: agent-browser-linux-arm64
+    image: agent-browser-camoufox:runtime
+    init: true
+    stdin_open: true
+    environment:
+      AGENT_BROWSER_ENGINE: camoufox
+    volumes:
+      - ab-runtime-scratch:/data
+
+volumes:
+  ab-runtime-scratch:

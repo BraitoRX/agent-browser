@@ -49,6 +49,38 @@ Publishing packages, creating release tags, pushing implementation commits, inst
 
 The Release workflow in `.github/workflows/release.yml` is manual-only through `workflow_dispatch`. Pushes and pull requests to `main` still run normal CI, but do not publish a release. Before explicitly dispatching Release from `main`, review the inherited npm package names, package ownership, publishing credentials, target repository, and version. A source integration or branch transition is not authorization to publish.
 
+## Running the backend in a container
+
+The Rust daemon spawns the Python worker as a child with piped stdio, so a container must run the whole stack (CLI, MCP, daemon, worker, browser), not just the worker. On macOS this means a Linux container, which bypasses the host's Camoufox runtime entirely.
+
+The Camoufox backend embeds its Python sources at compile time, so the Linux binary build must also mount `camoufox-backend/`; the Compose build services already do. Build the Linux CLI binary first (none is committed), then the runtime image from the workspace root so the image can copy both `agent-browser/` and `camoufox/additions/`:
+
+```bash
+cd agent-browser && docker compose -f docker/docker-compose.yml run --rm build-linux
+cd .. && docker build --platform linux/arm64 \
+  --build-arg BROWSER_BINARY=agent-browser-linux-arm64 \
+  -f agent-browser/docker/Dockerfile.runtime -t agent-browser-camoufox:runtime .
+```
+
+On an arm64 host use the arm64 binary; on x86_64 use `--platform linux/amd64` with `agent-browser-linux-x64`. The browser asset follows the container's Python platform, so the binary and the image platform must agree.
+
+The image installs the browser and bakes in the input-dispatch guards at build time, so no post-install guard step is needed. It is headless by default, needs no published port, and MCP clients attach over stdio. The install lives in the image, not a mounted volume: mounting an existing volume over the runtime would shadow the image's installed browser and guards, so rebuild the image to update them instead. `/data` is reserved for scratch and screenshots, and the socket directory is private to the container.
+
+Point an MCP entry at it, leaving existing browser configuration unchanged:
+
+```json
+{
+  "mcpServers": {
+    "agent-browser-camoufox-container": {
+      "command": "docker",
+      "args": ["run", "--rm", "-i", "--init", "--platform", "linux/arm64", "--cap-drop=ALL", "--security-opt=no-new-privileges", "--shm-size=512m", "agent-browser-camoufox:runtime", "--engine", "camoufox", "--session", "camoufox-task", "mcp", "--tools", "core,gestures"]
+    }
+  }
+}
+```
+
+`agent-browser/docker/docker-compose.runtime.yml` provides the same image with an optional scratch volume. Headed runs additionally need an `Xvfb` process and `DISPLAY` in the container; the backend never starts `Xvfb` itself and rejects `noXvfb=true`.
+
 ## Local OpenCode refresh and reset
 
 Use this procedure for routine maintenance of the configured macOS setup. Do not rediscover the configuration, enumerate every process, or probe alternate API syntaxes on every reset. Recheck only a value contradicted by current evidence or a command that fails. Build, reset, and verification still require task authorization; this runbook is not blanket permission.

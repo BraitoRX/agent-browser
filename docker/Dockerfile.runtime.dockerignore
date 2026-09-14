@@ -1,0 +1,10 @@
+**/cli/target
+**/node_modules
+**/.git
+**/__pycache__
+**/*.log
+**/.codegraph
+camoufox/camoufox-*
+camoufox/firefox-*
+camoufox/bundle
+camoufox/dist
