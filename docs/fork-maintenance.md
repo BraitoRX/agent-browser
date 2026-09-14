@@ -49,12 +49,72 @@ Publishing packages, creating release tags, pushing implementation commits, inst
 
 The Release workflow in `.github/workflows/release.yml` is manual-only through `workflow_dispatch`. Pushes and pull requests to `main` still run normal CI, but do not publish a release. Before explicitly dispatching Release from `main`, review the inherited npm package names, package ownership, publishing credentials, target repository, and version. A source integration or branch transition is not authorization to publish.
 
-## Local lifecycle regression acceptance
+## Local OpenCode refresh and reset
 
-The stale-target lifecycle update completed the following bounded acceptance on macOS arm64. This supplements the initial gesture acceptance recorded in `camoufox-backend/PROTOCOL.md`; it is not a full-suite result or certification for other platforms or websites.
+Use this procedure for routine maintenance of the configured macOS setup. Do not rediscover the configuration, enumerate every process, or probe alternate API syntaxes on every reset. Recheck only a value contradicted by current evidence or a command that fails. Build, reset, and verification still require task authorization; this runbook is not blanket permission.
 
-- `python3 -B -m unittest discover -s test/camoufox -p 'test_*lifecycle.py' -v` exited 0: 26 permanent fake-based tests cover callbacks, missed events, tab/session diagnostics, reference invalidation, explicit recovery, target-closed error classification, and preservation of ambiguous-input poisoning.
-- `cargo test --manifest-path cli/Cargo.toml camoufox_lifecycle -- --nocapture` exited 0: three focused tests cover CLI/MCP lifecycle data, error codes, and text-only no-replay warnings.
-- `cargo build --release --manifest-path cli/Cargo.toml` exited 0. The configured local release binary was rebuilt, only `camofox_browser` MCP was reconnected, and the updated Camoufox skill was retrieved through that connection. No runtime reinstall or global configuration edit was needed.
-- A temporary headed acceptance driver used one isolated named session and `about:blank` through a private MCP process. It confirmed that page closure leaves a live browser without an active tab, context/browser closure refuses implicit recovery, CLI/MCP diagnostics agree, and explicit close/open restores snapshots. It dispatched no input. The initial fixture setup was rejected for an invalid gesture name before browser launch; after correcting the name and waiting for asynchronous daemon shutdown during cleanup, the lifecycle run exited 0. Both test daemons were confirmed inactive.
-- With separate approval, the stale, poisoned shared `opencode-camoufox` session was closed and confirmed inactive. No website was reopened and no unrelated session was closed. The next open starts a fresh daemon using the updated backend; existing tabs and login state are not restored.
+### Recorded configuration
+
+Configuration and documentation references recorded on 2026-09-13. This section is a procedure, not a claim that a build or reset was executed:
+
+- Repository: `/Users/braito/Documents/Code/Projects/agent-browser-camoufox/agent-browser`.
+- MCP entry: `camofox_browser`, in `~/.config/opencode/opencode.jsonc` under `mcp.servers`.
+- Configured executable: the repository's `cli/target/release/agent-browser`, not an upstream package or a PATH-resolved executable.
+- Arguments: `--engine camoufox --session opencode-camoufox mcp --tools core,gestures,network,state,debug,tabs`.
+- OpenCode location for this setup: `/Users/braito/Documents/Code/Projects`. This is the conversation location, not the nested repository and not the browser session name. For a conversation at another location, use its actual OpenCode location instead.
+- Browser configuration: `/Users/braito/.config/opencode/camoufox/agent-browser.json`, selected by `AGENT_BROWSER_CONFIG`. The MCP working directory is the repository above. Keep the existing entry and its environment unchanged. `AGENT_BROWSER_HEADED` is `true`; `AGENT_BROWSER_MOTION` is `human-fast`.
+- Managed browser runtime: `/Users/braito/Library/Application Support/agent-browser/camoufox-v1`. Do not edit extracted workers, the managed venv, browser assets, cookies, or profiles as an activation step.
+
+The OpenCode MCP process, agent-browser daemon, and Python/browser worker are separate lifetimes. Reconnecting MCP refreshes its instructions and tool catalog but does not reset an existing browser daemon. Closing the named browser session shuts down that daemon but does not reload the MCP server. Backend Python is embedded in the Rust binary, so Rust or bundled Python changes require a rebuild and a fresh daemon. A reconnect alone cannot activate unbuilt source. Skill-only files are read from the surrounding `skill-data` tree; retrieve the skill again rather than reinstalling the browser.
+
+### Authorized activation sequence
+
+1. Preserve existing work. Do not stash, reset Git, reinstall the runtime, publish, or change global configuration. If the shared `opencode-camoufox` session is live and another task or manual login owns it, coordinate before closing it. A stale daemon PID or this conversation's own active session is not evidence of another browser task.
+2. For changed Rust or embedded backend source, build the exact configured executable. Skip the build for a reset of an already-current binary or a skill-only edit. Stop on a build failure; do not reconnect and claim the new code is active.
+
+```bash
+REPO='/Users/braito/Documents/Code/Projects/agent-browser-camoufox/agent-browser'
+cd "$REPO"
+cargo build --release --manifest-path cli/Cargo.toml
+```
+
+3. If a browser reset is authorized, call the configured MCP `agent_browser_close` for `session: "opencode-camoufox"`, with no `all` flag. OpenCode exposes it as `camofox_browser_agent_browser_close`. If MCP is unavailable, the equivalent scoped CLI command is:
+
+```bash
+REPO='/Users/braito/Documents/Code/Projects/agent-browser-camoufox/agent-browser'
+"$REPO/cli/target/release/agent-browser" --engine camoufox --session opencode-camoufox close --json
+```
+
+4. Reconnect only the MCP entry in the correct OpenCode location. Use OpenCode's authenticated `api` CLI, not an unauthenticated HTTP request or a whole-service restart. These endpoints take no request body:
+
+```bash
+LOCATION='/Users/braito/Documents/Code/Projects'
+opencode api POST "/api/mcp/camofox_browser/disconnect?location[directory]=$LOCATION"
+opencode api POST "/api/mcp/camofox_browser/connect?location[directory]=$LOCATION"
+opencode api GET "/api/mcp?location[directory]=$LOCATION"
+```
+
+Run the commands sequentially and inspect each result; stop on a failed disconnect rather than blindly continuing. Confirm `camofox_browser` reports `connected` in the scoped GET response. If connect fails, report that MCP remains disconnected and the actual error; do not loop or escalate to restarting OpenCode.
+
+5. Retrieve `agent_browser_skills_get` with `names: ["camoufox"]` when the workflow changed. Confirm the closed browser daemon is inactive with `agent_browser_session_info` when the task includes a reset. Do not open a website just to verify a maintenance operation. Unless reopening was requested, leave the browser closed; the next authorized `open` starts the new daemon. A stale client catalog may need a fresh turn, not a broader service restart.
+
+### Location scoping and safety boundaries
+
+The V2 API resolves the server's default location when no location is supplied. Do not assume changing the shell directory selects the conversation's MCP connection. The API contract declares `location` as a `deepObject` query parameter, so keep `location[directory]` inside the quoted request path as above rather than relying on a separate CLI `--param` option. The connect/disconnect routes have no request body and return HTTP 204 on success. These shapes come from the V2 OpenAPI contract; the reset commands were not executed as part of this documentation update.
+
+Never use `opencode service restart`, `close --all`, broad `pkill`/`killall`, profile deletion, or runtime reinstallation for this routine reset. Unexpected orphan processes require a separate ownership diagnosis and authorization, not an expanded kill command. Closing discards current tabs, login state, refs, captures, and unfinished HAR state. Do not replay ambiguous input after resetting.
+
+Report build exit status, whether MCP was reconnected, whether the named daemon was closed, and whether anything was reopened. Distinguish source review, an authorized isolated smoke check, and real-browser acceptance. Do not add permanent tests, run suites, or browse a live site merely because a reset was requested.
+
+Authoritative OpenCode V2 references: [API overview and authenticated CLI](https://opencode.ai/v2/docs/api), [OpenAPI contract](https://opencode.ai/v2/openapi.json), and [MCP configuration](https://opencode.ai/v2/docs/mcp-servers).
+
+## Verification status
+
+Behavior-changing work records its acceptance in this order: `CRITICAL_CHANGELOG.md` for anything that can break the locally configured browser, and the durable guarantees listed here. Session-by-session acceptance transcripts were removed as stale; the surviving guarantees are:
+
+- Lifecycle: 26 fake-based lifecycle tests plus three focused Rust `camoufox_lifecycle` tests cover callbacks, missed events, tab/session diagnostics, reference invalidation, explicit recovery, target-closed classification, and preservation of ambiguous-input poisoning. Temporary headed acceptance additionally confirmed that page closure leaves a live browser without an active tab, context/browser closure refuses implicit recovery, and explicit close/open restores snapshots.
+- Timeout policy: 34 fake-based tests plus two Rust `camoufox_timeout` tests separate cleanly released operation timeouts (`data.timeoutKind: "operation"`, session preserved) from worker deadlines (`"deadline"`, poisoned). Failed releases, non-timeout ambiguous input, and transport failures keep the no-replay safety boundary.
+- DOM/MCP: three Rust `camoufox_dom_contract` tests cover engine-specific profile filtering. Frame detachment clears refs/captures without silently replacing detached selection; tab/session closure clears retained frame state. DOM-only node removal can still produce native locator errors rather than a dedicated stale-ref code.
+- Input dispatch: the installed browser carries the guards described in `CRITICAL_CHANGELOG.md`. Re-apply them after any runtime reinstall with `scripts/camoufox-guard-patch.py` (idempotent).
+
+These guarantees do not certify live nested/cross-origin frame interaction, universal DOM access, anti-bot behavior, non-default motion, high-DPI or cross-platform correctness, or a generally reliable agent strategy. No release was published or deployed beyond the configured local MCP binary.

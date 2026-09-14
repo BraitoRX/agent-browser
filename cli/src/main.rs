@@ -2939,7 +2939,7 @@ mod tests {
 
     #[test]
     fn test_readme_proxy_ca_config_uses_compatible_options() {
-        let readme = include_str!("../../README.md");
+        let readme = include_str!("../../README.upstream.md");
         let marker = "**Example proxy CA configuration:**";
         let example = readme
             .split_once(marker)

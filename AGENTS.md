@@ -2,6 +2,10 @@
 
 Instructions for AI coding agents working with this codebase.
 
+## Local Camoufox maintenance
+
+Before an authorized local build, MCP refresh, or browser reset, use [the recorded OpenCode refresh/reset procedure](docs/fork-maintenance.md#local-opencode-refresh-and-reset). It contains the configured binary, MCP entry, named browser session, correct OpenCode location scoping, and separate MCP/daemon activation steps. Reuse those facts unless current evidence contradicts them; do not repeat broad configuration/process discovery or restart the whole OpenCode service for a scoped Camoufox reset. The runbook does not expand task authorization or the verification budget.
+
 ## Package Manager
 
 This project uses **pnpm**. Always use `pnpm` instead of `npm` or `yarn` for installing dependencies, running scripts, etc. (e.g., `pnpm install`, `pnpm run build`).
@@ -20,7 +24,7 @@ Do not hard-wrap prose in documentation files such as Markdown, MDX, and READMEs
 When adding or changing user-facing features (new flags, commands, behaviors, environment variables, etc.), update **all** of the following:
 
 1. `cli/src/output.rs` — `--help` output (flags list, examples, environment variables)
-2. `README.md` — Options table, relevant feature sections, examples
+2. `README.md` — the fork's own README: fork-added features, options, examples. The upstream manual is kept verbatim in `README.upstream.md`; do **not** put fork feature content there, and diff it against a new upstream release to see what to integrate. Anything that can break the running Camoufox browser also gets an entry in `CRITICAL_CHANGELOG.md`.
 3. `skill-data/core/SKILL.md` (and its `references/`) — so AI agents know about the feature when they load the core skill. Edit `skill-data/core/SKILL.md` for overview/workflow changes; edit `skill-data/core/references/*.md` for detailed reference content. Do **not** put feature content in `skills/agent-browser/SKILL.md` — that file is an intentionally thin discovery stub for `npx skills add` and exists only to redirect agents to `agent-browser skills get core`.
 4. `docs/src/app/` — the Next.js docs site (MDX pages)
 5. Inline doc comments in the relevant source files
