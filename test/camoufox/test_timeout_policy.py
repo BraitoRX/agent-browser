@@ -5,7 +5,7 @@ import json
 import unittest
 from unittest.mock import AsyncMock, patch
 
-from test_lifecycle import FAKE_RUNTIME_DIR, FakePage, make_runtime
+from test_lifecycle import FAKE_RUNTIME_DIR, FakeFrame, FakePage, make_runtime
 from input_context import CODE_ERROR, CODE_POISONED, CODE_TIMEOUT, BackendError
 
 with contextlib.redirect_stdout(io.StringIO()):
@@ -50,12 +50,23 @@ class GesturePage(FakePage):
     def __init__(self, locator):
         super().__init__()
         self._locator = locator
+        self.main_frame = GestureFrame(self, locator)
+        self.frames = [self.main_frame]
 
     def locator(self, selector):
         return self._locator
 
     async def evaluate(self, script):
         return {"x": 0, "y": 0, "w": 800, "h": 600, "dpr": 1}
+
+
+class GestureFrame(FakeFrame):
+    def __init__(self, page, locator):
+        super().__init__(page)
+        self._locator = locator
+
+    def locator(self, selector):
+        return self._locator
 
 
 class TimeoutPolicyTests(unittest.IsolatedAsyncioTestCase):

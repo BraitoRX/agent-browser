@@ -110,13 +110,13 @@ def verify_patched(path: Path) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runtime-dir", default=str(default_runtime_dir()))
-    parser.add_argument("--source", default=str(default_source_dir()))
+    parser.add_argument("--runtime-dir", default=None)
+    parser.add_argument("--source", default=None)
     parser.add_argument("--omni", help="override the omni.ja path (for testing on a copy)")
     args = parser.parse_args(argv)
 
-    runtime_dir = Path(args.runtime_dir).expanduser().resolve()
-    source = Path(args.source).expanduser().resolve()
+    runtime_dir = Path(args.runtime_dir or default_runtime_dir()).expanduser().resolve()
+    source = Path(args.source or default_source_dir()).expanduser().resolve()
     omni = Path(args.omni).expanduser().resolve() if args.omni else resolve_omni(runtime_dir)
 
     if is_guarded(omni):
