@@ -145,6 +145,7 @@ pub fn validate_environment() -> Result<(), String> {
 }
 
 /// Reject unsupported surfaces before launching; only inert CLI metadata is stripped.
+/// Inspection and explicit controls retain canonical action names and daemon policy gates.
 pub fn normalize_command(command: &Value) -> Result<Value, String> {
     if serde_json::to_vec(command).map_err(|error| error.to_string())?.len() > MAX_REQUEST {
         return Err("Camoufox request exceeds 1 MiB; nothing was sent".to_string());
@@ -154,7 +155,8 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "launch" => &["headless", "engine", "webmcp", "noXvfb"],
         "navigate" => &["url", "waitUntil"],
         "back" | "forward" | "reload" | "url" | "title" | "content" | "read"
-        | "tab_list" | "session_info" | "close" => &[],
+        | "tab_list" | "session_info" | "close" | "mainframe" => &[],
+        "frame" => &["selector"],
         "evaluate" => &["script"],
         "snapshot" => &["selector", "maxDepth", "interactive", "compact", "urls", "cursor"],
         "screenshot" => &["path", "screenshotDir", "selector", "fullPage", "annotate", "format", "quality"],
@@ -165,7 +167,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "press" => &["key"],
         "hover" => &["selector", "settleMs"],
         "focus" | "check" | "uncheck" | "gettext" | "inputvalue" | "count" | "boundingbox"
-        | "isvisible" | "isenabled" | "ischecked" => &["selector"],
+        | "isvisible" | "isenabled" | "ischecked" | "innerhtml" | "scrollintoview" => &["selector"],
         "getattribute" => &["selector", "attribute"],
         "select" => &["selector", "values"],
         "drag" => &["source", "target", "button", "steps", "holdBeforeDropMs", "reveal"],
@@ -178,6 +180,31 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "tab_switch" | "tab_close" => &["tabId"],
         "gestures" => &["name"],
         "gesture" => &["name", "params", "observe"],
+        "requests" => &["clear", "filter", "type", "method", "status"],
+        "request_detail" => &["requestId"],
+        "workers" => &[],
+        "console" | "errors" => &["clear"],
+        "websockets" => &["clear", "filter"],
+        "cookies_get" => &["urls"],
+        "cookies_set" => &["cookies"],
+        "cookies_clear" => &[],
+        "storage_get" => &["type", "key"],
+        "storage_set" => &["type", "key", "value"],
+        "storage_clear" => &["type"],
+        "route" => &["url", "abort", "response", "resourceType"],
+        "unroute" => &["url"],
+        "headers" => &["headers"],
+        "offline" => &["offline"],
+        "credentials" => &["username", "password"],
+        "har_start" => &["content"],
+        "har_stop" => &["path"],
+        "dialog" => &["response", "promptText"],
+        "download" => &["selector", "path"],
+        "waitfordownload" => &["path", "timeout"],
+        "downloads" => &["clear"],
+        "page_outline" => &["selector"],
+        "page_links" => &["selector", "cursor", "limit"],
+        "dom_chunk" => &["selector", "cursor", "limit"],
         _ => return Err(format!("Action '{action}' is not supported by Camoufox V1")),
     };
     let mut result = command.clone();
@@ -198,7 +225,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
     }
     for field in match action {
         "screenshot" => &["fullPage", "annotate"][..],
-        "snapshot" => &["interactive", "compact", "urls", "cursor"][..],
+        "snapshot" => &["interactive", "compact"][..],
         "click" => &["newTab"][..],
         "launch" => &["noXvfb", "webmcp"][..],
         _ => &[],
@@ -359,5 +386,61 @@ impl CamoufoxBackend {
 impl Drop for CamoufoxBackend {
     fn drop(&mut self) {
         self.terminate();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn camoufox_inspection_normalize_preserves_canonical_payloads() {
+        for command in [
+            json!({"id":"1","action":"requests","clear":true,"filter":"api","type":"xhr","method":"POST","status":"2xx"}),
+            json!({"id":"1","action":"request_detail","requestId":"n1"}),
+            json!({"id":"1","action":"workers"}),
+            json!({"id":"1","action":"websockets","clear":true,"filter":"api"}),
+            json!({"id":"1","action":"console","clear":true}),
+            json!({"id":"1","action":"errors","clear":false}),
+            json!({"id":"1","action":"cookies_get","urls":["https://example.com"]}),
+            json!({"id":"1","action":"cookies_set","cookies":[{"name":"a","value":"b"}]}),
+            json!({"id":"1","action":"cookies_clear"}),
+            json!({"id":"1","action":"storage_get","type":"local","key":""}),
+            json!({"id":"1","action":"storage_set","type":"session","key":"k","value":""}),
+            json!({"id":"1","action":"storage_clear","type":"local"}),
+            json!({"id":"1","action":"route","url":"**/api/**","abort":false,"response":{"body":"ok"},"resourceType":"xhr"}),
+            json!({"id":"1","action":"unroute","url":"**/api/**"}),
+            json!({"id":"1","action":"headers","headers":{"x-example":"value"}}),
+            json!({"id":"1","action":"offline","offline":true}),
+            json!({"id":"1","action":"credentials","username":"user","password":"example"}),
+            json!({"id":"1","action":"har_start","content":"none"}),
+            json!({"id":"1","action":"har_stop","path":"out.har"}),
+            json!({"id":"1","action":"dialog","response":"accept","promptText":"ok"}),
+            json!({"id":"1","action":"download","selector":"#dl","path":"out.bin"}),
+            json!({"id":"1","action":"waitfordownload","path":"out.bin","timeout":400}),
+            json!({"id":"1","action":"downloads","clear":true}),
+            json!({"id":"1","action":"page_outline","selector":"xpath=//main"}),
+            json!({"id":"1","action":"page_links","cursor":"l-token-50","limit":100}),
+            json!({"id":"1","action":"dom_chunk","cursor":"d-token-100","limit":250}),
+        ] {
+            let normalized = normalize_command(&command)
+                .unwrap_or_else(|error| panic!("{command} rejected: {error}"));
+            assert_eq!(normalized, command);
+        }
+    }
+
+    #[test]
+    fn camoufox_inspection_normalize_rejects_unsupported_surfaces() {
+        for command in [
+            json!({"id":"1","action":"cdp_url"}),
+            json!({"id":"1","action":"pause"}),
+            json!({"id":"1","action":"navigate","url":"https://example.com","allowedDomains":["example.com"]}),
+            json!({"id":"1","action":"launch","allowedDomains":["example.com"]}),
+            json!({"id":"1","action":"requests","domains":["example.com"]}),
+            json!({"id":"1","action":"route","url":"*","handler":"continue"}),
+        ] {
+            let error = normalize_command(&command).unwrap_err();
+            assert!(error.contains("not supported by Camoufox V1"), "{command}: {error}");
+        }
     }
 }

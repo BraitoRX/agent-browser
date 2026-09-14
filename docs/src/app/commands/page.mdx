@@ -30,6 +30,9 @@ agent-browser screenshot --screenshot-dir ./shots    # Save to custom directory
 agent-browser screenshot --screenshot-format jpeg --screenshot-quality 80
 agent-browser pdf <path>              # Save page as PDF
 agent-browser snapshot                # Accessibility tree with refs
+agent-browser page-outline [sel]      # Structured headings and landmarks (Camoufox)
+agent-browser page-links [sel]        # Paginated actionable links (Camoufox)
+agent-browser dom-chunk [sel]         # Paginated DOM records with @dN refs (Camoufox)
 agent-browser eval <js>               # Run JavaScript
 agent-browser connect <port|url>      # Connect to browser via CDP
 agent-browser stream enable [--port <port>]  # Start runtime WebSocket streaming
@@ -79,6 +82,20 @@ agent-browser read https://example.com/article --json
 `read` fetches a URL without launching Chrome. Omit the URL to read the rendered DOM of the active tab in the current browser session, including browser auth state and client-side updates. Explicit URL reads send `Accept: text/markdown` by default, try the same URL with `.md` appended when the first response is not markdown, walk ancestor paths toward `/` to find the nearest `llms.txt` for a matching docs link, print markdown or plain text when available, and fall back to readable text extracted from HTML. `--llms` and `--require-md` with no URL use the active tab URL because they depend on HTTP resources. `read` does not read `llms-full.txt` unless you ask for it.
 
 Options: `--raw` prints the response body without HTML extraction, `--require-md` fails unless the server returns `Content-Type: text/markdown`, `--outline` prints a compact heading outline for one page, `--llms index` prints a compact nearest-ancestor `llms.txt` link list, `--llms full` reads the nearest-ancestor `llms-full.txt`, `--filter <text>` narrows page sections, llms links/sections, or outline headings, and `--timeout <ms>` changes the request timeout. Global safeguards such as `--allowed-domains`, `--content-boundaries`, and `--max-output` also apply to read fetches and output.
+
+## Structured page inspection (Camoufox)
+
+```bash
+agent-browser page-outline [selector]
+agent-browser page-links [selector] [--cursor <cursor>] [--limit <1-200>]
+agent-browser dom-chunk [selector] [--cursor <cursor>] [--limit <1-500>]
+agent-browser get html "html"
+agent-browser click "xpath=//button[@type='submit']"
+```
+
+Use `page-outline` as a bounded DOM-derived map of headings, landmark-like regions, and element counts. `page-links` takes one native accessibility snapshot and returns actionable refs, accessible text, resolved URLs, and nearest heading context. `dom-chunk` returns structured element records in DOM preorder with document-scoped actionable `@dN` refs. Each command operates only in the selected frame, and an explicit root must match exactly one element there. Select an iframe before inspecting its links or DOM. For both paginated commands, pass a selector only on the first call and then follow the opaque `nextCursor`; omit `limit` on continuations or keep it unchanged. A changed document makes a DOM cursor stale; navigation, frame changes, snapshots, and mutating actions invalidate `@dN` refs. The DOM inventory exposes at most 50000 addressable elements and reports `omittedNodes` when the document is larger.
+
+Selectors can be observation refs, direct CSS, or XPath prefixed with `xpath=`. `get html "html"` returns the whole document element's inner HTML, but raw strings remain subject to the backend output ceiling. Prefer structured pagination over a large HTML dump.
 
 ## Check state
 

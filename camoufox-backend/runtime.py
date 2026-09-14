@@ -4,10 +4,13 @@ import asyncio
 import json
 import re
 import struct
+import sys
+import threading
 import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
+from urllib.parse import urljoin
 
 import input_context as ic
 from input_context import (
@@ -29,9 +32,294 @@ from input_context import (
     iso_now,
     json_safe,
 )
+from browser_inspector import BrowserInspector
+from har_capture import HarCapture
+from interaction_events import InteractionEvents
+from network_observer import NetworkObserver
+from network_control import NetworkControl
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 REF_TOKEN_RE = re.compile(r"\[ref=((?:f\d+)?e\d+)\]")
+HEADING_LEVEL_ANNOTATION_RE = re.compile(r"\[level=(\d+)\]")
+MAIN_FALLBACK_SELECTOR = "main"
+OUTLINE_HEADING_LIMIT = 500
+OUTLINE_LANDMARK_LIMIT = 200
+LANDMARK_ROLES = (
+    "banner", "complementary", "contentinfo", "form", "main",
+    "navigation", "region", "search",
+)
+IMPLICIT_LANDMARK_TAGS: Dict[str, str] = {
+    "header": "banner",
+    "nav": "navigation",
+    "main": "main",
+    "aside": "complementary",
+    "footer": "contentinfo",
+}
+INTERACTIVE_TAGS = frozenset({
+    "a", "button", "details", "embed", "iframe", "input", "label",
+    "meter", "object", "output", "progress", "select", "textarea",
+})
+INTERACTIVE_ROLES = frozenset({
+    "button", "checkbox", "columnheader", "combobox", "grid", "gridcell", "link",
+    "listbox", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio",
+    "option", "progressbar", "radio", "radiogroup", "rowheader", "scrollbar",
+    "searchbox", "slider", "spinbutton", "switch", "tab", "tablist", "textbox",
+    "timer", "toolbar", "tree", "treegrid", "treeitem",
+})
+PAGE_INVENTORY_CACHE_LIMIT = 4
+LINKS_CURSOR_PREFIX = "l"
+DOM_CURSOR_PREFIX = "d"
+DOM_NODE_TEXT_LIMIT = 500
+DOM_ATTRIBUTE_LIMIT = 30
+DOM_ATTRIBUTE_VALUE_LIMIT = 500
+DOM_IDENTIFIER_LIMIT = 500
+DOM_INVENTORY_NODE_LIMIT = 50_000
+DOM_RESPONSE_TARGET_BYTES = 8 * 1024 * 1024
+PAGE_LINK_FIELD_LIMIT = 2_048
+_OUTLINE_SCRIPT = """
+(root) => {
+  const LANDMARK_ROLES = new Set(%s);
+  const IMPLICIT_LANDMARK_TAGS = new Map(%s);
+  const INTERACTIVE_TAGS = new Set(%s);
+  const INTERACTIVE_ROLES = new Set(%s);
+  const HEADING_LIMIT = %d;
+  const LANDMARK_LIMIT = %d;
+  const TEXT_LIMIT = 200;
+  const IDENTIFIER_LIMIT = %d;
+  const headings = [];
+  const landmarks = [];
+  const counts = { links: 0, forms: 0, interactive: 0 };
+  let omittedHeadings = 0;
+  let omittedLandmarks = 0;
+  const boundedText = (value) => {
+    const text = (value || '').trim();
+    return { text: text.slice(0, TEXT_LIMIT), textTruncated: text.length > TEXT_LIMIT };
+  };
+  const boundedId = (element) => ({
+    id: element.id ? element.id.slice(0, IDENTIFIER_LIMIT) : null,
+    idTruncated: element.id.length > IDENTIFIER_LIMIT,
+  });
+  const stack = [root];
+  while (stack.length) {
+    const element = stack.pop();
+    const tag = (element.tagName || '').toLowerCase();
+    const role = element.getAttribute && element.getAttribute('role');
+    const normalizedRole = role ? role.trim().toLowerCase().split(/\\s+/)[0] : '';
+    const landmarkRole = normalizedRole || (IMPLICIT_LANDMARK_TAGS.get(tag) || '');
+    if (/^h[1-6]$/.test(tag) || normalizedRole === 'heading') {
+      const explicitLevel = Number.parseInt(element.getAttribute('aria-level') || '', 10);
+      const level = /^h[1-6]$/.test(tag) ? Number.parseInt(tag[1], 10)
+        : (explicitLevel >= 1 && explicitLevel <= 6 ? explicitLevel : 2);
+      if (headings.length < HEADING_LIMIT) {
+        headings.push({ level, ...boundedText(element.textContent), ...boundedId(element) });
+      } else {
+        omittedHeadings += 1;
+      }
+    }
+    if (landmarkRole && LANDMARK_ROLES.has(landmarkRole)) {
+      if (landmarks.length < LANDMARK_LIMIT) {
+        landmarks.push({
+          role: landmarkRole,
+          ...boundedText(element.getAttribute('aria-label') || element.textContent),
+          ...boundedId(element),
+        });
+      } else {
+        omittedLandmarks += 1;
+      }
+    }
+    if (tag === 'a') counts.links += 1;
+    if (tag === 'form') counts.forms += 1;
+    if (INTERACTIVE_TAGS.has(tag) || (normalizedRole && INTERACTIVE_ROLES.has(normalizedRole))) {
+      counts.interactive += 1;
+    }
+    const children = element.children || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push(children[index]);
+    }
+  }
+  return {
+    rootTag: (root.tagName || '').toLowerCase().slice(0, IDENTIFIER_LIMIT),
+    rootTagTruncated: (root.tagName || '').length > IDENTIFIER_LIMIT,
+    rootId: root.id ? root.id.slice(0, IDENTIFIER_LIMIT) : null,
+    rootIdTruncated: root.id.length > IDENTIFIER_LIMIT,
+    headings,
+    landmarks,
+    counts,
+    omittedHeadings,
+    omittedLandmarks,
+  };
+}
+""" % (
+    json.dumps(sorted(LANDMARK_ROLES)),
+    json.dumps(list(IMPLICIT_LANDMARK_TAGS.items())),
+    json.dumps(sorted(INTERACTIVE_TAGS)),
+    json.dumps(sorted(INTERACTIVE_ROLES)),
+    OUTLINE_HEADING_LIMIT,
+    OUTLINE_LANDMARK_LIMIT,
+    DOM_IDENTIFIER_LIMIT,
+)
+
+_DOM_CHUNK_SCRIPT = """
+(root, state) => {
+  const START = state.start;
+  const LIMIT = state.limit;
+  const INVENTORY_LIMIT = %d;
+  const TEXT_LIMIT = %d;
+  const ATTRIBUTE_LIMIT = %d;
+  const VALUE_LIMIT = %d;
+  const IDENTIFIER_LIMIT = %d;
+  const normalizedTag = (element) => (element.localName || element.tagName || '').toLowerCase();
+  const directText = (element) => {
+    let text = '';
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) text += ' ' + (node.nodeValue || '');
+    }
+    return text.replace(/\\s+/g, ' ').trim();
+  };
+  const escapeTag = (tag) => CSS.escape(tag);
+  const cssPath = (element) => {
+    const parts = [];
+    let current = element;
+    while (current && current.nodeType === Node.ELEMENT_NODE) {
+      const tag = normalizedTag(current);
+      if (!tag) return null;
+      let position = 1;
+      for (let sibling = current.previousElementSibling; sibling; sibling = sibling.previousElementSibling) {
+        if (normalizedTag(sibling) === tag) position += 1;
+      }
+      let parent = current.parentElement;
+      let separator = ' > ';
+      if (!parent) {
+        const treeRoot = current.getRootNode();
+        if (treeRoot && treeRoot.host) {
+          parent = treeRoot.host;
+          separator = ' ';
+        }
+      }
+      parts.unshift({ segment: escapeTag(tag) + ':nth-of-type(' + position + ')', separator });
+      current = parent;
+    }
+    if (!parts.length) return null;
+    let path = parts[0].segment;
+    for (let index = 1; index < parts.length; index += 1) {
+      path += parts[index].separator + parts[index].segment;
+    }
+    return path;
+  };
+  let hash = 2166136261;
+  const hashText = (value) => {
+    hash ^= value.length;
+    hash = Math.imul(hash, 16777619) >>> 0;
+    for (let index = 0; index < value.length; index += 1) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+  };
+  const fingerprintRoot = root.ownerDocument && root.ownerDocument.documentElement
+    ? root.ownerDocument.documentElement
+    : root;
+  const fingerprintStack = [fingerprintRoot];
+  while (fingerprintStack.length) {
+    const element = fingerprintStack.pop();
+    hashText(normalizedTag(element));
+    hashText(String(element.childElementCount));
+    const attributes = Array.from(element.attributes || [])
+      .map((attribute) => ({ name: attribute.name, value: attribute.value || '' }))
+      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const attribute of attributes) {
+      hashText(attribute.name);
+      hashText(attribute.value);
+    }
+    hashText(directText(element));
+    const children = element.children || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      fingerprintStack.push(children[index]);
+    }
+  }
+  let totalElements = 0;
+  const stack = [{ element: root, depth: 0, parentIndex: null }];
+  const nodes = [];
+  while (stack.length) {
+    const current = stack.pop();
+    const element = current.element;
+    const position = totalElements;
+    totalElements += 1;
+    if (position < INVENTORY_LIMIT && position >= START && nodes.length < LIMIT) {
+      const tag = normalizedTag(element);
+      const textValue = directText(element);
+      const allAttributes = Array.from(element.attributes || [])
+        .map((attribute) => ({ name: attribute.name, value: attribute.value || '' }))
+        .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+      const role = element.getAttribute('role');
+      const normalizedRole = role ? role.trim().toLowerCase().split(/\\s+/)[0] : '';
+      const textTruncated = textValue.length > TEXT_LIMIT;
+      const omittedAttributes = Math.max(0, allAttributes.length - ATTRIBUTE_LIMIT);
+      const attributes = allAttributes.slice(0, ATTRIBUTE_LIMIT).map((attribute) => ({
+        name: attribute.name.slice(0, IDENTIFIER_LIMIT),
+        nameTruncated: attribute.name.length > IDENTIFIER_LIMIT,
+        value: attribute.value.slice(0, VALUE_LIMIT),
+        valueTruncated: attribute.value.length > VALUE_LIMIT,
+      }));
+      nodes.push({
+        ref: 'd' + (position + 1),
+        parentRef: current.parentIndex === null ? null : 'd' + (current.parentIndex + 1),
+        depth: current.depth,
+        tag: tag.slice(0, IDENTIFIER_LIMIT),
+        tagTruncated: tag.length > IDENTIFIER_LIMIT,
+        id: element.id ? element.id.slice(0, IDENTIFIER_LIMIT) : null,
+        idTruncated: element.id.length > IDENTIFIER_LIMIT,
+        role: normalizedRole ? normalizedRole.slice(0, IDENTIFIER_LIMIT) : null,
+        roleTruncated: normalizedRole.length > IDENTIFIER_LIMIT,
+        text: textValue.slice(0, TEXT_LIMIT),
+        textTruncated,
+        attributes,
+        omittedAttributes,
+        childElementCount: element.childElementCount,
+        cssPath: cssPath(element),
+      });
+    }
+    const children = element.children || [];
+    for (let index = children.length - 1; index >= 0; index -= 1) {
+      stack.push({ element: children[index], depth: current.depth + 1, parentIndex: position });
+    }
+  }
+  const total = Math.min(totalElements, INVENTORY_LIMIT);
+  return {
+    nodes,
+    total,
+    totalElements,
+    omittedNodes: Math.max(0, totalElements - INVENTORY_LIMIT),
+    truncated: totalElements > INVENTORY_LIMIT,
+    rootCss: cssPath(root),
+    fingerprint: totalElements + ':' + hash.toString(16).padStart(8, '0'),
+  };
+}
+""" % (
+    DOM_INVENTORY_NODE_LIMIT,
+    DOM_NODE_TEXT_LIMIT,
+    DOM_ATTRIBUTE_LIMIT,
+    DOM_ATTRIBUTE_VALUE_LIMIT,
+    DOM_IDENTIFIER_LIMIT,
+)
+
+def configure_macos_headed_worker(headless: bool) -> None:
+    """Keep the Python helper out of the Dock before Camoufox probes NSScreen."""
+    if headless or sys.platform != "darwin":
+        return
+    if threading.current_thread() is not threading.main_thread():
+        raise BackendError(
+            CODE_NOT_LAUNCHED,
+            "macOS headed worker activation policy must be configured on the main thread",
+        )
+
+    from AppKit import NSApplication, NSApplicationActivationPolicyAccessory
+
+    application = NSApplication.sharedApplication()
+    if not application.setActivationPolicy_(NSApplicationActivationPolicyAccessory):
+        raise BackendError(
+            CODE_NOT_LAUNCHED,
+            "macOS refused the Python worker's accessory activation policy; browser was not started",
+        )
 
 
 def png_dimensions(data: bytes) -> Optional[Tuple[int, int]]:
@@ -41,6 +329,18 @@ def png_dimensions(data: bytes) -> Optional[Tuple[int, int]]:
     return int(width), int(height)
 
 
+def _absolute_url(base: str, url: str) -> str:
+    try:
+        return urljoin(base, url)
+    except ValueError:
+        return url
+
+
+def _clip_string(value: Any, limit: int) -> Tuple[str, bool]:
+    text = "" if value is None else str(value)
+    return text[:limit], len(text) > limit
+
+
 class Tab:
     def __init__(self, tab_id: str, page: Any, label: Optional[str] = None):
         self.tab_id = tab_id
@@ -48,7 +348,12 @@ class Tab:
         self.label = label
         self.refs: Set[str] = set()
         self.refs_meta: Dict[str, Dict[str, Any]] = {}
+        self.dom_refs: Dict[str, str] = {}
+        self.selected_frame: Optional[Any] = None
+        self.frame_ids: Dict[Any, str] = {}
+        self.next_frame_id = 1
         self.closed = False
+        self.inventory_caches: Dict[str, Dict[str, Any]] = {}
 
 
 class GestureContext:
@@ -57,6 +362,7 @@ class GestureContext:
         self.runtime = runtime
         self.page = page
         self.tab_id = tab.tab_id
+        self.frame_is_main = runtime.active_scope() is page.main_frame
         self.journal = runtime.journal
         self.captures = runtime.captures
         self.motion = runtime.motion
@@ -98,6 +404,9 @@ class GestureContext:
     def require_exposed_ref(self, ref: str) -> None:
         self.runtime.require_exposed_ref(ref)
 
+    def locator_scope(self, spec: TargetSpec) -> Tuple[Any, str]:
+        return self.runtime.locator_scope(spec)
+
     async def require_capture(self, capture_id: str) -> Dict[str, Any]:
         return await self.runtime.require_capture(capture_id)
 
@@ -121,6 +430,11 @@ class CamoufoxRuntime:
         self.humanize = MOTION_HUMANIZE[motion]
         self.captures = Captures()
         self.journal = InputJournal()
+        self.network = NetworkObserver(self)
+        self.har = HarCapture(self)
+        self.network_control = NetworkControl(self)
+        self.inspector = BrowserInspector(self)
+        self.interactions = InteractionEvents(self)
         self._camoufox: Any = None
         self.browser: Any = None
         self.context: Any = None
@@ -176,6 +490,8 @@ class CamoufoxRuntime:
             ) from exc
         self._closing = False
         try:
+            # Set AppKit policy on the main thread before launch_options probes displays in a thread.
+            configure_macos_headed_worker(headless)
             # Camoufox 0.5.6 resolves assets beside executable_path. macOS stores them in Resources.
             options = await asyncio.to_thread(
                 launch_options,
@@ -192,6 +508,8 @@ class CamoufoxRuntime:
             self.browser = browser
             self.context = await browser.new_context()
             self._close_reason = None
+            self.network.attach(self.context)
+            self.inspector.attach_context(self.context)
             browser.on("disconnected", self._on_browser_disconnected)
             self.context.on("close", self._on_context_closed)
             self.context.on("page", self._on_context_page)
@@ -253,8 +571,12 @@ class CamoufoxRuntime:
         self.active_id = None
         for tab in self.tabs.values():
             tab.closed = True
+            tab.selected_frame = None
+            tab.frame_ids.clear()
             tab.refs.clear()
             tab.refs_meta.clear()
+            tab.dom_refs.clear()
+            tab.inventory_caches.clear()
         self.captures.invalidate_all()
 
     def require_open_session(self) -> None:
@@ -297,6 +619,11 @@ class CamoufoxRuntime:
         if self._closing:
             return {"closed": True, "alreadyClosing": True}
         self._closing = True
+        self.har.reset()
+        self.network.reset()
+        self.network_control.reset()
+        self.inspector.reset()
+        await self.interactions.reset()
         try:
             await asyncio.wait_for(self.release_inputs(), timeout=2)
         except Exception:
@@ -358,7 +685,10 @@ class CamoufoxRuntime:
         tab = Tab(f"t{self._tab_counter}", page, label=label)
         self.tabs[tab.tab_id] = tab
         self._page_to_tab[id(page)] = tab.tab_id
+        self.inspector.attach_page(page, tab.tab_id)
+        self.interactions.attach_page(page, tab.tab_id)
         page.on("framenavigated", lambda _frame, tab_id=tab.tab_id: self._clear_refs(tab_id))
+        page.on("framedetached", lambda _frame, tab_id=tab.tab_id: self._clear_refs(tab_id))
         page.on("close", lambda closed_page, tab_id=tab.tab_id: self._on_page_closed(tab_id, closed_page))
         return tab
 
@@ -378,6 +708,10 @@ class CamoufoxRuntime:
         if page is not None and page is not tab.page:
             return
         tab.closed = True
+        tab.selected_frame = None
+        tab.frame_ids.clear()
+        self.inspector.detach_page(tab.page)
+        self.interactions.detach_page(tab.page)
         self.captures.invalidate_all()
         self._clear_refs(tab_id)
         if self.active_id == tab_id:
@@ -390,6 +724,15 @@ class CamoufoxRuntime:
             return
         tab.refs.clear()
         tab.refs_meta.clear()
+        tab.dom_refs.clear()
+        tab.inventory_caches.clear()
+
+    def clear_dom_refs(self) -> None:
+        tab = self.tabs.get(self.active_id) if self.active_id else None
+        if tab is None or tab.closed:
+            return
+        tab.dom_refs.clear()
+        tab.inventory_caches.clear()
 
     def find_tab(self, ident: Optional[str]) -> Optional[Tab]:
         if ident is None:
@@ -410,6 +753,10 @@ class CamoufoxRuntime:
         if not self._page_closed_evidence(tab.page):
             return False
         tab.closed = True
+        tab.selected_frame = None
+        tab.frame_ids.clear()
+        self.inspector.detach_page(tab.page)
+        self.interactions.detach_page(tab.page)
         self._clear_refs(tab.tab_id)
         if self.active_id == tab.tab_id:
             self.active_id = None
@@ -461,6 +808,73 @@ class CamoufoxRuntime:
     def page_waiter(self) -> Any:
         return self.active_page()
 
+    def active_scope(self) -> Any:
+        """Keep detached selection explicit; only frame main or a new selection may recover it."""
+        page, tab = self.require_active()
+        frame = tab.selected_frame
+        if frame is not None and frame.is_detached():
+            raise BackendError(CODE_INVALID, "selected frame is detached; use frame main or select an observed frame ID from tab list")
+        return frame if frame is not None else page.main_frame
+
+    def frame_metadata(self, tab: Tab) -> Dict[str, Any]:
+        page = tab.page
+        frames = list(page.frames)
+        tab.frame_ids = {frame: ident for frame, ident in tab.frame_ids.items() if frame in frames}
+        for frame in frames:
+            if frame is page.main_frame:
+                tab.frame_ids[frame] = "main"
+            elif frame not in tab.frame_ids:
+                tab.frame_ids[frame] = f"frame-{tab.next_frame_id}"
+                tab.next_frame_id += 1
+        selected = tab.selected_frame if tab.selected_frame is not None else page.main_frame
+        return {
+            "frames": [
+                {"frameId": tab.frame_ids[frame], "parentId": tab.frame_ids.get(frame.parent_frame),
+                 "name": frame.name[:4096], "url": frame.url[:4096], "main": frame is page.main_frame,
+                 "selected": frame is selected}
+                for frame in frames[:256]
+            ],
+            "framesOmitted": max(0, len(frames) - 256),
+            "selectedFrameDetached": selected.is_detached(),
+        }
+
+    def scope_metadata(self) -> Dict[str, Any]:
+        _page, tab = self.require_active()
+        frame = self.active_scope()
+        self.frame_metadata(tab)
+        return {"frameId": tab.frame_ids.get(frame), "frameUrl": frame.url}
+
+    async def switch_frame(self, selector: Optional[str]) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        if selector is None:
+            selected = None
+        elif re.fullmatch(r"frame-\d+", selector):
+            self.frame_metadata(tab)
+            selected = next((frame for frame, ident in tab.frame_ids.items() if ident == selector), None)
+            if selected is None:
+                raise BackendError(CODE_INVALID, "unknown frame ID for this tab; inspect tab list")
+        else:
+            spec = ic.parse_selector(selector, "selector")
+            scope, resolved = self.locator_scope(spec)
+            locator = scope.locator(resolved)
+            if await locator.count() != 1:
+                raise BackendError(CODE_INVALID, "frame selector must match exactly one iframe element")
+            handle = await locator.element_handle()
+            if handle is None:
+                raise BackendError(CODE_INVALID, "frame element no longer exists")
+            try:
+                selected = await handle.content_frame()
+            finally:
+                await handle.dispose()
+            if selected is None:
+                raise BackendError(CODE_INVALID, "selected element is not an iframe")
+        if selected is not None and (selected.is_detached() or selected not in page.frames):
+            raise BackendError(CODE_INVALID, "selected iframe is detached")
+        tab.selected_frame = selected
+        self._clear_refs(tab.tab_id)
+        self.captures.invalidate_all()
+        return {"tabId": tab.tab_id, **self.scope_metadata(), **self.frame_metadata(tab)}
+
     def page_url(self) -> str:
         return self.active_page().url
 
@@ -477,6 +891,7 @@ class CamoufoxRuntime:
                     "url": None if tab.closed else tab.page.url,
                     "active": tab.tab_id == self.active_id,
                     "closed": tab.closed,
+                    **({} if tab.closed else self.frame_metadata(tab)),
                 }
                 for tab in self.tabs.values()
             ],
@@ -527,6 +942,9 @@ class CamoufoxRuntime:
         except Exception as exc:
             raise BackendError(CODE_ERROR, f"failed to close tab: {type(exc).__name__}") from exc
         tab.closed = True
+        tab.selected_frame = None
+        tab.frame_ids.clear()
+        self._clear_refs(tab.tab_id)
         if was_active:
             self.active_id = None
         self.captures.invalidate_all()
@@ -563,28 +981,58 @@ class CamoufoxRuntime:
         return {"title": await page.title()}
 
     async def content(self) -> Dict[str, Any]:
-        page, _tab = self.require_active()
-        return {"content": await page.content()}
+        frame = self.active_scope()
+        return {"content": await frame.content(), **self.scope_metadata()}
 
     async def evaluate(self, script: str) -> Dict[str, Any]:
-        page, _tab = self.require_active()
+        """Use Camoufox's default isolated evaluation context, without opting into main-world eval."""
+        frame = self.active_scope()
         self.captures.invalidate_all()
-        result = await page.evaluate(script)
-        return {"result": json_safe(result)}
+        result = await frame.evaluate(script)
+        return {"result": json_safe(result), **self.scope_metadata()}
 
     async def read(self) -> Dict[str, Any]:
         page, _tab = self.require_active()
-        text = await page.evaluate("() => document.body ? (document.body.innerText || '') : ''")
-        return {"content": text, "url": page.url, "title": await page.title(), "source": "rendered"}
+        frame = self.active_scope()
+        text = await frame.evaluate("() => document.body ? (document.body.innerText || '') : ''")
+        return {"content": text, "url": page.url, "title": await frame.title(), "source": "rendered", **self.scope_metadata()}
 
     @staticmethod
     def extract_refs(snapshot_text: str) -> Dict[str, Dict[str, Any]]:
+        """Read native AI keys, not inline text; Playwright quotes YAML keys and JSON names separately."""
         refs: Dict[str, Dict[str, Any]] = {}
+        parents: List[Tuple[int, List[str]]] = []
+        heading_stack: List[Tuple[int, Dict[str, Any]]] = []
         for line in snapshot_text.splitlines():
             stripped = line.strip()
             if not stripped.startswith("- "):
                 continue
+            indent = len(line) - len(line.lstrip())
+            while parents and parents[-1][0] >= indent:
+                parents.pop()
             remainder = stripped[2:]
+            if remainder.startswith("/url: "):
+                if parents and parents[-1][0] + 2 == indent:
+                    value = remainder[6:]
+                    if value.startswith('"'):
+                        # YAML's hex escapes are not JSON escapes; preserve escaped backslashes.
+                        value = re.sub(r'\\(?:x([0-9a-fA-F]{2})|.)', lambda match: '\\u00' + match.group(1) if match.group(1) else match.group(0), value)
+                        try:
+                            value = json.loads(value)
+                        except ValueError:
+                            continue
+                    for ref in parents[-1][1]:
+                        if refs[ref]["role"] == "link":
+                            refs[ref]["url"] = value
+                            section = CamoufoxRuntime._nearest_heading(heading_stack)
+                            if section is not None:
+                                refs[ref]["section"] = section
+                continue
+            if remainder.startswith("'"):
+                quoted = re.match(r"^'((?:[^']|'')*)'(.*)$", remainder)
+                if quoted is None:
+                    continue
+                remainder = quoted.group(1).replace("''", "'") + quoted.group(2)
             role_match = re.match(r"[\w-]+", remainder)
             if role_match is None:
                 continue
@@ -598,13 +1046,31 @@ class CamoufoxRuntime:
                     continue
                 rest = rest[end:].lstrip()
             annotations = rest.split(":", 1)[0]
+            level_match = HEADING_LEVEL_ANNOTATION_RE.search(annotations)
+            heading_level = int(level_match.group(1)) if level_match else None
+            node_refs = []
             for match in REF_TOKEN_RE.finditer(annotations):
                 ref = match.group(1)
                 ref_match = ic.REF_NAME_RE.match(ref)
                 meta = {"role": role, "name": name}
                 meta["framePrefix"] = ref_match.group(1) if ref_match else None
                 refs[ref] = meta
+                node_refs.append(ref)
+            if role == "heading" and heading_level is not None and node_refs:
+                heading_stack.append(
+                    (heading_level, {"level": heading_level, "text": name or "", "ref": node_refs[0]})
+                )
+            parents.append((indent, node_refs))
         return refs
+
+    @staticmethod
+    def _nearest_heading(
+        heading_stack: List[Tuple[int, Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        if not heading_stack:
+            return None
+        heading = heading_stack[-1][1]
+        return {"level": heading["level"], "text": heading["text"], "ref": heading["ref"]}
 
     async def snapshot(
         self,
@@ -620,22 +1086,440 @@ class CamoufoxRuntime:
             spec = ic.parse_selector(selector, "selector")
             scope, resolved = self.locator_scope(spec)
             text = await scope.locator(resolved).aria_snapshot(**kwargs)
+        elif tab.selected_frame is not None:
+            text = await self.active_scope().locator(":root").aria_snapshot(**kwargs)
         else:
             text = await page.aria_snapshot(**kwargs)
         refs_meta = self.extract_refs(text)
         tab.refs = set(refs_meta.keys())
         tab.refs_meta = refs_meta
+        tab.dom_refs.clear()
+        tab.inventory_caches.clear()
         return {
             "snapshot": text,
             "refs": refs_meta,
             "refCount": len(refs_meta),
             "url": page.url,
             "tabId": tab.tab_id,
+            **self.scope_metadata(),
+            **self.frame_metadata(tab),
         }
+
+    def _page_cache_key(self) -> str:
+        page, tab = self.require_active()
+        frame = self.active_scope()
+        return f"{tab.tab_id}|{page.url}|{frame.url}"
+
+    def _prune_inventory_caches(self, tab: Tab) -> None:
+        while len(tab.inventory_caches) > PAGE_INVENTORY_CACHE_LIMIT:
+            oldest = min(
+                tab.inventory_caches.items(),
+                key=lambda item: item[1].get("_createdAt", 0.0),
+            )[0]
+            tab.inventory_caches.pop(oldest, None)
+
+    @staticmethod
+    def _issue_cursor(token: str, offset: int, prefix: str) -> str:
+        return f"{prefix}-{token}-{offset}"
+
+    def _resolve_cursor(
+        self,
+        value: Any,
+        cache: Optional[Dict[str, Any]],
+        prefix: str,
+        field_name: str,
+    ) -> int:
+        if not isinstance(value, str) or not value:
+            raise BackendError(
+                CODE_INVALID,
+                f"'{field_name}' must be the opaque nextCursor token issued by the previous page",
+            )
+        expected = f"{prefix}-"
+        if not value.startswith(expected):
+            raise BackendError(
+                CODE_INVALID,
+                f"'{field_name}' is not a valid {prefix} pagination cursor",
+            )
+        body = value[len(expected):]
+        token, _sep, offset_text = body.rpartition("-")
+        if not token or not offset_text or not offset_text.isdigit():
+            raise BackendError(CODE_INVALID, f"'{field_name}' is not a valid pagination cursor")
+        if cache is None:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"{field_name} is unknown, stale, or invalidated; take a fresh first page",
+            )
+        offsets = cache.get("cursors")
+        if token != cache.get("token") or not isinstance(offsets, dict) or value not in offsets:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"{field_name} was not issued for the current page state; take a fresh first page",
+            )
+        offset = offsets[value]
+        if not isinstance(offset, int) or offset < 0:
+            raise BackendError(CODE_STALE_REF, f"{field_name} is corrupt or invalid for this cache")
+        return offset
+
+    def _page_frame_metadata(self, page: Any, tab: Tab) -> Dict[str, Any]:
+        return {"url": page.url, "tabId": tab.tab_id, **self.scope_metadata()}
+
+    async def page_outline(self, selector: Optional[str]) -> Dict[str, Any]:
+        """Return a bounded structural summary for the selected document scope."""
+        page, tab = self.require_active()
+        frame = self.active_scope()
+        outline = await self._collect_outline(frame, selector)
+        return {**outline, **self._page_frame_metadata(page, tab)}
+
+    async def page_links(
+        self,
+        selector: Optional[str],
+        cursor: Optional[str],
+        limit: Optional[int],
+    ) -> Dict[str, Any]:
+        """Page through one ref-bearing native link inventory."""
+        page, tab = self.require_active()
+        page_key = self._page_cache_key()
+        cache = tab.inventory_caches.get(f"links:{page_key}")
+        if cursor is not None:
+            if selector is not None:
+                raise BackendError(CODE_INVALID, "selector cannot be combined with a continuation cursor")
+            start = self._resolve_cursor(cursor, cache, LINKS_CURSOR_PREFIX, "cursor")
+            page_size = cache.get("pageSize")
+            if not isinstance(page_size, int):
+                raise BackendError(CODE_STALE_REF, "cursor pagination state is invalid; take a fresh first page")
+            requested_size = ic.optional_int(limit, "limit", 1, 200)
+            if requested_size is not None and requested_size != page_size:
+                raise BackendError(CODE_INVALID, "limit cannot change while continuing a page-links inventory")
+            links = cache["links"]
+            snapshot_meta = {}
+        else:
+            page_size = ic.optional_int(limit, "limit", 1, 200, 50)
+            assert page_size is not None
+            refs_meta, snapshot_meta = await self._snapshot_for_links(selector)
+            links = self._build_link_inventory(refs_meta, self.active_scope().url)
+            token = uuid.uuid4().hex[:12]
+            cache = {
+                "token": token,
+                "links": links,
+                "pageSize": page_size,
+                "cursors": {},
+                "_createdAt": time.monotonic(),
+            }
+            tab.inventory_caches[f"links:{page_key}"] = cache
+            self._prune_inventory_caches(tab)
+            snapshot_meta = {"snapshotTaken": True, "refCount": len(refs_meta)}
+            start = 0
+        page_items = links[start:start + page_size]
+        done = start + len(page_items) >= len(links)
+        next_cursor = None
+        if not done:
+            next_offset = start + page_size
+            next_cursor = self._issue_cursor(cache["token"], next_offset, LINKS_CURSOR_PREFIX)
+            cache["cursors"][next_cursor] = next_offset
+        return {
+            "links": page_items,
+            "total": len(links),
+            "returned": len(page_items),
+            "done": done,
+            "pageVersion": cache["token"],
+            "nextCursor": next_cursor,
+            "url": page.url,
+            "tabId": tab.tab_id,
+            **snapshot_meta,
+            **self._page_frame_metadata(page, tab),
+        }
+
+    async def page_dom_chunk(
+        self,
+        selector: Optional[str],
+        cursor: Optional[str],
+        limit: Optional[int],
+    ) -> Dict[str, Any]:
+        """Page through structured DOM records with document-scoped refs."""
+        page, tab = self.require_active()
+        page_key = self._page_cache_key()
+        cache_key = f"dom:{page_key}"
+        limit_value = ic.optional_int(limit, "limit", 1, 500, 100)
+        assert limit_value is not None
+        if cursor is not None:
+            if selector is not None:
+                raise BackendError(CODE_INVALID, "selector cannot be combined with a continuation cursor")
+            cache = tab.inventory_caches.get(cache_key)
+            start = self._resolve_cursor(cursor, cache, DOM_CURSOR_PREFIX, "cursor")
+            root_css = cache.get("rootCss") if isinstance(cache, dict) else None
+            if not isinstance(root_css, str) or not root_css:
+                raise BackendError(
+                    CODE_STALE_REF,
+                    "the paginated root element no longer exists; take a fresh first page",
+                )
+            page_size = cache.get("pageSize")
+            if not isinstance(page_size, int):
+                raise BackendError(CODE_STALE_REF, "cursor pagination state is invalid; take a fresh first page")
+            requested_size = ic.optional_int(limit, "limit", 1, 500)
+            if requested_size is not None and requested_size != page_size:
+                raise BackendError(CODE_INVALID, "limit cannot change while continuing a dom-chunk inventory")
+            root_handle = await self._dom_root_handle_for_path(root_css)
+            try:
+                summary = await self._evaluate_dom_chunk(root_handle, start, page_size)
+            finally:
+                try:
+                    await root_handle.dispose()
+                except Exception:
+                    pass
+            if (
+                summary.get("rootCss") != cache.get("rootCss")
+                or summary.get("fingerprint") != cache.get("fingerprint")
+                or summary.get("totalElements") != cache.get("totalElements")
+                or summary.get("total") != cache.get("total")
+            ):
+                tab.dom_refs.clear()
+                tab.inventory_caches.pop(cache_key, None)
+                raise BackendError(
+                    CODE_STALE_REF,
+                    "cursor was issued for a document that changed; take a fresh first page",
+                )
+        else:
+            frame = self.active_scope()
+            root_handle = await self._page_root_handle(frame, selector)
+            tab.dom_refs.clear()
+            tab.inventory_caches.pop(cache_key, None)
+            try:
+                summary = await self._evaluate_dom_chunk(root_handle, 0, limit_value)
+            finally:
+                try:
+                    await root_handle.dispose()
+                except Exception:
+                    pass
+            root_css = summary.get("rootCss")
+            if not isinstance(root_css, str) or not root_css:
+                raise BackendError(
+                    CODE_INVALID,
+                    "the selected root cannot be assigned a stable document-scoped reference",
+                )
+            token = uuid.uuid4().hex[:12]
+            cache = {
+                "token": token,
+                "rootCss": root_css,
+                "fingerprint": summary["fingerprint"],
+                "totalElements": summary["totalElements"],
+                "total": summary["total"],
+                "pageSize": limit_value,
+                "cursors": {},
+                "_createdAt": time.monotonic(),
+            }
+            tab.inventory_caches[cache_key] = cache
+            self._prune_inventory_caches(tab)
+            start = 0
+        page_items = self._bounded_dom_records(summary["nodes"])
+        for record in page_items:
+            bare_ref = record["ref"]
+            css_path = record.pop("cssPath", None)
+            if not isinstance(css_path, str) or not css_path:
+                tab.dom_refs.clear()
+                tab.inventory_caches.pop(cache_key, None)
+                raise BackendError(
+                    CODE_STALE_REF,
+                    "a DOM node could not be assigned a stable reference; take a fresh first page",
+                )
+            tab.dom_refs[bare_ref] = css_path
+            record["ref"] = f"@{bare_ref}"
+            parent_ref = record.get("parentRef")
+            if parent_ref is not None:
+                record["parentRef"] = f"@{parent_ref}"
+        done = start + len(page_items) >= summary["total"]
+        next_cursor = None
+        if not done:
+            next_offset = start + len(page_items)
+            next_cursor = self._issue_cursor(cache["token"], next_offset, DOM_CURSOR_PREFIX)
+            cache["cursors"][next_cursor] = next_offset
+        return {
+            "nodes": page_items,
+            "total": summary["total"],
+            "totalElements": summary["totalElements"],
+            "returned": len(page_items),
+            "done": done,
+            "truncated": summary["truncated"],
+            "omittedNodes": summary["omittedNodes"],
+            "pageVersion": cache["token"],
+            "documentFingerprint": summary["fingerprint"],
+            "nextCursor": next_cursor,
+            "url": page.url,
+            "tabId": tab.tab_id,
+            **self._page_frame_metadata(page, tab),
+        }
+
+    async def _snapshot_for_links(
+        self, selector: Optional[str]
+    ) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Any]]:
+        page, tab = self.require_active()
+        kwargs: Dict[str, Any] = {"mode": "ai"}
+        if selector is not None:
+            frame = self.active_scope()
+            spec = ic.parse_selector(selector, "selector")
+            scope, resolved = self.locator_scope(spec)
+            locator = scope.locator(resolved)
+            count = await locator.count()
+            if count != 1:
+                raise BackendError(
+                    CODE_INVALID,
+                    f"selector must match exactly one element (matched {count})",
+                )
+            handle = await locator.element_handle()
+            if handle is None:
+                raise BackendError(CODE_INVALID, "selected page root no longer exists")
+            try:
+                owner_frame = await handle.owner_frame()
+            finally:
+                await handle.dispose()
+            if owner_frame is not frame:
+                raise BackendError(
+                    CODE_INVALID,
+                    "page inspection roots must belong to the selected frame; select that frame first",
+                )
+            text = await locator.aria_snapshot(**kwargs)
+        else:
+            frame = self.active_scope()
+            main_locator = frame.locator(MAIN_FALLBACK_SELECTOR)
+            if await main_locator.count() == 1:
+                text = await main_locator.aria_snapshot(**kwargs)
+            else:
+                text = await frame.locator(":root").aria_snapshot(**kwargs)
+        refs_meta = self.extract_refs(text)
+        tab.refs = set(refs_meta.keys())
+        tab.refs_meta = refs_meta
+        tab.dom_refs.clear()
+        tab.inventory_caches.clear()
+        return refs_meta, {"snapshotTaken": True, "refCount": len(refs_meta)}
+
+    def _build_link_inventory(
+        self, refs_meta: Dict[str, Dict[str, Any]], base_url: str
+    ) -> List[Dict[str, Any]]:
+        links: List[Dict[str, Any]] = []
+        for ref, meta in refs_meta.items():
+            if meta.get("role") != "link" or not meta.get("url"):
+                continue
+            raw_url = str(meta["url"])
+            absolute_url = _absolute_url(base_url, raw_url)
+            text, text_truncated = _clip_string(meta.get("name"), PAGE_LINK_FIELD_LIMIT)
+            raw_url_value, raw_url_truncated = _clip_string(raw_url, PAGE_LINK_FIELD_LIMIT)
+            url, url_truncated = _clip_string(absolute_url, PAGE_LINK_FIELD_LIMIT)
+            record: Dict[str, Any] = {
+                "ref": f"@{ref}",
+                "text": text,
+                "textTruncated": text_truncated,
+                "rawUrl": raw_url_value,
+                "rawUrlTruncated": raw_url_truncated,
+                "url": url,
+                "urlTruncated": url_truncated,
+            }
+            section = meta.get("section")
+            if section is not None:
+                section = dict(section)
+                section["ref"] = f"@{section['ref']}"
+                section["text"], section["textTruncated"] = _clip_string(
+                    section.get("text"), PAGE_LINK_FIELD_LIMIT
+                )
+                record["section"] = section
+            links.append(record)
+        return links
+
+    async def _collect_outline(self, frame: Any, selector: Optional[str]) -> Dict[str, Any]:
+        root_handle = await self._page_root_handle(frame, selector)
+        try:
+            return await frame.evaluate(_OUTLINE_SCRIPT, root_handle)
+        finally:
+            try:
+                await root_handle.dispose()
+            except Exception:
+                pass
+
+    async def _evaluate_dom_chunk(
+        self,
+        root_handle: Any,
+        start: int,
+        limit: int,
+    ) -> Dict[str, Any]:
+        try:
+            return await root_handle.evaluate(_DOM_CHUNK_SCRIPT, {"start": start, "limit": limit})
+        except Exception as exc:
+            raise BackendError(
+                CODE_STALE_REF,
+                "the paginated root element no longer exists; take a fresh first page",
+            ) from exc
+
+    @staticmethod
+    def _bounded_dom_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        bounded: List[Dict[str, Any]] = []
+        used = 2
+        for record in records:
+            estimate = dict(record)
+            estimate.pop("cssPath", None)
+            estimate["ref"] = f"@{record['ref']}"
+            if record.get("parentRef") is not None:
+                estimate["parentRef"] = f"@{record['parentRef']}"
+            encoded = json.dumps(estimate, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+            size = len(encoded) + 1
+            if bounded and used + size > DOM_RESPONSE_TARGET_BYTES:
+                break
+            bounded.append(record)
+            used += size
+        return bounded
+
+    async def _dom_root_handle_for_path(self, css_path: str) -> Any:
+        frame = self.active_scope()
+        locator = frame.locator(css_path)
+        count = await locator.count()
+        if count != 1:
+            raise BackendError(
+                CODE_STALE_REF,
+                "the paginated root element no longer exists; take a fresh first page",
+            )
+        handle = await locator.element_handle()
+        if handle is None:
+            raise BackendError(
+                CODE_STALE_REF,
+                "the paginated root element no longer exists; take a fresh first page",
+            )
+        return handle
+
+    async def _page_root_handle(self, frame: Any, selector: Optional[str]) -> Any:
+        if selector is not None:
+            spec = ic.parse_selector(selector, "selector")
+            scope, resolved = self.locator_scope(spec)
+            locator = scope.locator(resolved)
+            count = await locator.count()
+            if count != 1:
+                raise BackendError(
+                    CODE_INVALID,
+                    f"selector must match exactly one element (matched {count})",
+                )
+            handle = await locator.element_handle()
+            if handle is None:
+                raise BackendError(CODE_INVALID, "selected page root no longer exists")
+            owner_frame = await handle.owner_frame()
+            if owner_frame is not frame:
+                await handle.dispose()
+                raise BackendError(
+                    CODE_INVALID,
+                    "page inspection roots must belong to the selected frame; select that frame first",
+                )
+            return handle
+        main_locator = frame.locator(MAIN_FALLBACK_SELECTOR)
+        if await main_locator.count() == 1:
+            return await main_locator.element_handle()
+        return await frame.evaluate_handle("() => document.documentElement")
 
     def locator_scope(self, spec: TargetSpec) -> Tuple[Any, str]:
         page, tab = self.require_active()
         if spec.ref is not None:
+            if spec.dom_ref:
+                if spec.ref not in tab.dom_refs:
+                    raise BackendError(
+                        CODE_STALE_REF,
+                        f"ref '@{spec.ref}' is not an active DOM ref for tab {tab.tab_id}; "
+                        "it is stale or was not returned by the latest dom_chunk call",
+                    )
+                return self.active_scope(), tab.dom_refs[spec.ref]
             if spec.ref not in tab.refs:
                 raise BackendError(
                     CODE_STALE_REF,
@@ -645,10 +1529,18 @@ class CamoufoxRuntime:
             return page, f"aria-ref={spec.ref}"
         if spec.selector is None:
             raise BackendError(CODE_INVALID, "selector is required")
-        return page, spec.selector
+        return self.active_scope(), spec.selector
 
     def require_exposed_ref(self, ref: str) -> None:
         _page, tab = self.require_active()
+        if ref.startswith("d"):
+            if ref not in tab.dom_refs:
+                raise BackendError(
+                    CODE_STALE_REF,
+                    f"ref '@{ref}' is not an active DOM ref for tab {tab.tab_id}; "
+                    "take a fresh dom_chunk",
+                )
+            return
         if ref not in tab.refs:
             raise BackendError(
                 CODE_STALE_REF,
@@ -817,8 +1709,26 @@ class CamoufoxRuntime:
                 "actionDeadlineMs": ic.DEFAULT_ACTION_DEADLINE_MS,
                 "maxActionDeadlineMs": ic.MAX_ACTION_DEADLINE_MS,
                 "coordinates": True,
-                "iframes": "native aria-ref routing via prefixed refs (fNeN)",
+                "iframes": "tab-local frame IDs and explicit frame scope for DOM observations/CSS; page-wide native aria-ref routing (fNeN)",
+                "inspection": {
+                    "requests": True, "requestDetails": True, "console": True, "pageErrors": True,
+                    "cookies": True, "webStorage": True, "webSocketEvents": True,
+                    "harExport": "bounded diagnostic HAR 1.2",
+                    "workerVisibility": "active page/current-origin registrations only",
+                    "serviceWorkerNetwork": False, "workerDebugging": False, "browserProcessLogs": False,
+                },
+                "networkControl": {"routes": True, "headers": True, "offline": True, "domainContainment": False},
+                "interactionEvents": {
+                    "dialogs": "auto-dismiss; arm a single-use decision on the active tab before triggering input",
+                    "dialogArmTtlSeconds": 30,
+                    "downloads": "retained handles, explicit wait/save, atomic no-overwrite publication",
+                    "downloadRetentionLimit": 32,
+                    "downloadEventWaitMs": 10_000,
+                    "downloadScope": "active-tab",
+                },
             },
+            "networkControl": {"routeCount": len(self.network_control.rules), "lastError": self.network_control.last_error},
+            "harCapture": {"active": self.har.active, "pendingExport": self.har.pending},
             "runtimeDir": str(self.runtime_dir),
             "buildMetadata": pins,
         }

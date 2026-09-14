@@ -46,6 +46,8 @@ def resolved_target(ctx: Any, params: Dict[str, Any], field_name: str = "target"
 async def locator_for(ctx: Any, spec: TargetSpec) -> Tuple[Any, str]:
     if spec.kind != "selector" or spec.selector is None:
         raise BackendError(CODE_INVALID, "expected a selector target")
+    if hasattr(ctx, "locator_scope"):
+        return ctx.locator_scope(spec)
     if spec.ref is not None:
         ctx.require_exposed_ref(spec.ref)
         return ctx.page, f"aria-ref={spec.ref}"

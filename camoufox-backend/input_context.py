@@ -42,7 +42,7 @@ CODE_INTERNAL = "camoufox_internal_error"
 CLOSE_REASON_BROWSER_DISCONNECTED = "browser_disconnected"
 CLOSE_REASON_CONTEXT_CLOSED = "context_closed"
 
-REF_NAME_RE = re.compile(r"^(f\d+)?(e\d+)$")
+REF_NAME_RE = re.compile(r"^(?:(f\d+)?e\d+|d\d+)$")
 
 
 class BackendError(Exception):
@@ -182,6 +182,7 @@ class TargetSpec:
     selector: Optional[str] = None
     ref: Optional[str] = None
     frame_prefix: Optional[str] = None
+    dom_ref: bool = False
     x: Optional[float] = None
     y: Optional[float] = None
     capture_id: Optional[str] = None
@@ -195,11 +196,20 @@ def parse_selector(value: Any, field_name: str = "selector") -> TargetSpec:
         if not match:
             raise BackendError(
                 CODE_STALE_REF,
-                f"'{field_name}' is not a valid aria ref; expected @eN or @fNeN from the latest snapshot",
+                f"'{field_name}' is not a valid ref; expected @eN or @fNeN from a snapshot, or @dN from dom_chunk",
             )
-        return TargetSpec(kind="selector", selector=raw, ref=name, frame_prefix=match.group(1))
+        return TargetSpec(
+            kind="selector",
+            selector=raw,
+            ref=name,
+            frame_prefix=match.group(1),
+            dom_ref=name.startswith("d"),
+        )
     if "aria-ref=" in raw or "internal:" in raw or ">>" in raw:
-        raise BackendError(CODE_UNSUPPORTED, "use CSS selectors or an @ref from the latest snapshot, not internal selector engines")
+        raise BackendError(
+            CODE_UNSUPPORTED,
+            "use CSS, an xpath= selector, or an observed @ref, not internal selector engines",
+        )
     return TargetSpec(kind="selector", selector=raw)
 
 

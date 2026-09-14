@@ -5,10 +5,12 @@ import argparse
 import asyncio
 import json
 import os
+import re
 import signal
 import sys
 import threading
 import time
+import unicodedata
 from pathlib import Path
 from typing import Any, Awaitable, Dict, List, Optional, Tuple
 
@@ -133,26 +135,34 @@ BROWSER_ACTIONS = {
     "launch", "navigate", "back", "forward", "reload", "url", "title", "content",
     "evaluate", "read", "snapshot", "screenshot", "click", "dblclick", "fill",
     "type", "press", "hover", "focus", "check", "uncheck", "select", "drag",
-    "scroll", "wait", "waitforurl", "waitforloadstate", "waitforfunction",
-    "tab_new", "tab_list", "tab_switch", "tab_close",
-    "gettext", "getattribute", "inputvalue", "count", "boundingbox",
-    "isvisible", "isenabled", "ischecked",
+    "scroll", "scrollintoview", "wait", "waitforurl", "waitforloadstate", "waitforfunction",
+    "tab_new", "tab_list", "tab_switch", "tab_close", "frame", "mainframe",
+    "gettext", "getattribute", "innerhtml", "inputvalue", "count", "boundingbox",
+    "isvisible", "isenabled", "ischecked", "requests", "request_detail", "workers",
+    "console", "errors", "websockets", "cookies_get", "cookies_set", "cookies_clear",
+    "storage_get", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
+    "har_start", "har_stop", "dialog", "download", "waitfordownload", "downloads",
+    "page_outline", "page_links", "dom_chunk",
 }
 LOCAL_ACTIONS = {"gestures", "gesture", "session_info"}
 QUERY_ACTIONS = {
-    "gettext", "getattribute", "inputvalue", "count", "boundingbox",
+    "gettext", "getattribute", "innerhtml", "inputvalue", "count", "boundingbox",
     "isvisible", "isenabled", "ischecked",
 }
 MUTATING_ACTIONS = {
     "launch", "navigate", "back", "forward", "reload", "evaluate",
     "click", "dblclick", "fill", "type", "press", "hover", "focus",
-    "check", "uncheck", "select", "drag", "scroll",
+    "check", "uncheck", "select", "drag", "scroll", "scrollintoview",
     "tab_new", "tab_switch", "tab_close",
+    "cookies_set", "cookies_clear", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
+    "har_start", "har_stop", "dialog", "download", "waitfordownload",
 }
 
 ACTION_FIELDS = {
     "navigate": {"url", "waitUntil"},
     "evaluate": {"script"},
+    "frame": {"selector"},
+    "mainframe": set(),
     "snapshot": {"selector", "maxDepth", "interactive", "compact", "urls", "cursor"},
     "screenshot": {"path", "screenshotDir", "selector", "fullPage", "annotate", "format", "quality"},
     "click": {"selector", "target", "button", "count", "newTab"},
@@ -174,8 +184,34 @@ ACTION_FIELDS = {
     "getattribute": {"selector", "attribute"},
     "gestures": {"name"},
     "gesture": {"name", "params", "observe"},
+    "requests": {"clear", "filter", "type", "method", "status"},
+    "request_detail": {"requestId"},
+    "workers": set(),
+    "console": {"clear"},
+    "errors": {"clear"},
+    "websockets": {"clear", "filter"},
+    "cookies_get": {"urls"},
+    "cookies_set": {"cookies"},
+    "cookies_clear": set(),
+    "storage_get": {"type", "key"},
+    "storage_set": {"type", "key", "value"},
+    "storage_clear": {"type"},
+    "route": {"url", "abort", "response", "resourceType"},
+    "unroute": {"url"},
+    "headers": {"headers"},
+    "offline": {"offline"},
+    "credentials": {"username", "password"},
+    "har_start": {"content"},
+    "har_stop": {"path"},
+    "dialog": {"response", "promptText"},
+    "download": {"selector", "path"},
+    "waitfordownload": {"path", "timeout"},
+    "downloads": {"clear"},
+    "page_outline": {"selector"},
+    "page_links": {"selector", "cursor", "limit"},
+    "dom_chunk": {"selector", "cursor", "limit"},
 }
-for _action in QUERY_ACTIONS | {"focus", "check", "uncheck"}:
+for _action in QUERY_ACTIONS | {"focus", "check", "uncheck", "scrollintoview"}:
     ACTION_FIELDS.setdefault(_action, {"selector"})
 for _action in {"back", "forward", "reload", "url", "title", "content", "read", "tab_list", "session_info", "close"}:
     ACTION_FIELDS[_action] = set()
@@ -314,7 +350,8 @@ class Worker:
         try:
             data = await self.run_action(action, payload)
         except BackendError as exc:
-            if exc.deadline_exceeded or exc.code == CODE_TIMEOUT:
+            deadline_exceeded = exc.deadline_exceeded or exc.code == CODE_TIMEOUT
+            if deadline_exceeded:
                 await self._poison_after_timeout()
             if _is_playwright_target_closed(exc.__cause__):
                 exc = self._closed_target_error()
@@ -327,6 +364,8 @@ class Worker:
                 "error": exc.message,
                 "code": exc.code,
             }
+            if deadline_exceeded:
+                response["data"] = {"timeoutKind": "deadline"}
             if self.poisoned:
                 response["poisoned"] = True
             write_response(response)
@@ -335,28 +374,29 @@ class Worker:
             raise
         except asyncio.TimeoutError:
             await self._poison_after_timeout()
-            write_response(
-                {
-                    "id": request_id,
-                    "success": False,
-                    "error": "action exceeded its deadline",
-                    "code": CODE_TIMEOUT,
-                    "poisoned": True,
-                }
-            )
+            response = {
+                "id": request_id,
+                "success": False,
+                "error": "action exceeded its deadline",
+                "code": CODE_TIMEOUT,
+                "data": {"timeoutKind": "deadline"},
+            }
+            if self.poisoned:
+                response["poisoned"] = True
+            write_response(response)
             return None
         except Exception as exc:
             if _is_playwright_timeout(exc):
-                await self._poison_after_timeout()
-                write_response(
-                    {
-                        "id": request_id,
-                        "success": False,
-                        "error": "the requested wait timed out",
-                        "code": CODE_TIMEOUT,
-                        "poisoned": True,
-                    }
-                )
+                response = {
+                    "id": request_id,
+                    "success": False,
+                    "error": _playwright_error_text(action, exc, payload, timed_out=True),
+                    "code": CODE_TIMEOUT,
+                    "data": {"timeoutKind": "operation"},
+                }
+                if self.poisoned:
+                    response["poisoned"] = True
+                write_response(response)
                 return None
             if _is_playwright_target_closed(exc):
                 write_response(self._lifecycle_failure(request_id, self._closed_target_error()))
@@ -366,7 +406,7 @@ class Worker:
                     {
                         "id": request_id,
                         "success": False,
-                        "error": f"browser action failed: {type(exc).__name__}",
+                        "error": _playwright_error_text(action, exc, payload),
                         "code": CODE_ERROR,
                         "poisoned": True if self.poisoned else None,
                     }
@@ -462,6 +502,7 @@ class Worker:
             finally:
                 if mutating and self.runtime is not None:
                     self.runtime.captures.invalidate_all()
+                    self.runtime.clear_dom_refs()
         if action in LOCAL_ACTIONS:
             return await self.dispatch_local(action, payload)
         raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported by the camoufox backend")
@@ -509,6 +550,9 @@ class Worker:
 
     def _poison_failed_input(self, runtime, attempts_before: int, exc: BaseException,
                              pending: List[str], what: str) -> None:
+        """A completed Playwright timeout is recoverable after release; worker deadlines are not."""
+        if _is_playwright_timeout(exc) and not pending:
+            return
         if pending or _is_timeout_failure(exc) or self._input_attempted_since(runtime, attempts_before):
             self.poison(f"{what} failed with ambiguous input state")
 
@@ -516,6 +560,8 @@ class Worker:
         budget = _ActionBudget(self.deadline_ms)
         attempts_before = int(getattr(runtime, "_input_attempts", 0))
         context = runtime.GestureContextClass(runtime, max(1, budget.remaining_ms()))
+        if spec.name in {"drag", "hold", "path"} and not getattr(context, "frame_is_main", True):
+            raise BackendError(CODE_UNSUPPORTED, f"{spec.name} requires frame main; selected-frame targets are not supported")
         failed = False
         failure: Optional[BaseException] = None
         result: Any = None
@@ -703,10 +749,8 @@ class Worker:
             raise BackendError(CODE_UNSUPPORTED, "interactive filtering is not supported by the native AI snapshot")
         if optional_bool(payload.get("compact"), "compact", False):
             raise BackendError(CODE_UNSUPPORTED, "compact filtering is not supported by the native AI snapshot")
-        if optional_bool(payload.get("urls"), "urls", False):
-            raise BackendError(CODE_UNSUPPORTED, "snapshot URL annotations are not supported by the V1 camoufox backend")
-        if optional_bool(payload.get("cursor"), "cursor", False):
-            raise BackendError(CODE_UNSUPPORTED, "snapshot cursor markers are not supported by the V1 camoufox backend")
+        optional_bool(payload.get("urls"), "urls", False)
+        optional_bool(payload.get("cursor"), "cursor", False)
         return await runtime.snapshot(selector=selector, max_depth=max_depth)
 
     async def do_screenshot(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -750,6 +794,19 @@ class Worker:
         await self._guarded_input(runtime, self.deadline(scope.locator(resolved).fill(value)), mark=True, what="fill")
         return {"filled": len(value), "selector": selector}
 
+    async def do_download(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
+        selector = require_str(payload.get("selector"), "selector")
+        path = require_str(payload.get("path"), "path", max_len=4096)
+        click_result: Dict[str, Any] = {}
+
+        async def click_once() -> None:
+            click_result.update(await self.do_click(runtime, {"selector": selector}))
+
+        result = await runtime.interactions.from_click(path, click_once)
+        if "diagnostics" in click_result:
+            result["diagnostics"] = click_result["diagnostics"]
+        return result
+
     async def do_type(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
         selector = require_str(payload.get("selector"), "selector")
         text = require_str(payload.get("text"), "text", max_len=ic.MAX_TEXT_LENGTH, allow_empty=True)
@@ -782,7 +839,7 @@ class Worker:
         if selector is None and text is None:
             await asyncio.sleep(timeout_ms / 1000.0)
             return {"waited": "sleep", "timeout": timeout_ms}
-        page = runtime.active_page()
+        page = runtime.active_scope()
         if selector is not None:
             spec = ic.parse_selector(selector, "selector")
             scope, resolved = runtime.locator_scope(spec)
@@ -798,6 +855,8 @@ class Worker:
         locator = scope.locator(resolved)
         if action == "gettext":
             return {"text": await self.deadline(locator.inner_text())}
+        if action == "innerhtml":
+            return {"html": await self.deadline(locator.inner_html())}
         if action == "getattribute":
             attribute = require_str(payload.get("attribute"), "attribute")
             return {"attribute": attribute, "value": await self.deadline(locator.get_attribute(attribute))}
@@ -839,7 +898,34 @@ class Worker:
         if action == "tab_switch":
             return runtime.switch_tab(optional_str(payload.get("tabId"), "tabId"))
 
+        if action in ("console", "errors", "websockets"):
+            runtime.require_open_session()
+            return getattr(runtime.inspector, action)(payload)
+        if action in ("dialog", "downloads"):
+            runtime.require_open_session()
+            return getattr(runtime.interactions, action)(payload)
+        if action == "download":
+            return await self.do_download(runtime, payload)
+        if action == "waitfordownload":
+            return await runtime.interactions.wait_for_download(payload.get("path"), payload.get("timeout"))
+        if action in ("cookies_get", "cookies_set", "cookies_clear", "storage_get", "storage_set", "storage_clear"):
+            return await runtime.inspector.state(action, payload)
+        if action in ("route", "unroute", "headers", "offline", "credentials"):
+            return await runtime.network_control.dispatch(action, payload)
+        if action == "har_start":
+            return await runtime.har.start(payload.get("content"))
+        if action == "har_stop":
+            return await runtime.har.stop(payload.get("path"))
+        if action in ("requests", "request_detail"):
+            runtime.require_open_session()
+            if action == "requests":
+                return runtime.network.requests(payload)
+            return await runtime.network.request_detail(require_str(payload.get("requestId"), "requestId"))
+
         runtime.require_active()
+        if action == "workers":
+            from worker_visibility import inspect_workers
+            return await inspect_workers(runtime)
         if action == "navigate":
             url = require_str(payload.get("url"), "url", max_len=ic.MAX_SELECTOR_LENGTH)
             wait_until = optional_str(payload.get("waitUntil"), "waitUntil")
@@ -858,6 +944,10 @@ class Worker:
             return await runtime.current_title()
         if action == "content":
             return await runtime.content()
+        if action == "frame":
+            return await runtime.switch_frame(require_str(payload.get("selector"), "selector"))
+        if action == "mainframe":
+            return await runtime.switch_frame(None)
         if action == "evaluate":
             script = require_str(payload.get("script"), "script", max_len=1_000_000)
             return await runtime.evaluate(script)
@@ -930,6 +1020,16 @@ class Worker:
             return await self.do_gesture_call(runtime, "drag", payload)
         if action == "scroll":
             return await self.do_gesture_call(runtime, "scroll", payload)
+        if action == "scrollintoview":
+            selector = require_str(payload.get("selector"), "selector")
+            scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
+            await self._guarded_input(
+                runtime,
+                self.deadline(scope.locator(resolved).scroll_into_view_if_needed()),
+                mark=True,
+                what="scroll into view",
+            )
+            return {"scrolled": True, "selector": selector}
         if action == "wait":
             return await self.do_wait(runtime, payload)
         if action == "waitforurl":
@@ -950,10 +1050,23 @@ class Worker:
             expression = require_str(payload.get("expression"), "expression", max_len=1_000_000)
             timeout_ms = optional_int(payload.get("timeout"), "timeout", 0, ic.MAX_ACTION_DEADLINE_MS, 10_000)
             assert timeout_ms is not None
-            await self.deadline(runtime.page_waiter().wait_for_function(expression, timeout=timeout_ms))
+            await self.deadline(runtime.active_scope().wait_for_function(expression, timeout=timeout_ms))
             return {"waited": "function"}
         if action in QUERY_ACTIONS:
             return await self.do_query(runtime, action, payload)
+        if action == "page_outline":
+            selector = optional_str(payload.get("selector"), "selector")
+            return await runtime.page_outline(selector)
+        if action == "page_links":
+            selector = optional_str(payload.get("selector"), "selector")
+            cursor = optional_str(payload.get("cursor"), "cursor")
+            limit = optional_int(payload.get("limit"), "limit", 1, 200)
+            return await runtime.page_links(selector, cursor, limit)
+        if action == "dom_chunk":
+            selector = optional_str(payload.get("selector"), "selector")
+            cursor = optional_str(payload.get("cursor"), "cursor")
+            limit = optional_int(payload.get("limit"), "limit", 1, 500)
+            return await runtime.page_dom_chunk(selector, cursor, limit)
         raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported by the camoufox backend")
 
 
@@ -1005,6 +1118,110 @@ def _is_playwright_error(exc: BaseException) -> bool:
 
 def _is_playwright_target_closed(exc: Optional[BaseException]) -> bool:
     return exc is not None and type(exc).__name__ == "TargetClosedError" and _is_playwright_error(exc)
+
+
+_TERMINAL_CONTROL_CATEGORIES = ("Cc", "Cf", "Cs")
+_TERMINAL_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_ERROR_DIAGNOSTIC_MAX_CHARS = 2000
+_ERROR_DIAGNOSTIC_TRUNCATION = " [truncated]"
+_ERROR_DIAGNOSTIC_FALLBACK = "no diagnostic detail available"
+_REDACTED_PAYLOAD_FIELDS = ("text", "value", "values", "key", "script", "expression")
+_REDACTION_PLACEHOLDER = "[redacted]"
+
+
+def _strip_control_characters(text: str) -> str:
+    return "".join(
+        ch for ch in _TERMINAL_ESCAPE_RE.sub("", text)
+        if unicodedata.category(ch) not in _TERMINAL_CONTROL_CATEGORIES
+    )
+
+
+def _payload_redaction_literals(payload: Any) -> List[str]:
+    literals: List[str] = []
+    seen = set()
+
+    def add_value(value: str) -> None:
+        if not value or value in seen:
+            return
+        seen.add(value)
+        candidates = [value]
+        for escaped in (
+            json.dumps(value, ensure_ascii=False)[1:-1],
+            json.dumps(value, ensure_ascii=True)[1:-1],
+            repr(value)[1:-1],
+            value.encode("unicode_escape").decode("ascii"),
+            value.replace("\\", "\\\\").replace("'", "\\'"),
+            value.replace("\\", "\\\\").replace('"', '\\"'),
+        ):
+            if escaped not in candidates:
+                candidates.append(escaped)
+        literals.extend(candidates)
+
+    stack: List[Tuple[Any, bool]] = [(payload, False)]
+    while stack:
+        node, collect = stack.pop()
+        if isinstance(node, str):
+            if collect:
+                add_value(node)
+        elif isinstance(node, list):
+            for item in node:
+                stack.append((item, collect))
+        elif isinstance(node, dict):
+            for key, value in node.items():
+                matched = collect or (isinstance(key, str) and key in _REDACTED_PAYLOAD_FIELDS)
+                stack.append((value, matched))
+
+    return literals
+
+
+def _redact_payload_values(text: str, payload: Any) -> str:
+    literals = sorted(set(_payload_redaction_literals(payload)), key=len, reverse=True)
+    if not literals:
+        return text
+    patterns = []
+    for literal in literals:
+        if literal.isspace():
+            patterns.extend(re.escape(quote + literal + quote) for quote in ("'", '"', "`"))
+        elif len(literal) == 1:
+            patterns.append(r"(?<!\w)" + re.escape(literal) + r"(?!\w)")
+        else:
+            patterns.append(re.escape(literal))
+    return re.sub("|".join(patterns), lambda match: _REDACTION_PLACEHOLDER, text)
+
+
+def _playwright_error_diagnostic(exc: BaseException, payload: Any) -> str:
+    """Keep the browser reason, not call-log dumps; redact literal input/code before truncating."""
+    message = getattr(exc, "message", None)
+    if not isinstance(message, str) or not message.strip():
+        try:
+            message = str(exc)
+        except Exception:
+            message = ""
+    if not isinstance(message, str):
+        message = ""
+    message = _redact_payload_values(message, payload)
+    line = ""
+    for candidate in message.splitlines():
+        candidate = _strip_control_characters(candidate).strip()
+        if candidate:
+            line = candidate
+            break
+    if not line:
+        return _ERROR_DIAGNOSTIC_FALLBACK
+    if len(line) > _ERROR_DIAGNOSTIC_MAX_CHARS:
+        keep = _ERROR_DIAGNOSTIC_MAX_CHARS - len(_ERROR_DIAGNOSTIC_TRUNCATION)
+        line = line[:keep] + _ERROR_DIAGNOSTIC_TRUNCATION
+    return line
+
+
+def _playwright_error_text(action: str, exc: BaseException, payload: Any, *,
+                           timed_out: bool = False) -> str:
+    outcome = "timed out" if timed_out else "failed"
+    action = _strip_control_characters(action)
+    return (
+        f"browser action '{action}' {outcome}: "
+        f"{type(exc).__name__}: {_playwright_error_diagnostic(exc, payload)}"
+    )
 
 
 class LineAssembler:

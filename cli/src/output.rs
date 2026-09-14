@@ -504,8 +504,22 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             return;
         }
         if matches!(action, Some("gesture" | "gestures"))
+            || (action == Some("dialog") && data.get("armed").is_some())
             || (data.get("engine").and_then(Value::as_str) == Some("camoufox")
-                && matches!(action, Some("screenshot" | "session_info" | "tab_list" | "tab_new" | "tab_switch"))) {
+                && matches!(
+                    action,
+                    Some(
+                        "screenshot"
+                            | "session_info"
+                            | "tab_list"
+                            | "tab_new"
+                            | "tab_switch"
+                            | "page_outline"
+                            | "page_links"
+                            | "dom_chunk"
+                    )
+                ))
+        {
             let text = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
             println!("{}", format_with_boundaries(&text, boundary_origin(data), opts));
             return;
@@ -1524,6 +1538,10 @@ navigation output tells you to run `agent-browser webmcp list`.
 
 The `goto` and `navigate` aliases still require a URL.
 
+On macOS, headed Camoufox sets its Python helper to an accessory application
+before display detection, keeping the helper out of the Dock. The Camoufox
+browser remains headed; headless and non-macOS launches skip this setup.
+
 Global Options:
   --json               Output as JSON
   --session <name>     Use specific session
@@ -1639,6 +1657,69 @@ Examples:
   agent-browser read https://docs.example.com --llms full --filter auth
   agent-browser read docs.example.com/guide --require-md
   agent-browser read https://api.example.com/docs --headers '{"Authorization":"Bearer token"}'
+"##
+        }
+        "page-outline" => {
+            r##"
+agent-browser page-outline - Inspect page structure with Camoufox
+
+Usage: agent-browser page-outline [selector]
+
+Returns bounded DOM-derived heading and landmark-like records plus link, form,
+and interactive element counts for the selected frame. Without a selector, it
+uses the unique main element when present and otherwise the document root.
+An explicit root must match exactly one element in the selected frame.
+
+Selectors may be snapshot or DOM refs, CSS, or XPath prefixed with xpath=.
+
+Examples:
+  agent-browser page-outline
+  agent-browser page-outline "#article"
+  agent-browser page-outline "xpath=//main"
+"##
+        }
+        "page-links" => {
+            r##"
+agent-browser page-links - Inspect links with Camoufox
+
+Usage: agent-browser page-links [selector] [--cursor <cursor>] [--limit <1-200>]
+
+Takes one native accessibility snapshot and returns a cursor-paginated link
+inventory with actionable refs, accessible text, URLs, and nearest heading
+context. It inspects only the selected frame, so select an iframe first when
+needed. Pass a selector only on the first page, then follow nextCursor.
+
+Options:
+  --cursor <cursor>    Continue with an opaque nextCursor
+  --limit <count>      Return 1 to 200 links (default: 50; fixed per inventory)
+
+Examples:
+  agent-browser page-links
+  agent-browser page-links "#article" --limit 100
+  agent-browser page-links --cursor "$NEXT_CURSOR" --limit 100
+"##
+        }
+        "dom-chunk" => {
+            r##"
+agent-browser dom-chunk - Inspect structured DOM chunks with Camoufox
+
+Usage: agent-browser dom-chunk [selector] [--cursor <cursor>] [--limit <1-500>]
+
+Returns cursor-paginated element records with document-scoped actionable @dN
+refs. Pass a selector only on the first chunk, then follow nextCursor. A changed
+document makes the cursor stale. Navigation, frame changes, snapshots, and
+mutating actions invalidate @dN refs. It inspects only the selected frame, so
+select an iframe first when needed.
+
+Options:
+  --cursor <cursor>    Continue with an opaque nextCursor
+  --limit <count>      Return 1 to 500 elements (default: 100; fixed per inventory)
+
+Examples:
+  agent-browser dom-chunk
+  agent-browser dom-chunk "#article-content" --limit 200
+  agent-browser dom-chunk --cursor "$NEXT_CURSOR"
+  agent-browser get html @d12
 "##
         }
 
@@ -2181,6 +2262,13 @@ Returns an accessibility tree representation of the page with element
 references (like @e1, @e2) that can be used in subsequent commands.
 Designed for AI agents to understand page structure.
 
+Camoufox: native AI output already includes URLs/cursor markers. No -i/-c
+filtering; --urls/--cursor are redundant compatibility requests. Scoped and
+full snapshots replace exposed refs, including refs in YAML-quoted names.
+Navigation/frame detachment clears refs; DOM-only changes may fail natively.
+Use DOM queries for omitted nodes; raw link URLs appear in JSON refs metadata.
+Depth is 0–100, with zero meaning unlimited. Snapshot follows selected frame.
+
 Options:
   -i, --interactive    Only include interactive elements
   -u, --urls           Include href URLs for link elements
@@ -2472,6 +2560,9 @@ Subcommands:
     --method <method>        Filter by HTTP method (GET, POST, etc.)
     --status <code>          Filter by status (200, 2xx, 400-499)
   request <requestId>        View full request/response detail (including body)
+  websockets [options]       Camoufox WebSocket events (--clear, --filter <URL>)
+  workers                   Camoufox page workers and current-origin SW registrations
+  downloads [--clear]       Camoufox download metadata (clear does not delete files)
   har <start|stop> [path]    Record and export a HAR file
     --content <mode>         Response bodies to embed on start: text (default), all, none
 
@@ -2492,6 +2583,13 @@ Examples:
   agent-browser network har start
   agent-browser network har start --content all
   agent-browser network har stop ./capture.har
+
+Camoufox inspection is bounded and context-wide. Use --json to see tab IDs,
+dropped/omitted counts, and unavailable/truncated data. Request details, logs,
+cookies, storage and HAR files can contain credentials or personal data.
+Worker enumeration is not service-worker traffic interception or CDP debugging.
+Camoufox HAR reads bodies at stop; navigation can make them unavailable.
+Required timing zeros can be placeholders; inspect _agentBrowser timing markers.
 "##
         }
 
@@ -2663,6 +2761,14 @@ Usage: agent-browser frame <selector|main>
 
 Switch to an iframe or back to the main frame.
 
+Camoufox also accepts observed tab-local frame-N IDs from tab/snapshot metadata
+and exposed iframe refs. CSS selectors are relative to selected scope. Nested
+and cross-origin frames are supported. Switching clears refs/captures. Detached
+selection fails explicitly; frame main recovers without a browser restart.
+DOM/CSS, read/eval/snapshots and text/function waits follow selected scope.
+Navigation/title/URL/load waits, inspection and screenshots stay top-level.
+Advanced drag/hold/path require main-frame scope.
+
 Arguments:
   <selector>           CSS selector for iframe
   main                 Switch back to main frame
@@ -2767,6 +2873,11 @@ Operations:
   accept [text]        Accept dialog, optionally with prompt text
   dismiss              Dismiss/cancel dialog
   status               Check if a dialog is currently open
+
+Camoufox: accept/dismiss arms one active-tab decision before the triggering
+action, expires in 30 seconds, and clears on navigation/tab close. Unarmed
+dialogs are dismissed automatically. Status reports observed/armed state;
+this backend cannot take over a pending dialog.
 
 Global Options:
   --json               Output as JSON
@@ -3603,6 +3714,12 @@ without Chrome fallback. Camoufox timeoutMs must be at least 30000.
 MCP snapshots default to interactive=false for Camoufox; explicit true is rejected.
 Retrieve the skill with agent_browser_skills_get using names: ["camoufox"].
 Unexpected Camoufox worker import errors identify the missing module.
+Playwright failures include the action, exception class, and a bounded reason.
+Literal submitted text/code values are redacted; call logs are omitted.
+MCP text includes camoufox_ error codes and plain-language recovery guidance.
+Completed Playwright timeouts report data.timeoutKind=operation without poisoning
+when input cleanup succeeds. Inspect the current page; do not automatically replay.
+Worker deadline timeouts report data.timeoutKind=deadline and still require close.
 Gesture helper imports do not take precedence over installed Python packages.
 Gesture bounds measure the rendered viewport without forcing a fixed browser size.
 Each tool also accepts extraArgs for advanced CLI flags and exact CLI parity.
@@ -3790,6 +3907,9 @@ Core Commands:
   screenshot [path]          Take screenshot
   pdf <path>                 Save as PDF
   snapshot                   Accessibility tree with refs (for AI)
+  page-outline [sel]         Structured headings and landmarks (Camoufox)
+  page-links [sel]           Paginated actionable links (Camoufox)
+  dom-chunk [sel]            Paginated DOM with @dN refs (Camoufox)
   eval <js>                  Run JavaScript
   connect <port|url>         Connect to browser via CDP
   close [--all]              Close browser (--all closes every session)
@@ -4134,13 +4254,26 @@ Install:
 
 Camoufox V1 (macOS/Linux only):
   Load skills get camoufox. Use snapshot without -i/-c and viewport PNG captures.
+  Native snapshots include URLs/cursors; each snapshot replaces exposed refs.
+  Core MCP includes HTML/attribute/value/count/box/state queries and reveal.
+  tabs MCP includes explicit frame scope from observed IDs/selectors/refs.
+  CSS pierces open shadow roots; eval must traverse them. Closed roots unavailable.
+  DOM/eval responses have a 16 MiB limit; narrow or explicitly slice large results.
+  Camoufox MCP hides unsupported tools/options and rejects engine overrides.
+  V1 names the private protocol/runtime namespace, not an older tool catalog.
+  network requests/request exposes metadata and on-demand headers/bodies.
+  network websockets/workers adds bounded event and worker visibility.
   No CDP, profiles/restore/auth, domain containment, launch plugins, or mobile.
   Generic gestures cannot run under action policies/confirm-actions.
   session info --json reports browserConnected, recoveryRequired, and closeReason.
   A closed active tab needs tab <id> or tab new, not a browser restart.
   camoufox_session_closed needs explicit close then open of the affected session.
   camoufox_target_closed has unconfirmed scope; inspect session info and tab list.
-  Never replay timed-out or ambiguous input; close and inspect before continuing.
+  Playwright errors retain a bounded browser reason with literal input redacted.
+  Playwright operation timeouts do not require close when input cleanup succeeds.
+  JSON data.timeoutKind distinguishes operation from worker deadline timeouts.
+  Inspect before further input; never automatically replay a timed-out action.
+  Poisoned input, worker deadlines, and ambiguous transport still require close.
 
 Examples:
   agent-browser open example.com

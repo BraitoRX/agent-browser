@@ -66,11 +66,27 @@ class FakeContext:
         self.emit("close", self)
 
 
+class FakeFrame:
+    def __init__(self, page):
+        self.page = page
+        self.parent_frame = None
+        self.name = ""
+
+    @property
+    def url(self):
+        return self.page.url
+
+    def is_detached(self):
+        return False
+
+
 class FakePage:
     def __init__(self):
         self._closed = False
         self.handlers = {}
         self.url = "about:blank"
+        self.main_frame = FakeFrame(self)
+        self.frames = [self.main_frame]
 
     def on(self, event, handler):
         self.handlers.setdefault(event, []).append(handler)

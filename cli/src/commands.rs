@@ -99,6 +99,9 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "forward"
             | "reload"
             | "read"
+            | "page-outline"
+            | "page-links"
+            | "dom-chunk"
             | "click"
             | "dblclick"
             | "fill"
@@ -447,6 +450,21 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         "forward" => Ok(json!({ "id": id, "action": "forward" })),
         "reload" => Ok(json!({ "id": id, "action": "reload" })),
         "read" => parse_read(&rest, &id, flags),
+        "page-outline" => parse_page_outline(&rest, &id),
+        "page-links" => parse_paginated_page_command(
+            &rest,
+            &id,
+            "page_links",
+            "page-links [selector] [--cursor <cursor>] [--limit <1-200>]",
+            200,
+        ),
+        "dom-chunk" => parse_paginated_page_command(
+            &rest,
+            &id,
+            "dom_chunk",
+            "dom-chunk [selector] [--cursor <cursor>] [--limit <1-500>]",
+            500,
+        ),
         "gestures" => {
             if rest.len() > 1 || rest.first().is_some_and(|name| name.starts_with('-')) {
                 return Err(ParseError::InvalidValue { message: "Expected at most one gesture name".to_string(), usage: "gestures [name]" });
@@ -2275,6 +2293,109 @@ fn parse_gesture(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     Ok(json!({"id": id, "action": "gesture", "name": name, "params": params, "observe": observe.unwrap_or("none")}))
 }
 
+/// Parse the bounded Camoufox page outline command.
+fn parse_page_outline(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    if rest.len() > 1 || rest.first().is_some_and(|value| value.starts_with('-')) {
+        return Err(ParseError::InvalidValue {
+            message: "page-outline accepts at most one selector".to_string(),
+            usage: "page-outline [selector]",
+        });
+    }
+    let mut command = json!({"id": id, "action": "page_outline"});
+    if let Some(selector) = rest.first() {
+        command["selector"] = json!(selector);
+    }
+    Ok(command)
+}
+
+/// Parse cursor pagination shared by Camoufox link and DOM inventories.
+fn parse_paginated_page_command(
+    rest: &[&str],
+    id: &str,
+    action: &str,
+    usage: &'static str,
+    max_limit: u64,
+) -> Result<Value, ParseError> {
+    let mut command = json!({"id": id, "action": action});
+    let mut selector: Option<&str> = None;
+    let mut cursor: Option<&str> = None;
+    let mut limit_seen = false;
+    let mut index = 0;
+    while index < rest.len() {
+        match rest[index] {
+            "--cursor" => {
+                if cursor.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--cursor may be specified only once".to_string(),
+                        usage,
+                    });
+                }
+                cursor = Some(*rest.get(index + 1).ok_or_else(|| {
+                    ParseError::MissingArguments {
+                        context: format!("{} --cursor", action.replace('_', "-")),
+                        usage,
+                    }
+                })?);
+                index += 2;
+            }
+            "--limit" => {
+                if limit_seen {
+                    return Err(ParseError::InvalidValue {
+                        message: "--limit may be specified only once".to_string(),
+                        usage,
+                    });
+                }
+                let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+                    context: format!("{} --limit", action.replace('_', "-")),
+                    usage,
+                })?;
+                let limit = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--limit expects an integer, got '{}'", raw),
+                    usage,
+                })?;
+                if !(1..=max_limit).contains(&limit) {
+                    return Err(ParseError::InvalidValue {
+                        message: format!("--limit must be between 1 and {}", max_limit),
+                        usage,
+                    });
+                }
+                command["limit"] = json!(limit);
+                limit_seen = true;
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown option: {}", value),
+                    usage,
+                });
+            }
+            value => {
+                if selector.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "Expected at most one selector".to_string(),
+                        usage,
+                    });
+                }
+                selector = Some(value);
+                index += 1;
+            }
+        }
+    }
+    if selector.is_some() && cursor.is_some() {
+        return Err(ParseError::InvalidValue {
+            message: "selector cannot be combined with --cursor".to_string(),
+            usage,
+        });
+    }
+    if let Some(value) = selector {
+        command["selector"] = json!(value);
+    }
+    if let Some(value) = cursor {
+        command["cursor"] = json!(value);
+    }
+    Ok(command)
+}
+
 fn parse_read(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseError> {
     if flags.engine.as_deref() == Some("camoufox") {
         if !rest.is_empty() {
@@ -3320,9 +3441,38 @@ fn parse_set(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
 /// Parse network interception, request inspection, and HAR recording commands.
 fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
-    const VALID: &[&str] = &["route", "unroute", "requests", "request", "har"];
+    const VALID: &[&str] = &["route", "unroute", "requests", "request", "har", "websockets", "workers", "downloads"];
 
     match rest.first().copied() {
+        Some("downloads") if rest.len() == 1 || (rest.len() == 2 && rest[1] == "--clear") => {
+            Ok(json!({ "id": id, "action": "downloads", "clear": rest.len() == 2 }))
+        }
+        Some("workers") if rest.len() == 1 => {
+            Ok(json!({ "id": id, "action": "workers" }))
+        }
+        Some("websockets") => {
+            let mut cmd = json!({ "id": id, "action": "websockets", "clear": false });
+            let mut index = 1;
+            while index < rest.len() {
+                match rest[index] {
+                    "--clear" => cmd["clear"] = json!(true),
+                    "--filter" => {
+                        index += 1;
+                        let value = rest.get(index).ok_or_else(|| ParseError::MissingArguments {
+                            context: "network websockets --filter".to_string(),
+                            usage: "network websockets [--clear] [--filter <url-substring>]",
+                        })?;
+                        cmd["filter"] = json!(value);
+                    }
+                    _ => return Err(ParseError::InvalidValue {
+                        message: format!("Unknown websocket option '{}'", rest[index]),
+                        usage: "network websockets [--clear] [--filter <url-substring>]",
+                    }),
+                }
+                index += 1;
+            }
+            Ok(cmd)
+        }
         Some("route") => {
             let url = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
                 context: "network route".to_string(),
@@ -3428,7 +3578,7 @@ fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
         }),
         None => Err(ParseError::MissingArguments {
             context: "network".to_string(),
-            usage: "network <route|unroute|requests|request|har> [args...]",
+            usage: "network <route|unroute|requests|request|har|websockets|workers|downloads> [args...]",
         }),
     }
 }
@@ -4587,6 +4737,46 @@ mod tests {
         assert_eq!(cmd["tabId"], "select");
     }
 
+    #[test]
+    fn camoufox_page_inspection_commands_parse_canonical_actions() {
+        let outline = parse_command(&args("page-outline xpath=//main"), &default_flags()).unwrap();
+        assert_eq!(outline["action"], "page_outline");
+        assert_eq!(outline["selector"], "xpath=//main");
+
+        let links = parse_command(
+            &args("page-links #article --limit 75"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(links["action"], "page_links");
+        assert_eq!(links["selector"], "#article");
+        assert_eq!(links["limit"], 75);
+
+        let dom = parse_command(
+            &args("dom-chunk --cursor d-token-100 --limit 250"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(dom["action"], "dom_chunk");
+        assert_eq!(dom["cursor"], "d-token-100");
+        assert_eq!(dom["limit"], 250);
+    }
+
+    #[test]
+    fn camoufox_page_pagination_rejects_conflicts_and_bounds() {
+        let conflict = parse_command(
+            &args("page-links main --cursor l-token-50"),
+            &default_flags(),
+        );
+        assert!(matches!(conflict, Err(ParseError::InvalidValue { .. })));
+
+        let links_limit = parse_command(&args("page-links --limit 201"), &default_flags());
+        assert!(matches!(links_limit, Err(ParseError::InvalidValue { .. })));
+
+        let dom_limit = parse_command(&args("dom-chunk --limit 501"), &default_flags());
+        assert!(matches!(dom_limit, Err(ParseError::InvalidValue { .. })));
+    }
+
     // === Network ===
 
     #[test]
@@ -4682,6 +4872,59 @@ mod tests {
     fn test_network_request_detail_requires_id() {
         let result = parse_command(&args("network request"), &default_flags());
         assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
+    }
+
+    #[test]
+    fn camoufox_inspection_cli_network_actions_parse_canonical() {
+        let workers = parse_command(&args("network workers"), &default_flags()).unwrap();
+        assert_eq!(workers["action"], "workers");
+
+        let downloads = parse_command(&args("network downloads"), &default_flags()).unwrap();
+        assert_eq!(downloads["action"], "downloads");
+        assert_eq!(downloads["clear"], false);
+
+        let cleared =
+            parse_command(&args("network downloads --clear"), &default_flags()).unwrap();
+        assert_eq!(cleared["action"], "downloads");
+        assert_eq!(cleared["clear"], true);
+
+        let detail = parse_command(&args("network request n1"), &default_flags()).unwrap();
+        assert_eq!(detail["action"], "request_detail");
+        assert_eq!(detail["requestId"], "n1");
+
+        let status = parse_command(&args("dialog status"), &default_flags()).unwrap();
+        assert_eq!(status["action"], "dialog");
+        assert_eq!(status["response"], "status");
+    }
+
+    #[test]
+    fn camoufox_inspection_cli_websockets_parses_options() {
+        let cmd = parse_command(
+            &args("network websockets --clear --filter api"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "websockets");
+        assert_eq!(cmd["clear"], true);
+        assert_eq!(cmd["filter"], "api");
+
+        let result = parse_command(&args("network websockets --filter"), &default_flags());
+        assert!(matches!(result, Err(ParseError::MissingArguments { .. })));
+    }
+
+    #[test]
+    fn camoufox_inspection_har_start_and_stop_retain_payload_fields() {
+        let start = parse_command(
+            &args("network har start --content none"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(start["action"], "har_start");
+        assert_eq!(start["content"], "none");
+
+        let stop = parse_command(&args("network har stop out.har"), &default_flags()).unwrap();
+        assert_eq!(stop["action"], "har_stop");
+        assert_eq!(stop["path"], "out.har");
     }
 
     // === Screenshot ===
