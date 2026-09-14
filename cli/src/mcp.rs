@@ -4457,9 +4457,7 @@ fn response_text(value: &Value) -> Option<String> {
                     || value["data"]["poisoned"].as_bool() == Some(true)
                 {
                     text.push_str("\nInput outcome may be ambiguous; do not replay. Close the session and inspect application state before continuing.");
-                } else if code == "camoufox_timeout"
-                    && value["data"]["timeoutKind"].as_str() == Some("operation")
-                {
+                } else if code == "camoufox_timeout" {
                     text.push_str("\nThe browser is still available. Inspect the current page before continuing; do not automatically replay input.");
                 }
                 return Some(text);
@@ -5382,31 +5380,33 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_timeout_operation_preserves_cli_response_and_recovery_hint() {
-        let response = json!({
-            "success": false,
-            "code": "camoufox_timeout",
-            "error": "browser action 'hover' timed out: TimeoutError: target was not actionable",
-            "data": {"timeoutKind": "operation"}
-        });
-        let result = tool_result_from_run(CliRun {
-            exit_code: Some(1),
-            stdout: response.to_string(),
-            stderr: String::new(),
-        });
-        assert_eq!(result["isError"], true);
-        assert_eq!(result["structuredContent"]["response"], response);
-        let text = result["content"][0]["text"].as_str().unwrap();
-        assert!(text.starts_with("camoufox_timeout:"));
-        assert!(text.contains("The browser is still available"));
-        assert!(!text.contains("poison"));
-        assert!(text.contains("Inspect the current page"));
-        assert!(text.contains("do not automatically replay input"));
-        assert!(!text.contains("Close the session"));
+    fn camoufox_timeout_without_poisoning_preserves_cli_response_and_recovery_hint() {
+        for timeout_kind in ["operation", "deadline"] {
+            let response = json!({
+                "success": false,
+                "code": "camoufox_timeout",
+                "error": "browser action 'hover' timed out: TimeoutError: target was not actionable",
+                "data": {"timeoutKind": timeout_kind}
+            });
+            let result = tool_result_from_run(CliRun {
+                exit_code: Some(1),
+                stdout: response.to_string(),
+                stderr: String::new(),
+            });
+            assert_eq!(result["isError"], true);
+            assert_eq!(result["structuredContent"]["response"], response);
+            let text = result["content"][0]["text"].as_str().unwrap();
+            assert!(text.starts_with("camoufox_timeout:"));
+            assert!(text.contains("The browser is still available"));
+            assert!(!text.contains("poison"));
+            assert!(text.contains("Inspect the current page"));
+            assert!(text.contains("do not automatically replay input"));
+            assert!(!text.contains("Close the session"));
+        }
     }
 
     #[test]
-    fn camoufox_timeout_poisoning_overrides_operation_hint() {
+    fn camoufox_timeout_poisoning_overrides_the_recovery_hint() {
         for timeout_kind in ["operation", "deadline"] {
             for top_level in [true, false] {
                 let mut response = json!({

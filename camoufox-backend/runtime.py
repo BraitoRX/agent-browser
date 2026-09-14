@@ -507,6 +507,7 @@ class CamoufoxRuntime:
             browser = await instance.__aenter__()
             self.browser = browser
             self.context = await browser.new_context()
+            self._configure_default_timeout(self.context)
             self._close_reason = None
             self.network.attach(self.context)
             self.inspector.attach_context(self.context)
@@ -521,6 +522,23 @@ class CamoufoxRuntime:
             await self.close()
             raise
         return self.launch_info()
+
+    def _configure_default_timeout(self, context: Any) -> None:
+        """Keep Playwright's own waits inside the worker's per-action deadline.
+
+        Playwright defaults to a 30s timeout, which is longer than the worker's 22s
+        default deadline. A polling call (a locator read or wait for a missing element)
+        would then be cancelled by the worker's wait_for before Playwright can return
+        its own clean TimeoutError, turning an ordinary operation timeout into a
+        cancelled action. Set the context default below the deadline instead, so the
+        operation reports `data.timeoutKind: "operation"` and the session stays usable.
+        """
+        margin_ms = 1000
+        effective_ms = max(500, ic.action_deadline_ms() - margin_ms)
+        try:
+            context.set_default_timeout(effective_ms)
+        except Exception:
+            pass
 
     def _is_live(self) -> bool:
         self.sync_session_state()

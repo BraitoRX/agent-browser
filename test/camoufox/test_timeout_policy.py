@@ -25,6 +25,9 @@ class FakeLocator:
         self.scroll_calls += 1
         if self.failure == "resolve":
             raise PlaywrightTimeout("Timeout 10000ms exceeded waiting for target resolution")
+        if self.failure == "deadline_resolve":
+            raise BackendError(CODE_TIMEOUT, "scroll target into view exceeded the action deadline",
+                               deadline_exceeded=True)
         return None
 
     async def bounding_box(self, timeout=None):
@@ -120,6 +123,25 @@ class TimeoutPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], runtime.journal.pending_buttons())
         self.assertIn("timed out", response["error"])
 
+    async def test_gesture_worker_deadline_before_input_does_not_poison(self):
+        locator = FakeLocator(failure="deadline_resolve")
+        instance, runtime, _page, _tab = self.make_worker(locator=locator)
+        instance.load_gestures()
+
+        response = await self.request(instance, "hover", selector="#target")
+
+        self.assertFalse(response["success"])
+        self.assertEqual(CODE_TIMEOUT, response["code"])
+        self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+        self.assertNotIn("poisoned", response)
+        self.assertFalse(instance.poisoned)
+        self.assertEqual(0, runtime._input_attempts)
+        self.assertEqual([], runtime.journal.pending_buttons())
+        self.assertEqual([], runtime.journal.pending_keys())
+
+        followed = await self.request(instance, "url")
+        self.assertTrue(followed["success"])
+
     async def test_hover_timeout_after_input_mark_with_clean_release_does_not_poison(self):
         locator = FakeLocator(failure="hover")
         instance, runtime, _page, _tab = self.make_worker(locator=locator)
@@ -166,26 +188,87 @@ class TimeoutPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(diagnostics["success"])
         self.assertTrue(diagnostics["data"]["poisoned"])
 
-    async def test_action_deadline_still_poisons(self):
+    async def test_action_deadline_with_attempted_input_still_poisons(self):
+        instance, runtime, _page, _tab = self.make_worker()
+        error = BackendError(CODE_TIMEOUT, "action exceeded the 22000ms deadline", deadline_exceeded=True)
+
+        async def input_then_deadline(*args):
+            runtime._input_attempts += 1
+            raise error
+
+        with patch.object(instance, "run_action", new=AsyncMock(side_effect=input_then_deadline)):
+            response = await self.request(instance)
+
+        self.assertTrue(instance.poisoned)
+        self.assertTrue(response["poisoned"])
+        self.assertEqual(CODE_TIMEOUT, response["code"])
+        self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+
+    async def test_action_deadline_without_input_keeps_session_usable(self):
         instance, _runtime, _page, _tab = self.make_worker()
         error = BackendError(CODE_TIMEOUT, "action exceeded the 22000ms deadline", deadline_exceeded=True)
         with patch.object(instance, "run_action", new=AsyncMock(side_effect=error)):
             response = await self.request(instance)
 
-        self.assertTrue(instance.poisoned)
-        self.assertTrue(response["poisoned"])
+        self.assertFalse(instance.poisoned)
+        self.assertNotIn("poisoned", response)
         self.assertEqual(CODE_TIMEOUT, response["code"])
         self.assertEqual({"timeoutKind": "deadline"}, response["data"])
 
-    async def test_raw_asyncio_timeout_still_poisons(self):
-        instance, _runtime, _page, _tab = self.make_worker()
-        with patch.object(instance, "run_action", new=AsyncMock(side_effect=asyncio.TimeoutError())):
+        followed = await self.request(instance, "url")
+        self.assertTrue(followed["success"])
+
+    async def test_raw_asyncio_timeout_with_attempted_input_still_poisons(self):
+        instance, runtime, _page, _tab = self.make_worker()
+
+        async def input_then_deadline(*args):
+            runtime._input_attempts += 1
+            raise asyncio.TimeoutError()
+
+        with patch.object(instance, "run_action", new=AsyncMock(side_effect=input_then_deadline)):
             response = await self.request(instance)
 
         self.assertTrue(instance.poisoned)
         self.assertTrue(response["poisoned"])
         self.assertEqual(CODE_TIMEOUT, response["code"])
         self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+
+    async def test_raw_asyncio_timeout_without_input_keeps_session_usable(self):
+        instance, _runtime, _page, _tab = self.make_worker()
+        with patch.object(instance, "run_action", new=AsyncMock(side_effect=asyncio.TimeoutError())):
+            response = await self.request(instance)
+
+        self.assertFalse(instance.poisoned)
+        self.assertNotIn("poisoned", response)
+        self.assertEqual(CODE_TIMEOUT, response["code"])
+        self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+
+        followed = await self.request(instance, "url")
+        self.assertTrue(followed["success"])
+
+    async def test_launch_deadline_still_poisons(self):
+        instance, _runtime, _page, _tab = self.make_worker()
+        error = BackendError(CODE_TIMEOUT, "action exceeded the 22000ms deadline", deadline_exceeded=True)
+        with patch.object(instance, "run_action", new=AsyncMock(side_effect=error)):
+            response = await self.request(instance, "launch")
+
+        self.assertTrue(instance.poisoned)
+        self.assertTrue(response["poisoned"])
+        self.assertEqual(CODE_TIMEOUT, response["code"])
+        self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+        self.assertIn("launch", instance.poison_reason)
+
+    async def test_close_deadline_still_poisons(self):
+        instance, _runtime, _page, _tab = self.make_worker()
+        error = BackendError(CODE_TIMEOUT, "action exceeded the 22000ms deadline", deadline_exceeded=True)
+        with patch.object(instance, "run_action", new=AsyncMock(side_effect=error)):
+            response = await self.request(instance, "close")
+
+        self.assertTrue(instance.poisoned)
+        self.assertTrue(response["poisoned"])
+        self.assertEqual(CODE_TIMEOUT, response["code"])
+        self.assertEqual({"timeoutKind": "deadline"}, response["data"])
+        self.assertIn("close", instance.poison_reason)
 
     async def test_non_timeout_ambiguous_input_still_poisons(self):
         instance, runtime, _page, _tab = self.make_worker()

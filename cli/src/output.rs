@@ -3719,7 +3719,9 @@ Literal submitted text/code values are redacted; call logs are omitted.
 MCP text includes camoufox_ error codes and plain-language recovery guidance.
 Completed Playwright timeouts report data.timeoutKind=operation without poisoning
 when input cleanup succeeds. Inspect the current page; do not automatically replay.
-Worker deadline timeouts report data.timeoutKind=deadline and still require close.
+Worker deadline timeouts report data.timeoutKind=deadline and require close only
+when input was attempted or remains unreleased; a cancelled read-only action
+keeps the session usable.
 Gesture helper imports do not take precedence over installed Python packages.
 Gesture bounds measure the rendered viewport without forcing a fixed browser size.
 Each tool also accepts extraArgs for advanced CLI flags and exact CLI parity.
@@ -4273,7 +4275,7 @@ Camoufox V1 (macOS/Linux only):
   Playwright operation timeouts do not require close when input cleanup succeeds.
   JSON data.timeoutKind distinguishes operation from worker deadline timeouts.
   Inspect before further input; never automatically replay a timed-out action.
-  Poisoned input, worker deadlines, and ambiguous transport still require close.
+  A worker deadline requires close only when input was attempted or is unreleased.
 
 Examples:
   agent-browser open example.com

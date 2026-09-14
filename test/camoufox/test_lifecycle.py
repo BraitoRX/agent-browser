@@ -369,6 +369,32 @@ class LifecycleTests(unittest.TestCase):
             asyncio.run(runtime.launch(False))
         self.assertEqual(raised.exception.code, CODE_NOT_LAUNCHED)
 
+    def test_context_default_timeout_stays_below_the_worker_deadline(self):
+        import input_context as ic
+
+        runtime = CamoufoxRuntime(FAKE_RUNTIME_DIR, "fast")
+        recorded = []
+
+        class RecordingContext:
+            def set_default_timeout(self, timeout):
+                recorded.append(timeout)
+
+        runtime._configure_default_timeout(RecordingContext())
+        deadline_ms = ic.action_deadline_ms()
+        self.assertEqual(1, len(recorded))
+        self.assertEqual(max(500, deadline_ms - 1000), recorded[0])
+        self.assertGreater(recorded[0], 0)
+        self.assertLess(recorded[0], deadline_ms)
+
+    def test_context_default_timeout_failure_is_ignored(self):
+        runtime = CamoufoxRuntime(FAKE_RUNTIME_DIR, "fast")
+
+        class BrokenContext:
+            def set_default_timeout(self, timeout):
+                raise RuntimeError("context already closed")
+
+        runtime._configure_default_timeout(BrokenContext())
+
 
 if __name__ == "__main__":
     unittest.main()

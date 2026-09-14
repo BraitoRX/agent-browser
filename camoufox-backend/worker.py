@@ -347,12 +347,13 @@ class Worker:
                 }
             )
             return None
+        attempts_before = int(getattr(self.runtime, "_input_attempts", 0))
         try:
             data = await self.run_action(action, payload)
         except BackendError as exc:
             deadline_exceeded = exc.deadline_exceeded or exc.code == CODE_TIMEOUT
             if deadline_exceeded:
-                await self._poison_after_timeout()
+                await self._handle_worker_deadline(action, attempts_before)
             if _is_playwright_target_closed(exc.__cause__):
                 exc = self._closed_target_error()
             if exc.code in (ic.CODE_SESSION_CLOSED, ic.CODE_TARGET_CLOSED, ic.CODE_NO_ACTIVE_TAB):
@@ -373,7 +374,7 @@ class Worker:
         except asyncio.CancelledError:
             raise
         except asyncio.TimeoutError:
-            await self._poison_after_timeout()
+            await self._handle_worker_deadline(action, attempts_before)
             response = {
                 "id": request_id,
                 "success": False,
@@ -473,14 +474,28 @@ class Worker:
             )
         return response
 
-    async def _poison_after_timeout(self) -> None:
-        self.poison("action deadline exceeded")
+    async def _handle_worker_deadline(self, action: str, attempts_before: int) -> None:
+        """Reconcile input state after the worker's own deadline cancelled an action.
+
+        The cancel is not by itself a reason to discard the session. Poison only when the
+        cancelled action may have left native input, a half-started browser, or another
+        resource in an indeterminate state: pending journaled buttons/keys after a bounded
+        release, native input attempted during this action, or a cancelled launch/close. A
+        cancelled read-only action has no input state to reconcile, so the session stays
+        usable and the next command runs under its own deadline.
+        """
         runtime = self.runtime
         if runtime is not None:
             try:
                 await asyncio.wait_for(runtime.release_inputs(), timeout=3)
             except Exception:
                 pass
+            pending = runtime.journal.pending_buttons() + runtime.journal.pending_keys()
+            if pending or self._input_attempted_since(runtime, attempts_before):
+                self.poison("action deadline exceeded during input dispatch")
+                return
+        if action in ("launch", "close"):
+            self.poison(f"{action} deadline exceeded before the browser reached a stable state")
 
     async def run_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_available(action)
@@ -550,10 +565,11 @@ class Worker:
 
     def _poison_failed_input(self, runtime, attempts_before: int, exc: BaseException,
                              pending: List[str], what: str) -> None:
-        """A completed Playwright timeout is recoverable after release; worker deadlines are not."""
+        """A completed Playwright timeout is recoverable after release; a worker deadline is
+        recoverable only when no input was attempted during the action."""
         if _is_playwright_timeout(exc) and not pending:
             return
-        if pending or _is_timeout_failure(exc) or self._input_attempted_since(runtime, attempts_before):
+        if pending or self._input_attempted_since(runtime, attempts_before):
             self.poison(f"{what} failed with ambiguous input state")
 
     async def _execute_gesture(self, runtime, spec: GestureSpec, params: Dict[str, Any]) -> Tuple[Dict[str, Any], "_ActionBudget", int]:
@@ -1125,14 +1141,6 @@ class _ActionBudget:
 
 def _is_playwright_timeout(exc: BaseException) -> bool:
     return type(exc).__name__ == "TimeoutError" and "playwright" in type(exc).__module__
-
-
-def _is_timeout_failure(exc: BaseException) -> bool:
-    if isinstance(exc, BackendError):
-        return exc.deadline_exceeded or exc.code == CODE_TIMEOUT
-    if isinstance(exc, asyncio.TimeoutError):
-        return True
-    return _is_playwright_timeout(exc)
 
 
 def _is_playwright_error(exc: BaseException) -> bool:
