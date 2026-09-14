@@ -91,7 +91,7 @@ Shared conventions: `selector` accepts CSS or native aria refs `@eN` / `@fNeN`. 
 | `select` | `selector`, `values` (string or array of option values; no implicit label fallback) | `{selected, count}` |
 | `drag` | `source`, `target` (selector-string or target object), `button?`, `steps?`, `holdBeforeDropMs?`, `reveal?` | press/drop points, `releaseDispatched` (not semantic drop success) |
 | `scroll` | `direction`, `amount?`, `selector?`, `chunkSize?`, `settleMs?`, `selector` | gesture data |
-| `scrollintoview` | `selector` | Guarded native reveal, `{scrolled:true,selector}` only after completion |
+| `scrollintoview` | `selector` | Reveals exactly one visible match, then scrolls it into view without actionability waiting; absent, hidden, zero-sized, or ambiguous targets are rejected with `camoufox_invalid_params` without poisoning, so `{scrolled:true,selector}` is only returned after completion |
 | `wait` | `selector?`, `text?`, `timeout?`; no selector/text means sleep | `{waited, timeout}` |
 | `waitforurl` | `url`, `timeout?` | `{waited:"url", url}` |
 | `waitforloadstate` | `state`, `timeout?` | `{waited, state}` |

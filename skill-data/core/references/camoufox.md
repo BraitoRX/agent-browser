@@ -17,7 +17,7 @@ Load `skills get camoufox` for the workflow, or call MCP `agent_browser_skills_g
 | `read` | Rendered selected-frame text; no explicit URL fetch or read options |
 | `tab new [url] [--label <label>]`, `tab`, `tab <id-or-label>`, `tab close [id]` | Stable `tN` IDs, no popup focus stealing, no silent replacement of a closed active tab |
 | `get text|html|attr|value|count|box <selector>`, `is visible|enabled|checked <selector>` | DOM queries support exposed refs, CSS, and `xpath=` selectors, including open shadow roots; `get html "html"` returns the whole document element's inner HTML |
-| `scrollintoview <selector>` | Guarded native reveal of one observed target; no automatic replay after ambiguous input |
+| `scrollintoview <selector>` | Reveals one observed target; requires exactly one visible match, then scrolls it into view without actionability waiting; rejects absent, hidden, zero-sized, or ambiguous targets fast without poisoning; no automatic replay after ambiguous input |
 | `frame <frame-N|iframe-selector|iframe-ref>`, `frame main` | Explicit nested/cross-origin DOM/CSS scope; IDs come from tab/snapshot frame metadata. Selection clears refs/captures; detachment requires explicit recovery |
 
 Navigation/history, evaluation, element reads, standard interaction and bounded waits use canonical CLI commands. Unsupported fields fail. Snapshot `--urls` and `--cursor` are compatibility requests for annotations the native AI format always includes; false does not suppress them. Select operates on exact option values, not label fallback. `V1` names the private backend protocol/runtime directory, not an alternative OpenCode API or obsolete tool catalog.

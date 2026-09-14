@@ -1023,9 +1023,32 @@ class Worker:
         if action == "scrollintoview":
             selector = require_str(payload.get("selector"), "selector")
             scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
+            locator = scope.locator(resolved)
+            matches = await self.deadline(locator.count())
+            if matches != 1:
+                raise BackendError(
+                    CODE_INVALID,
+                    f"scroll into view requires exactly one matching element; selector resolved to {matches}",
+                )
+            if not await self.deadline(locator.is_visible()):
+                raise BackendError(
+                    CODE_INVALID,
+                    "target has no layout box or is hidden; it cannot be scrolled into view",
+                )
             await self._guarded_input(
                 runtime,
-                self.deadline(scope.locator(resolved).scroll_into_view_if_needed()),
+                self.deadline(
+                    locator.evaluate(
+                        "el => {"
+                        " const r = el.getBoundingClientRect();"
+                        " const vw = document.documentElement.clientWidth;"
+                        " const vh = document.documentElement.clientHeight;"
+                        " if (r.width > 0 && r.height > 0 && r.top >= 0 && r.left >= 0"
+                        " && r.bottom <= vh && r.right <= vw) return;"
+                        " el.scrollIntoView({ block: 'center', inline: 'center' });"
+                        " }"
+                    )
+                ),
                 mark=True,
                 what="scroll into view",
             )
