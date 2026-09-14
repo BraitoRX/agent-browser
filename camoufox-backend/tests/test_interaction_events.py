@@ -564,7 +564,7 @@ class InteractionEventsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["success"])
         self.assertEqual(CODE_ERROR, response["code"])
         self.assertIn("no download arrived", response["error"])
-        self.assertNotIn("poisoned", response)
+        self.assertNotIn("inputAmbiguous", response)
         self.assertFalse(worker.poisoned)
         self.assertEqual({}, events._download_waiters)
 
@@ -715,7 +715,7 @@ class InteractionEventsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(["expect", "expect_enter", "click"], observed[0]["log"])
         self.assertEqual(1, len(download.save_paths))
 
-    async def test_review_no_event_is_unpoisoned_and_later_event_saves(self) -> None:
+    async def test_review_no_event_keeps_the_session_usable_and_later_event_saves(self) -> None:
         page = FakePage()
         runtime = self.make_runtime(page)
         events = runtime.interactions
@@ -748,7 +748,7 @@ class InteractionEventsTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["success"])
         self.assertEqual(CODE_ERROR, response["code"])
         self.assertIn("no download arrived", response["error"])
-        self.assertNotIn("poisoned", response)
+        self.assertNotIn("inputAmbiguous", response)
         self.assertFalse(worker.poisoned)
         self.assertIsNone(worker.poison_reason)
         self.assertEqual(

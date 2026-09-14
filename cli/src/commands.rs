@@ -355,6 +355,9 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             })?;
         }
         result["engine"] = json!("camoufox");
+        if !matches!(action.as_str(), "close" | "confirm" | "deny") {
+            result["profile"] = json!(flags.profile);
+        }
         if flags.headed || flags.cli_headed {
             result["headless"] = json!(!flags.headed);
         } else if action == "launch" {

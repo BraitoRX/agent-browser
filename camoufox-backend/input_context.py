@@ -32,7 +32,7 @@ CODE_NO_ACTIVE_TAB = "camoufox_no_active_tab"
 CODE_STALE_CAPTURE = "stale_visual_capture"
 CODE_STALE_REF = "camoufox_stale_ref"
 CODE_TIMEOUT = "camoufox_timeout"
-CODE_POISONED = "camoufox_poisoned"
+CODE_POISONED = "camoufox_session_reset_required"
 CODE_ERROR = "camoufox_error"
 CODE_OUTPUT_TOO_LARGE = "camoufox_output_too_large"
 CODE_UNKNOWN_GESTURE = "camoufox_unknown_gesture"
@@ -51,6 +51,43 @@ class BackendError(Exception):
         self.code = code
         self.message = message
         self.deadline_exceeded = deadline_exceeded
+
+
+def is_playwright_timeout(exc: Optional[BaseException]) -> bool:
+    if isinstance(exc, BackendError):
+        return (
+            exc.code == CODE_TIMEOUT
+            and not exc.deadline_exceeded
+            and is_playwright_timeout(exc.__cause__)
+        )
+    return exc is not None and type(exc).__name__ == "TimeoutError" and "playwright" in type(exc).__module__
+
+
+def playwright_timeout_error(exc: BaseException, what: str, timeout_ms: Optional[int] = None) -> BackendError:
+    message = str(exc)
+    if timeout_ms is None:
+        match = re.search(r"Timeout\s+(\d+)ms", message, re.IGNORECASE)
+        if match:
+            timeout_ms = int(match.group(1))
+    duration = f" after {timeout_ms}ms (effective Playwright timeout)" if timeout_ms is not None else ""
+    reason = "the operation did not complete"
+    for line in reversed(message.lower().splitlines()):
+        if "intercepts pointer events" in line or "not receiving pointer events" in line:
+            reason = "element is covered by other content or is not receiving pointer events"
+        elif "not stable" in line:
+            reason = "element is unstable (its layout is still changing)"
+        elif "not visible" in line or "element is hidden" in line:
+            reason = "element is hidden or has no layout box"
+        elif "outside of the viewport" in line or "outside the viewport" in line:
+            reason = "element is outside the viewport"
+        elif "not enabled" in line:
+            reason = "element is disabled"
+        elif "not attached" in line or "detached" in line:
+            reason = "element detached from the document"
+        else:
+            continue
+        break
+    return BackendError(CODE_TIMEOUT, f"{what} timed out{duration}: {reason}")
 
 
 def action_deadline_ms(env: Optional[Dict[str, str]] = None) -> int:

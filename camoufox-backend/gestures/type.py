@@ -46,13 +46,13 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     if len(text) * delay_ms + settle_after + 500 > ctx.remaining_ms():
         raise BackendError(CODE_INVALID, "requested typing delay cannot fit inside the remaining action deadline")
 
-    scope, selector = await locator_for(ctx, spec)
-    locator = scope.locator(selector)
+    _scope, locator = await locator_for(ctx, spec)
+    label = f"selector {('@' + spec.ref) if spec.ref else spec.selector!r}"
     ctx.set_stage("resolve")
-    await require_in_viewport(ctx, locator, "input target")
-    await trial_hover(ctx, locator, "input target")
+    await require_in_viewport(ctx, locator, label)
+    await trial_hover(ctx, locator, label)
     ctx.set_stage("focus")
-    await locator_click(ctx, locator)
+    await locator_click(ctx, locator, label=label)
     if clear_first:
         ctx.set_stage("clear")
         await keyboard_press(ctx, "ControlOrMeta+A")

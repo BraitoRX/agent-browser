@@ -10,25 +10,42 @@ from input_context import (
     CODE_UNSUPPORTED,
     TargetSpec,
     css_point,
+    is_playwright_timeout,
     optional_int,
     parse_selector,
     parse_target,
+    playwright_timeout_error,
     require_dict,
 )
 
-STEP_TIMEOUT_MS = 10_000
+STEP_TIMEOUT_MS = 2_000
 
 
-async def bounded(ctx: Any, awaitable: Awaitable[Any], what: str) -> Any:
+async def bounded(ctx: Any, awaitable: Awaitable[Any], what: str, timeout_ms: Optional[int] = None) -> Any:
     remaining = ctx.remaining_seconds()
     if remaining <= 0:
         if hasattr(awaitable, "close"):
             awaitable.close()
         raise BackendError(CODE_TIMEOUT, f"action deadline exceeded before {what}", deadline_exceeded=True)
+    watchdog = min(remaining, (timeout_ms + 250) / 1000.0) if timeout_ms is not None else remaining
     try:
-        return await asyncio.wait_for(awaitable, timeout=remaining)
+        return await asyncio.wait_for(awaitable, timeout=watchdog)
     except asyncio.TimeoutError:
-        raise BackendError(CODE_TIMEOUT, f"{what} exceeded the action deadline", deadline_exceeded=True) from None
+        raise BackendError(
+            CODE_TIMEOUT, f"{what} exceeded its {int(watchdog * 1000)}ms watchdog; operation did not complete",
+            deadline_exceeded=True,
+        ) from None
+    except Exception as exc:
+        if is_playwright_timeout(exc) and not isinstance(exc, BackendError):
+            raise playwright_timeout_error(exc, what, timeout_ms) from exc
+        raise
+
+
+def step_timeout_ms(ctx: Any) -> int:
+    remaining = ctx.remaining_seconds()
+    if remaining <= 0:
+        raise BackendError(CODE_TIMEOUT, "action deadline exceeded before locator operation", deadline_exceeded=True)
+    return max(1, min(STEP_TIMEOUT_MS, int(remaining * 1000) - 250))
 
 
 def require_main_frame(spec: TargetSpec, action: str) -> None:
@@ -43,21 +60,36 @@ def resolved_target(ctx: Any, params: Dict[str, Any], field_name: str = "target"
     return parse_target(params.get(field_name), field_name)
 
 
-async def locator_for(ctx: Any, spec: TargetSpec) -> Tuple[Any, str]:
+async def locator_for(ctx: Any, spec: TargetSpec) -> Tuple[Any, Any]:
     if spec.kind != "selector" or spec.selector is None:
         raise BackendError(CODE_INVALID, "expected a selector target")
+    if hasattr(ctx, "action_locator"):
+        return await ctx.action_locator(spec)
     if hasattr(ctx, "locator_scope"):
-        return ctx.locator_scope(spec)
+        scope, resolved = ctx.locator_scope(spec)
+        return scope, scope.locator(resolved)
     if spec.ref is not None:
         ctx.require_exposed_ref(spec.ref)
-        return ctx.page, f"aria-ref={spec.ref}"
-    return ctx.page, spec.selector
+        return ctx.page, ctx.page.locator(f"aria-ref={spec.ref}")
+    return ctx.page, ctx.page.locator(spec.selector)
 
 
-async def element_box(locator: Any) -> Optional[Dict[str, float]]:
-    box = await locator.bounding_box(timeout=STEP_TIMEOUT_MS)
-    if box is None:
-        return None
+async def require_visible(ctx: Any, locator: Any, label: str) -> None:
+    matches = await bounded(ctx, locator.count(), f"resolve {label}", STEP_TIMEOUT_MS)
+    if matches != 1:
+        raise BackendError(
+            CODE_INVALID, f"{label}: selector resolved to {matches} elements; expected exactly one",
+        )
+    if not await bounded(ctx, locator.is_visible(), f"check visibility of {label}", STEP_TIMEOUT_MS):
+        raise BackendError(CODE_INVALID, f"{label}: element is hidden; it has no bounding box")
+
+
+async def element_box(ctx: Any, locator: Any, label: str) -> Dict[str, float]:
+    await require_visible(ctx, locator, label)
+    timeout_ms = step_timeout_ms(ctx)
+    box = await bounded(ctx, locator.bounding_box(timeout=timeout_ms), f"measure bounding box of {label}", timeout_ms)
+    if box is None or box["width"] <= 0 or box["height"] <= 0:
+        raise BackendError(CODE_INVALID, f"{label}: element is hidden or has no layout box; it has no bounding box")
     return {
         "x": float(box["x"]),
         "y": float(box["y"]),
@@ -70,8 +102,8 @@ def box_center(box: Dict[str, float]) -> Tuple[float, float]:
     return (box["x"] + box["width"] / 2.0, box["y"] + box["height"] / 2.0)
 
 
-async def inside_viewport(ctx: Any, box: Dict[str, float]) -> bool:
-    viewport = await bounded(ctx, ctx.viewport_size(), "measure viewport")
+async def inside_viewport(ctx: Any, box: Dict[str, float], label: str) -> bool:
+    viewport = await bounded(ctx, ctx.viewport_size(), f"measure viewport for {label}", STEP_TIMEOUT_MS)
     return (
         box["x"] >= 0
         and box["y"] >= 0
@@ -81,11 +113,13 @@ async def inside_viewport(ctx: Any, box: Dict[str, float]) -> bool:
 
 
 async def require_in_viewport(ctx: Any, locator: Any, label: str) -> Dict[str, float]:
-    await bounded(ctx, locator.scroll_into_view_if_needed(timeout=STEP_TIMEOUT_MS), f"scroll {label} into view")
-    box = await element_box(locator)
-    if box is None:
-        raise BackendError(CODE_INVALID, f"{label} has no layout box")
-    if not await inside_viewport(ctx, box):
+    box = await element_box(ctx, locator, label)
+    if await inside_viewport(ctx, box, label):
+        return box
+    timeout_ms = step_timeout_ms(ctx)
+    await bounded(ctx, locator.scroll_into_view_if_needed(timeout=timeout_ms), f"scroll {label} into view", timeout_ms)
+    box = await element_box(ctx, locator, label)
+    if not await inside_viewport(ctx, box, label):
         raise BackendError(
             CODE_INVALID,
             f"{label} does not fit fully inside the current viewport after scrolling",
@@ -94,10 +128,8 @@ async def require_in_viewport(ctx: Any, locator: Any, label: str) -> Dict[str, f
 
 
 async def require_in_viewport_no_scroll(ctx: Any, locator: Any, label: str) -> Dict[str, float]:
-    box = await element_box(locator)
-    if box is None:
-        raise BackendError(CODE_INVALID, f"{label} has no layout box")
-    if not await inside_viewport(ctx, box):
+    box = await element_box(ctx, locator, label)
+    if not await inside_viewport(ctx, box, label):
         raise BackendError(
             CODE_INVALID,
             f"{label} is outside the viewport; scrolling is disabled when a coordinate endpoint is used",
@@ -106,7 +138,8 @@ async def require_in_viewport_no_scroll(ctx: Any, locator: Any, label: str) -> D
 
 
 async def trial_hover(ctx: Any, locator: Any, label: str) -> None:
-    await bounded(ctx, locator.hover(trial=True, timeout=STEP_TIMEOUT_MS), f"hit test for {label}")
+    timeout_ms = step_timeout_ms(ctx)
+    await bounded(ctx, locator.hover(trial=True, timeout=timeout_ms), f"hit test for {label}", timeout_ms)
 
 
 def parse_reveal_steps(value: Any) -> List[Tuple[str, int]]:
@@ -171,12 +204,25 @@ async def mouse_click_at(ctx: Any, x: float, y: float, button: str, count: int) 
                     pass
 
 
-async def locator_click(ctx: Any, locator: Any, button: str = "left", count: int = 1) -> None:
+async def locator_click(ctx: Any, locator: Any, button: str = "left", count: int = 1,
+                        label: Optional[str] = None) -> None:
+    timeout_ms = step_timeout_ms(ctx)
+    label = label or str(locator)
     ctx.journal.begin_button_down(button)
     ctx.note_input_dispatched()
     try:
-        action = locator.dblclick(button=button) if count == 2 else locator.click(button=button)
-        await bounded(ctx, action, "locator click")
+        action = locator.dblclick(button=button, timeout=timeout_ms) if count == 2 else locator.click(button=button, timeout=timeout_ms)
+        try:
+            await bounded(ctx, action, f"click {label}", timeout_ms)
+        except BackendError as exc:
+            if exc.code == CODE_TIMEOUT:
+                raise BackendError(
+                    CODE_TIMEOUT,
+                    exc.message + "; inspect a fresh screenshot and consider a coordinate gesture or keyboard interaction; "
+                    "input may have been dispatched, so do not automatically retry",
+                    deadline_exceeded=exc.deadline_exceeded,
+                ) from exc
+            raise
         ctx.journal.finish_button_up(button)
     finally:
         if ctx.journal.buttons.get(button):

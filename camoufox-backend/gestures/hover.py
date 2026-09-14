@@ -62,8 +62,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     assert settle_ms is not None
 
     if spec.kind == "selector":
-        scope, selector = await locator_for(ctx, spec)
-        locator = scope.locator(selector)
+        _scope, locator = await locator_for(ctx, spec)
         ctx.set_stage("resolve")
         box = await require_in_viewport(ctx, locator, "target")
         ctx.set_stage("hover")

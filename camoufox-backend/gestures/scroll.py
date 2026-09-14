@@ -50,10 +50,10 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     if selector is not None:
         spec = parse_selector(selector, "selector")
-        scope, resolved = await locator_for(ctx, spec)
+        _scope, locator = await locator_for(ctx, spec)
         ctx.set_stage("hover")
         ctx.note_input_dispatched()
-        await bounded(ctx, scope.locator(resolved).hover(timeout=10_000), "hover scroll target")
+        await bounded(ctx, locator.hover(timeout=10_000), "hover scroll target")
 
     vertical = direction in ("up", "down")
     sign = 1 if direction in ("down", "right") else -1

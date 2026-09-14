@@ -3717,8 +3717,9 @@ Unexpected Camoufox worker import errors identify the missing module.
 Playwright failures include the action, exception class, and a bounded reason.
 Literal submitted text/code values are redacted; call logs are omitted.
 MCP text includes camoufox_ error codes and plain-language recovery guidance.
-Completed Playwright timeouts report data.timeoutKind=operation without poisoning
-when input cleanup succeeds. Inspect the current page; do not automatically replay.
+Completed Playwright timeouts report data.timeoutKind=operation and keep the
+session usable when input cleanup succeeds. Inspect the current page; do not
+automatically replay.
 Worker deadline timeouts report data.timeoutKind=deadline and require close only
 when input was attempted or remains unreleased; a cancelled read-only action
 keeps the session usable.
@@ -4073,6 +4074,7 @@ Authentication:
   --profile <name|path>      Chrome profile name (e.g., Default) to reuse login state,
                              or a directory path for a persistent custom profile
                              (or AGENT_BROWSER_PROFILE env)
+                             Camoufox: absolute private profile path; retained on close
   --restore [name]           Auto-save/restore cookies and localStorage.
                              Without a name, uses --session as the restore key
                              (or AGENT_BROWSER_RESTORE env)
@@ -4232,6 +4234,7 @@ Environment:
   AGENT_BROWSER_NO_AUTO_DIALOG   Disable automatic dismissal of alert/beforeunload dialogs
   AGENT_BROWSER_ENGINE           Browser engine: chrome (default), lightpanda, camoufox
   AGENT_BROWSER_CAMOUFOX_RUNTIME Absolute private Camoufox runtime root
+  AGENT_BROWSER_PROFILE         Persistent profile directory; Camoufox requires an absolute private path
   AGENT_BROWSER_PYTHON           Install-time Python executable (default python3)
   AGENT_BROWSER_MOTION           Camoufox launch profile: human-fast, fast, precision
   AGENT_BROWSER_GESTURES_DIR     Explicit trusted gesture directories (OS path separator)
@@ -4265,7 +4268,10 @@ Camoufox V1 (macOS/Linux only):
   V1 names the private protocol/runtime namespace, not an older tool catalog.
   network requests/request exposes metadata and on-demand headers/bodies.
   network websockets/workers adds bounded event and worker visibility.
-  No CDP, profiles/restore/auth, domain containment, launch plugins, or mobile.
+  --profile /absolute/path retains persistent cookies/site storage and device identity.
+  Sign in manually; close preserves the profile. Login expiry/CAPTCHAs can still occur.
+  One browser per profile; close before switching. No Chrome import or state/auth restore.
+  No CDP, domain containment, launch plugins, or mobile.
   Generic gestures cannot run under action policies/confirm-actions.
   session info --json reports browserConnected, recoveryRequired, and closeReason.
   A closed active tab needs tab <id> or tab new, not a browser restart.
@@ -4295,6 +4301,7 @@ Examples:
   agent-browser --color-scheme dark open example.com  # Dark mode
   agent-browser --profile Default open gmail.com        # Reuse Chrome login state
   agent-browser --profile ~/.myapp open example.com    # Persistent custom profile
+  agent-browser --engine camoufox --profile "$HOME/.agent-browser/profiles/personal" --headed --idle-timeout 0 open about:blank
   agent-browser profiles                               # List available Chrome profiles
   SESSION="$(agent-browser session id --scope worktree --prefix myapp)"
   agent-browser --session "$SESSION" --restore open example.com  # Auto-save/restore state

@@ -47,6 +47,7 @@ from registry import (
     schema_summary,
     validate_params,
 )
+from gestures._common import bounded, element_box, require_visible, step_timeout_ms
 
 TRANSPORT = sys.stdout
 sys.stdout = sys.stderr
@@ -88,15 +89,15 @@ UNSUPPORTED_LAUNCH_OPTIONS = {
     "extensions": "extensions are not supported",
     "initScripts": "init scripts are not supported",
     "args": "custom browser args are not supported",
-    "profile": "existing browser profiles are not supported",
     "autoConnect": "auto-connect is not supported",
 }
 KNOWN_LAUNCH_OPTIONS = {
-    "headless", "engine", "webmcp", "noXvfb", "metadata",
+    "headless", "engine", "webmcp", "noXvfb", "metadata", "profile",
 }
 
 
 def check_launch_options(payload: Dict[str, Any]) -> None:
+    """Profiles select private persistent storage; auth-vault and state-file replay remain unsupported."""
     for key in payload:
         if key in ("id", "action"):
             continue
@@ -121,6 +122,9 @@ def check_launch_options(payload: Dict[str, Any]) -> None:
     engine = payload.get("engine")
     if engine is not None and engine != "camoufox":
         raise BackendError(CODE_UNSUPPORTED, f"engine '{engine}' is not supported by this worker")
+    profile = payload.get("profile")
+    if profile is not None and (not isinstance(profile, str) or not profile.strip() or not Path(profile).is_absolute()):
+        raise BackendError(CODE_INVALID, "'profile' must be a non-empty absolute directory path")
     no_xvfb = payload.get("noXvfb")
     if no_xvfb is not None and no_xvfb is not False:
         raise BackendError(CODE_UNSUPPORTED, "'noXvfb' true is not supported")
@@ -288,7 +292,7 @@ class Worker:
             return
         raise BackendError(
             CODE_POISONED,
-            "worker is poisoned after timed-out or ambiguous input; close the session to recover "
+            "the session needs a reset after timed-out or ambiguous input; close it to recover "
             "(no automatic replay or restart)",
         )
 
@@ -351,7 +355,8 @@ class Worker:
         try:
             data = await self.run_action(action, payload)
         except BackendError as exc:
-            deadline_exceeded = exc.deadline_exceeded or exc.code == CODE_TIMEOUT
+            operation_timeout = _is_playwright_timeout(exc)
+            deadline_exceeded = exc.deadline_exceeded or (exc.code == CODE_TIMEOUT and not operation_timeout)
             if deadline_exceeded:
                 await self._handle_worker_deadline(action, attempts_before)
             if _is_playwright_target_closed(exc.__cause__):
@@ -367,8 +372,10 @@ class Worker:
             }
             if deadline_exceeded:
                 response["data"] = {"timeoutKind": "deadline"}
+            elif operation_timeout:
+                response["data"] = {"timeoutKind": "operation"}
             if self.poisoned:
-                response["poisoned"] = True
+                response["inputAmbiguous"] = True
             write_response(response)
             return None
         except asyncio.CancelledError:
@@ -383,7 +390,7 @@ class Worker:
                 "data": {"timeoutKind": "deadline"},
             }
             if self.poisoned:
-                response["poisoned"] = True
+                response["inputAmbiguous"] = True
             write_response(response)
             return None
         except Exception as exc:
@@ -396,7 +403,7 @@ class Worker:
                     "data": {"timeoutKind": "operation"},
                 }
                 if self.poisoned:
-                    response["poisoned"] = True
+                    response["inputAmbiguous"] = True
                 write_response(response)
                 return None
             if _is_playwright_target_closed(exc):
@@ -409,7 +416,7 @@ class Worker:
                         "success": False,
                         "error": _playwright_error_text(action, exc, payload),
                         "code": CODE_ERROR,
-                        "poisoned": True if self.poisoned else None,
+                        "inputAmbiguous": True if self.poisoned else None,
                     }
                 )
                 return None
@@ -420,13 +427,13 @@ class Worker:
                     "success": False,
                     "error": f"internal worker error: {type(exc).__name__}{detail}",
                     "code": CODE_INTERNAL,
-                    "poisoned": True if self.poisoned else None,
+                    "inputAmbiguous": True if self.poisoned else None,
                 }
             )
             return None
         response = {"id": request_id, "success": True, "data": ic.json_safe(data)}
         if self.poisoned:
-            response["poisoned"] = True
+            response["inputAmbiguous"] = True
         if action == "close" and isinstance(data, dict) and data.get("closed"):
             write_response(response)
             self.stopping = True
@@ -467,7 +474,7 @@ class Worker:
             "data": {**runtime.launch_info(), "activeTab": runtime.active_id, "tabs": runtime.list_tabs()},
         }
         if self.poisoned:
-            response["poisoned"] = True
+            response["inputAmbiguous"] = True
             response["error"] += (
                 ". Input may already have been dispatched; close and inspect application state "
                 "without retrying the input"
@@ -477,7 +484,7 @@ class Worker:
     async def _handle_worker_deadline(self, action: str, attempts_before: int) -> None:
         """Reconcile input state after the worker's own deadline cancelled an action.
 
-        The cancel is not by itself a reason to discard the session. Poison only when the
+        The cancel is not by itself a reason to discard the session. Require a reset only when the
         cancelled action may have left native input, a half-started browser, or another
         resource in an indeterminate state: pending journaled buttons/keys after a bounded
         release, native input attempted during this action, or a cancelled launch/close. A
@@ -513,7 +520,7 @@ class Worker:
         if action in BROWSER_ACTIONS:
             mutating = action in MUTATING_ACTIONS
             try:
-                return await self.deadline(self.dispatch_browser(action, payload))
+                return await self.deadline(self.dispatch_browser(action, payload), what=f"browser action '{action}'")
             finally:
                 if mutating and self.runtime is not None:
                     self.runtime.captures.invalidate_all()
@@ -522,7 +529,7 @@ class Worker:
             return await self.dispatch_local(action, payload)
         raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported by the camoufox backend")
 
-    async def deadline(self, coro, timeout_ms: Optional[int] = None):
+    async def deadline(self, coro, timeout_ms: Optional[int] = None, *, what: str = "action"):
         effective_ms = min(timeout_ms or self.deadline_ms, ic.MAX_ACTION_DEADLINE_MS)
         effective_ms = max(250, effective_ms)
         try:
@@ -530,9 +537,13 @@ class Worker:
         except asyncio.TimeoutError:
             raise BackendError(
                 CODE_TIMEOUT,
-                f"action exceeded the {effective_ms}ms deadline",
+                f"{what} exceeded the {effective_ms}ms deadline",
                 deadline_exceeded=True,
             ) from None
+        except Exception as exc:
+            if _is_playwright_timeout(exc) and not isinstance(exc, BackendError):
+                raise ic.playwright_timeout_error(exc, what) from exc
+            raise
 
     async def _budgeted(self, budget: _ActionBudget, awaitable: Awaitable[Any], what: str) -> Any:
         remaining = budget.remaining_seconds()
@@ -646,7 +657,7 @@ class Worker:
         if action == "session_info":
             runtime = self.get_runtime()
             info = runtime.session_info(sorted(self.gestures.keys()))
-            info["poisoned"] = self.poisoned
+            info["inputAmbiguous"] = self.poisoned
             info["gestureRegistry"] = {"ok": self.registry_error is None, "error": self.registry_error}
             info["limits"] = {
                 "maxInputBytes": ic.MAX_INPUT_BYTES,
@@ -806,8 +817,8 @@ class Worker:
     async def do_fill(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
         selector = require_str(payload.get("selector"), "selector")
         value = require_str(payload.get("value"), "value", max_len=ic.MAX_TEXT_LENGTH, allow_empty=True)
-        scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
-        await self._guarded_input(runtime, self.deadline(scope.locator(resolved).fill(value)), mark=True, what="fill")
+        _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
+        await self._guarded_input(runtime, self.deadline(locator.fill(value)), mark=True, what="fill")
         return {"filled": len(value), "selector": selector}
 
     async def do_download(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -843,8 +854,8 @@ class Worker:
         if values is None:
             raise BackendError(CODE_INVALID, "'values' is required (string or array of strings)")
         items = require_str_list(values, "values")
-        scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
-        selected = await self._guarded_input(runtime, self.deadline(scope.locator(resolved).select_option(items)), mark=True, what="select")
+        _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
+        selected = await self._guarded_input(runtime, self.deadline(locator.select_option(items)), mark=True, what="select")
         return {"selected": selected, "count": len(selected)}
 
     async def do_wait(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -858,8 +869,8 @@ class Worker:
         page = runtime.active_scope()
         if selector is not None:
             spec = ic.parse_selector(selector, "selector")
-            scope, resolved = runtime.locator_scope(spec)
-            await self.deadline(scope.locator(resolved).wait_for(state="visible", timeout=timeout_ms))
+            _scope, locator = await runtime.resolve_action_locator(spec)
+            await self.deadline(locator.wait_for(state="visible", timeout=timeout_ms))
             return {"waited": "selector", "timeout": timeout_ms}
         await self.deadline(page.get_by_text(text, exact=False).first.wait_for(state="visible", timeout=timeout_ms))
         return {"waited": "text", "timeout": timeout_ms}
@@ -867,8 +878,7 @@ class Worker:
     async def do_query(self, runtime, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         selector = require_str(payload.get("selector"), "selector")
         spec = ic.parse_selector(selector, "selector")
-        scope, resolved = runtime.locator_scope(spec)
-        locator = scope.locator(resolved)
+        _scope, locator = await runtime.resolve_action_locator(spec)
         if action == "gettext":
             return {"text": await self.deadline(locator.inner_text())}
         if action == "innerhtml":
@@ -882,7 +892,7 @@ class Worker:
             count = await self.deadline(locator.count())
             return {"count": count}
         if action == "boundingbox":
-            box = await self.deadline(locator.bounding_box())
+            box = await element_box(_ActionBudget(self.deadline_ms), locator, f"selector {selector!r}")
             return {"boundingBox": ic.json_safe(box)}
         if action == "isvisible":
             return {"visible": await self.deadline(locator.is_visible())}
@@ -900,7 +910,7 @@ class Worker:
             self.policy_active = isinstance(metadata, dict) and metadata.get("policyActive") is True
             headless = optional_bool(payload.get("headless"), "headless", True)
             assert headless is not None
-            data = await runtime.launch(headless)
+            data = await runtime.launch(headless, profile=payload.get("profile"))
             data["startedAt"] = ic.iso_now()
             return data
         if action == "tab_list":
@@ -1002,30 +1012,30 @@ class Worker:
             return await self.do_gesture_call(runtime, "hover", payload)
         if action == "focus":
             selector = require_str(payload.get("selector"), "selector")
-            scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
+            _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
             await self._guarded_input(
                 runtime,
-                self.deadline(scope.locator(resolved).focus()),
+                self.deadline(locator.focus()),
                 mark=True,
                 what="focus",
             )
             return {"focused": selector}
         if action == "check":
             selector = require_str(payload.get("selector"), "selector")
-            scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
+            _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
             await self._guarded_input(
                 runtime,
-                self.deadline(scope.locator(resolved).check()),
+                self.deadline(locator.check()),
                 buttons=("left",),
                 what="check",
             )
             return {"checked": selector}
         if action == "uncheck":
             selector = require_str(payload.get("selector"), "selector")
-            scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
+            _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
             await self._guarded_input(
                 runtime,
-                self.deadline(scope.locator(resolved).uncheck()),
+                self.deadline(locator.uncheck()),
                 buttons=("left",),
                 what="uncheck",
             )
@@ -1038,22 +1048,15 @@ class Worker:
             return await self.do_gesture_call(runtime, "scroll", payload)
         if action == "scrollintoview":
             selector = require_str(payload.get("selector"), "selector")
-            scope, resolved = runtime.locator_scope(ic.parse_selector(selector, "selector"))
-            locator = scope.locator(resolved)
-            matches = await self.deadline(locator.count())
-            if matches != 1:
-                raise BackendError(
-                    CODE_INVALID,
-                    f"scroll into view requires exactly one matching element; selector resolved to {matches}",
-                )
-            if not await self.deadline(locator.is_visible()):
-                raise BackendError(
-                    CODE_INVALID,
-                    "target has no layout box or is hidden; it cannot be scrolled into view",
-                )
+            _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))
+            budget = _ActionBudget(self.deadline_ms)
+            label = f"selector {selector!r}"
+            await require_visible(budget, locator, label)
+            timeout_ms = step_timeout_ms(budget)
             await self._guarded_input(
                 runtime,
-                self.deadline(
+                bounded(
+                    budget,
                     locator.evaluate(
                         "el => {"
                         " const r = el.getBoundingClientRect();"
@@ -1062,8 +1065,11 @@ class Worker:
                         " if (r.width > 0 && r.height > 0 && r.top >= 0 && r.left >= 0"
                         " && r.bottom <= vh && r.right <= vw) return;"
                         " el.scrollIntoView({ block: 'center', inline: 'center' });"
-                        " }"
-                    )
+                        " }",
+                        timeout=timeout_ms,
+                    ),
+                    f"scroll {label} into view",
+                    timeout_ms,
                 ),
                 mark=True,
                 what="scroll into view",
@@ -1140,7 +1146,7 @@ class _ActionBudget:
 
 
 def _is_playwright_timeout(exc: BaseException) -> bool:
-    return type(exc).__name__ == "TimeoutError" and "playwright" in type(exc).__module__
+    return ic.is_playwright_timeout(exc)
 
 
 def _is_playwright_error(exc: BaseException) -> bool:

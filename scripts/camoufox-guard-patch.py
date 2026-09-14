@@ -2,9 +2,9 @@
 """Re-apply the Camoufox input-dispatch guards to the installed browser.
 
 A runtime reinstall or `camoufox fetch` replaces the browser asset and drops the
-guards, which reintroduces the click-hang/poisoning failure. Run this after any
-such reinstall. It is idempotent: if the installed archive is already guarded it
-does nothing.
+guards, which reintroduces the click-hang failure that leaves the session
+needing a reset. Run this after any such reinstall. It is idempotent: if the
+installed archive is already guarded it does nothing.
 
 The guarded Juggler sources are read from the Camoufox fork checkout. Override
 with CAMOUFOX_GUARD_SOURCE, and the runtime with AGENT_BROWSER_CAMOUFOX_RUNTIME.

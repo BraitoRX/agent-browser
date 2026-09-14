@@ -1295,7 +1295,7 @@ fn run_close_all(flags: &Flags) {
             Err(_) => {
                 // Daemon is unreachable despite its process existing.
                 // Force-kill the process and clean up stale files so future
-                // sessions are not poisoned.
+                // sessions stay healthy.
                 #[cfg(unix)]
                 unsafe {
                     libc::kill(*pid as i32, libc::SIGKILL);
@@ -1546,6 +1546,9 @@ fn main() {
             }
             env::set_var("AGENT_BROWSER_ENGINE", "camoufox");
             env::set_var("AGENT_BROWSER_SESSION", &flags.session);
+            if let Some(profile) = &flags.profile {
+                env::set_var("AGENT_BROWSER_PROFILE", profile);
+            }
             if flags.headed || flags.cli_headed {
                 env::set_var("AGENT_BROWSER_HEADED", if flags.headed { "1" } else { "0" });
             }

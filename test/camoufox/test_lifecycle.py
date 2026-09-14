@@ -139,6 +139,14 @@ def make_two_tab_runtime():
 
 
 class LifecycleTests(unittest.TestCase):
+    def test_persistent_profile_diagnostics(self):
+        runtime, _browser, _context, _page, _tab = make_runtime()
+        self.assertFalse(runtime.session_info([])["persistentProfile"])
+        runtime.profile_path = "/private/profile"
+        for info in [runtime.launch_info(), runtime.session_info([])]:
+            self.assertTrue(info["persistentProfile"])
+            self.assertEqual(info["profilePath"], "/private/profile")
+
     def test_page_close_event_argument_closes_registered_tab(self):
         runtime, _browser, _context, page, tab = make_runtime()
         page.emit("close", page)

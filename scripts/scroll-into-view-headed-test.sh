@@ -4,8 +4,8 @@
 # Reproduces the failure that makes scrollintoview unusable: Playwright's
 # locator.scroll_into_view_if_needed waits for actionability, so a target that
 # is hidden, zero-sized, or absent never resolves and the 22s worker deadline
-# fires, poisoning the session. A visible offscreen target must scroll; a
-# non-actionable target must fail fast without poisoning.
+# fires, leaving the session needing a reset. A visible offscreen target must
+# scroll; a non-actionable target must fail fast and keep the session usable.
 #
 # The probe generates its own local page and uses its own session. It never
 # touches the shared opencode-camoufox session.
@@ -96,12 +96,12 @@ assert_visible_target() {
 
 assert_fast_invalid() {
   local label="$1" selector="$2" max="$3"
-  local start out code poisoned elapsed
+  local start out code ambiguous elapsed
   start="$(python3 -c 'import time;print(time.time())')"
   out="$(run scrollintoview "$selector")"
   elapsed="$(elapsed_since "$start")"
   code="$(json_field "$out" '.code // empty')"
-  poisoned="$(json_field "$out" '.data.poisoned // empty')"
+  ambiguous="$(json_field "$out" '.data.inputAmbiguous // empty')"
   if [[ "$(json_field "$out" '.success')" == "true" ]]; then
     fail=$((fail + 1))
     notes+=("FAIL  $label: expected failure but got success")
@@ -109,16 +109,16 @@ assert_fast_invalid() {
   fi
   if [[ "$(python3 -c "print(1 if $elapsed > $max else 0)")" == "1" ]]; then
     fail=$((fail + 1))
-    notes+=("FAIL  $label: took ${elapsed}s (limit ${max}s), code=$code poisoned=$poisoned")
+    notes+=("FAIL  $label: took ${elapsed}s (limit ${max}s), code=$code ambiguous=$ambiguous")
     return
   fi
-  if [[ "$code" == "camoufox_timeout" || "$poisoned" == "true" ]]; then
+  if [[ "$code" == "camoufox_timeout" || "$ambiguous" == "true" ]]; then
     fail=$((fail + 1))
-    notes+=("FAIL  $label: failed but timed out/poisoned (code=$code poisoned=$poisoned) in ${elapsed}s")
+    notes+=("FAIL  $label: failed but timed out/ambiguous (code=$code ambiguous=$ambiguous) in ${elapsed}s")
     return
   fi
   pass=$((pass + 1))
-  notes+=("pass  $label: fast non-poisoning rejection (code=$code) in ${elapsed}s")
+  notes+=("pass  $label: fast rejection without a reset requirement (code=$code) in ${elapsed}s")
 }
 
 cleanup() {

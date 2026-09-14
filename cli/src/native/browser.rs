@@ -4022,7 +4022,7 @@ mod tests {
     /// active_page_index pointing at the dead tab, which would wedge every
     /// subsequent command (and the periodic autosave) against it.
     #[tokio::test]
-    async fn test_tab_switch_to_dead_tab_fails_without_poisoning_active_tab() {
+    async fn test_tab_switch_to_dead_tab_fails_without_disrupting_active_tab() {
         let url = start_mock_cdp_browser_with_discarded_tab(false).await;
         let mut mgr = BrowserManager::connect_cdp(&url).await.expect("connect");
 

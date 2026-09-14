@@ -85,8 +85,8 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         raise BackendError(CODE_INVALID, "'button' must be one of: left, right, middle")
     duration_ms = require_int(params.get("durationMs", 0), "durationMs", 0, 10_000)
 
-    scope, resolved = await locator_for(ctx, spec)
-    box = await require_in_viewport_no_scroll(ctx, scope.locator(resolved), "path origin")
+    _scope, locator = await locator_for(ctx, spec)
+    box = await require_in_viewport_no_scroll(ctx, locator, "path origin")
     origin_x = box["x"]
     origin_y = box["y"]
     if any(x >= box["width"] or y >= box["height"] for x, y in points):

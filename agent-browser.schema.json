@@ -78,7 +78,7 @@
     },
     "profile": {
       "type": "string",
-      "description": "Path to the browser profile data directory."
+      "description": "Persistent browser profile directory. Camoufox requires an absolute private user-owned directory, retains it on close, and permits one browser per profile."
     },
     "state": {
       "type": "string",

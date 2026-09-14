@@ -136,9 +136,9 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     for selector, settle_ms in reveal_steps:
         ctx.set_stage("reveal")
         reveal_spec = parse_selector(selector, "reveal.selector")
-        scope, resolved = await locator_for(ctx, reveal_spec)
+        _scope, reveal_locator = await locator_for(ctx, reveal_spec)
         ctx.note_input_dispatched()
-        await bounded(ctx, scope.locator(resolved).hover(timeout=10_000), "reveal hover")
+        await bounded(ctx, reveal_locator.hover(timeout=10_000), "reveal hover")
         if settle_ms > 0:
             await asyncio.sleep(settle_ms / 1000.0)
 
@@ -146,11 +146,11 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     source_box: Optional[Dict[str, float]] = None
     source_point: Optional[Tuple[float, float]] = None
     if source.kind == "selector":
-        scope, resolved = await locator_for(ctx, source)
+        _scope, source_locator = await locator_for(ctx, source)
         if any_coordinate:
-            source_box = await require_in_viewport_no_scroll(ctx, scope.locator(resolved), "drag source")
+            source_box = await require_in_viewport_no_scroll(ctx, source_locator, "drag source")
         else:
-            source_box = await require_in_viewport(ctx, scope.locator(resolved), "drag source")
+            source_box = await require_in_viewport(ctx, source_locator, "drag source")
     else:
         src_x, src_y, _capture = await ctx.resolve_capture_point(source, None)
         source_point = (src_x, src_y)
@@ -159,11 +159,11 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     target_box: Optional[Dict[str, float]] = None
     target_point: Optional[Tuple[float, float]] = None
     if target.kind == "selector":
-        scope, resolved = await locator_for(ctx, target)
+        _scope, target_locator = await locator_for(ctx, target)
         if any_coordinate:
-            target_box = await require_in_viewport_no_scroll(ctx, scope.locator(resolved), "drag target")
+            target_box = await require_in_viewport_no_scroll(ctx, target_locator, "drag target")
         else:
-            target_box = await require_in_viewport(ctx, scope.locator(resolved), "drag target")
+            target_box = await require_in_viewport(ctx, target_locator, "drag target")
     else:
         tgt_x, tgt_y, _capture = await ctx.resolve_capture_point(target, source.capture_id)
         target_point = (tgt_x, tgt_y)
@@ -173,32 +173,26 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     if source.kind == "selector":
         ctx.set_stage("precheck-source")
-        scope, resolved = await locator_for(ctx, source)
-        await trial_hover(ctx, scope.locator(resolved), "drag source")
+        await trial_hover(ctx, source_locator, "drag source")
         fresh = await (
-            require_in_viewport_no_scroll(ctx, scope.locator(resolved), "drag source")
+            require_in_viewport_no_scroll(ctx, source_locator, "drag source")
             if any_coordinate
-            else require_in_viewport(ctx, scope.locator(resolved), "drag source")
+            else require_in_viewport(ctx, source_locator, "drag source")
         )
         source_box = fresh
         press_x, press_y = box_center(fresh)
     if target.kind == "selector":
         ctx.set_stage("precheck-target")
-        scope, resolved = await locator_for(ctx, target)
-        await trial_hover(ctx, scope.locator(resolved), "drag target")
+        await trial_hover(ctx, target_locator, "drag target")
         fresh = await (
-            require_in_viewport_no_scroll(ctx, scope.locator(resolved), "drag target")
+            require_in_viewport_no_scroll(ctx, target_locator, "drag target")
             if any_coordinate
-            else require_in_viewport(ctx, scope.locator(resolved), "drag target")
+            else require_in_viewport(ctx, target_locator, "drag target")
         )
         target_box = fresh
         drop_x, drop_y = box_center(fresh)
 
     if source.kind == "selector":
-        source_scope, source_selector = await locator_for(ctx, source)
-        target_scope, target_selector = await locator_for(ctx, target)
-        source_locator = source_scope.locator(source_selector)
-        target_locator = target_scope.locator(target_selector)
         source_box = await require_in_viewport_no_scroll(ctx, source_locator, "drag source")
         target_box = await require_in_viewport_no_scroll(ctx, target_locator, "drag target")
         press_x, press_y = box_center(source_box)

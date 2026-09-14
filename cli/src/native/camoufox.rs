@@ -98,7 +98,7 @@ pub fn install() -> Result<Value, String> {
 }
 
 pub fn failure(id: &str, code: &str, error: &str, poisoned: bool) -> Value {
-    json!({"id": id, "success": false, "code": code, "error": error, "data": {"poisoned": poisoned}})
+    json!({"id": id, "success": false, "code": code, "error": error, "data": {"inputAmbiguous": poisoned}})
 }
 
 pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
@@ -106,7 +106,7 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
         return Err("Scrollbar customization is not implemented by Camoufox V1".to_string());
     }
     if flags.allowed_domains.is_some() || flags.cdp.is_some() || flags.provider.is_some()
-        || flags.auto_connect || flags.pin_tab || flags.cli_pin_tab || flags.profile.is_some() || flags.state.is_some()
+        || flags.auto_connect || flags.pin_tab || flags.cli_pin_tab || flags.state.is_some()
         || flags.restore.is_some() || flags.session_name.is_some() || flags.restore_save.is_some()
         || flags.restore_check_url.is_some() || flags.restore_check_text.is_some() || flags.restore_check_fn.is_some()
         || flags.executable_path.is_some() || flags.proxy.is_some() || flags.args.is_some()
@@ -115,8 +115,9 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
         || flags.ignore_https_errors || flags.ca_cert.is_some() || flags.clear_ca_cert
         || flags.allow_file_access || flags.webgpu || flags.no_xvfb || flags.device.is_some()
         || flags.color_scheme.is_some() || flags.download_path.is_some() || flags.no_auto_dialog {
-        return Err("Camoufox V1 does not support CDP/providers, restore/profiles, domain containment, launch plugins, proxy/custom browser settings, or pin-tab. Remove those settings or use a separate Chrome session.".to_string());
+        return Err("Camoufox V1 does not support CDP/providers, state restoration, domain containment, launch plugins, proxy/custom browser settings, or pin-tab. Remove those settings or use a separate Chrome session.".to_string());
     }
+    if let Some(profile) = &flags.profile { profile_path(profile)?; }
     motion()?;
     Ok(())
 }
@@ -124,7 +125,7 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
 pub fn validate_environment() -> Result<(), String> {
     for key in [
         "AGENT_BROWSER_ALLOWED_DOMAINS", "AGENT_BROWSER_CDP", "AGENT_BROWSER_PROVIDER",
-        "AGENT_BROWSER_SESSION_NAME", "AGENT_BROWSER_RESTORE", "AGENT_BROWSER_PROFILE",
+        "AGENT_BROWSER_SESSION_NAME", "AGENT_BROWSER_RESTORE",
         "AGENT_BROWSER_STATE", "AGENT_BROWSER_EXECUTABLE_PATH", "AGENT_BROWSER_PROXY",
         "AGENT_BROWSER_ARGS", "AGENT_BROWSER_USER_AGENT", "AGENT_BROWSER_EXTENSIONS",
         "AGENT_BROWSER_INIT_SCRIPTS", "AGENT_BROWSER_ENABLE", "AGENT_BROWSER_CA_CERT",
@@ -144,6 +145,28 @@ pub fn validate_environment() -> Result<(), String> {
     Ok(())
 }
 
+/// Resolve profile paths before the worker replaces HOME; never silently accept a temporary profile.
+pub fn profile_path(value: &str) -> Result<String, String> {
+    let path = Path::new(value);
+    if value.trim().is_empty() || !path.is_absolute() {
+        return Err("Camoufox --profile requires a non-empty absolute directory path".to_string());
+    }
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err("Camoufox profile directory must not be a symlink".to_string());
+    }
+    Ok(fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned())
+}
+
+/// Explicit null requests ephemeral storage; absence inherits the daemon's launch configuration.
+pub fn requested_profile(command: &Value) -> Result<Option<String>, String> {
+    match command.get("profile") {
+        Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) => profile_path(path).map(Some),
+        Some(_) => Err("Camoufox profile must be an absolute path string or null".to_string()),
+        None => env::var("AGENT_BROWSER_PROFILE").ok().map(|path| profile_path(&path)).transpose(),
+    }
+}
+
 /// Reject unsupported surfaces before launching; only inert CLI metadata is stripped.
 /// Inspection and explicit controls retain canonical action names and daemon policy gates.
 pub fn normalize_command(command: &Value) -> Result<Value, String> {
@@ -152,7 +175,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
     }
     let action = command.get("action").and_then(Value::as_str).unwrap_or("");
     let fields: &[&str] = match action {
-        "launch" => &["headless", "engine", "webmcp", "noXvfb"],
+        "launch" => &["headless", "engine", "webmcp", "noXvfb", "profile"],
         "navigate" => &["url", "waitUntil"],
         "back" | "forward" | "reload" | "url" | "title" | "content" | "read"
         | "tab_list" | "session_info" | "close" | "mainframe" => &[],
@@ -208,6 +231,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         _ => return Err(format!("Action '{action}' is not supported by Camoufox V1")),
     };
     let mut result = command.clone();
+    if command.get("profile").is_some() { requested_profile(command)?; }
     let object = result.as_object_mut().ok_or("Command must be an object")?;
     if let Some(plugins) = object.remove("plugins") {
         if plugins.as_array().is_none_or(|items| !items.is_empty()) {
@@ -217,6 +241,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
     if action != "launch" {
         object.remove("engine");
         object.remove("headless");
+        object.remove("profile");
     }
     for field in object.keys() {
         if field != "id" && field != "action" && !fields.contains(&field.as_str()) {
@@ -264,6 +289,7 @@ pub struct CamoufoxBackend {
     /// so implicit launch cannot replace a session that requires explicit close.
     pub launched: bool,
     pub headed: bool,
+    pub profile: Option<String>,
 }
 
 impl CamoufoxBackend {
@@ -300,7 +326,7 @@ impl CamoufoxBackend {
         let process_group = child.id();
         let stdin = child.stdin.take().ok_or("Camoufox stdin was not piped")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("Camoufox stdout was not piped")?);
-        Ok(Self { child, stdin, stdout, process_group, failure: None, launched: false, headed: false })
+        Ok(Self { child, stdin, stdout, process_group, failure: None, launched: false, headed: false, profile: None })
     }
 
     async fn exchange(&mut self, command: &Value) -> Result<Value, String> {
@@ -330,21 +356,22 @@ impl CamoufoxBackend {
             return failure(id, "camoufox_invalid_request", "Request needs a non-empty id and at most 1 MiB; nothing was sent", false);
         }
         if let Some(reason) = &self.failure {
-            return failure(id, "camoufox_poisoned", reason, true);
+            return failure(id, "camoufox_session_reset_required", reason, true);
         }
         let result = tokio::time::timeout(HARD_DEADLINE, self.exchange(command)).await;
         match result {
             Ok(Ok(mut response)) => {
-                if response.get("poisoned").and_then(Value::as_bool) == Some(true) {
+                if response.get("inputAmbiguous").and_then(Value::as_bool) == Some(true) {
                     if !response.get("data").is_some_and(Value::is_object) {
                         response["data"] = json!({});
                     }
-                    response["data"]["poisoned"] = json!(true);
+                    response["data"]["inputAmbiguous"] = json!(true);
                 }
                 if command.get("action").and_then(Value::as_str) == Some("launch")
                     && response.get("success").and_then(Value::as_bool) == Some(true) {
                     self.launched = true;
                     self.headed = response["data"]["headless"].as_bool() == Some(false);
+                    self.profile = response["data"]["profilePath"].as_str().map(str::to_string);
                 }
                 response
             }
@@ -354,7 +381,7 @@ impl CamoufoxBackend {
                     _ => "Camoufox exceeded the 28s hard deadline. Outcome is ambiguous; no replay. Close the session to recover.".to_string(),
                 };
                 self.poison(&reason);
-                failure(id, "camoufox_poisoned", &reason, true)
+                failure(id, "camoufox_session_reset_required", &reason, true)
             }
         }
     }
@@ -392,6 +419,24 @@ impl Drop for CamoufoxBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn camoufox_persistent_profile_normalization_and_defaults() {
+        let guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_PROFILE"]);
+        let path = env::temp_dir().join("agent-browser-profile-contract").to_string_lossy().into_owned();
+        guard.set("AGENT_BROWSER_PROFILE", &path);
+        assert_eq!(requested_profile(&json!({})).unwrap(), Some(path.clone()));
+        assert_eq!(requested_profile(&json!({"profile": null})).unwrap(), None);
+        assert!(requested_profile(&json!({"profile": 1})).is_err());
+        for invalid in ["", " ", "relative-profile", "~/profile"] {
+            assert!(profile_path(invalid).is_err());
+        }
+        let launch = json!({"id":"1", "action":"launch", "profile":path});
+        assert_eq!(normalize_command(&launch).unwrap(), launch);
+        let navigation = json!({"id":"2", "action":"navigate", "url":"about:blank", "profile":path});
+        assert!(normalize_command(&navigation).unwrap().get("profile").is_none());
+        assert!(normalize_command(&json!({"id":"3", "action":"launch", "profile":path, "storageState":"state.json"})).is_err());
+    }
 
     #[test]
     fn camoufox_inspection_normalize_preserves_canonical_payloads() {

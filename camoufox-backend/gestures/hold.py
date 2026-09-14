@@ -77,8 +77,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     assert button is not None and settle_before is not None
 
     if spec.kind == "selector":
-        scope, selector = await locator_for(ctx, spec)
-        locator = scope.locator(selector)
+        _scope, locator = await locator_for(ctx, spec)
         ctx.set_stage("resolve")
         box = await require_in_viewport(ctx, locator, "target")
         await trial_hover(ctx, locator, "target")

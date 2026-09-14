@@ -5,7 +5,6 @@ from typing import Any, Dict
 from input_context import optional_enum, optional_int
 
 from gestures._common import (
-    bounded,
     locator_for,
     locator_click,
     mouse_click_at,
@@ -67,15 +66,14 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     point = None
     if spec.kind == "selector":
-        scope, selector = await locator_for(ctx, spec)
-        locator = scope.locator(selector)
+        _scope, locator = await locator_for(ctx, spec)
+        label = f"selector {('@' + spec.ref) if spec.ref else spec.selector!r}"
         ctx.set_stage("resolve")
-        box = await require_in_viewport(ctx, locator, "target")
+        box = await require_in_viewport(ctx, locator, label)
         ctx.set_stage("dispatch")
-        await locator_click(ctx, locator, button, count)
-        if box is not None:
-            point = {"x": round(box["x"] + box["width"] / 2, 2),
-                     "y": round(box["y"] + box["height"] / 2, 2)}
+        await locator_click(ctx, locator, button, count, label=label)
+        point = {"x": round(box["x"] + box["width"] / 2, 2),
+                 "y": round(box["y"] + box["height"] / 2, 2)}
     else:
         x, y, _capture = await ctx.resolve_capture_point(spec, None)
         ctx.set_stage("dispatch")

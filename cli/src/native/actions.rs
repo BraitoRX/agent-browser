@@ -2509,7 +2509,7 @@ fn policy_actions_for_command(
 }
 
 async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value {
-    use super::camoufox::{failure, normalize_command, CamoufoxBackend, HARD_DEADLINE};
+    use super::camoufox::{failure, normalize_command, requested_profile, CamoufoxBackend, HARD_DEADLINE};
     let id = cmd.get("id").and_then(Value::as_str).unwrap_or("");
     let action = cmd.get("action").and_then(Value::as_str).unwrap_or("");
     if action == "close" {
@@ -2522,6 +2522,10 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
         Ok(command) => command,
         Err(error) => return failure(id, "camoufox_unsupported", &error, false),
     };
+    let profile = match requested_profile(cmd) {
+        Ok(profile) => profile,
+        Err(error) => return failure(id, "camoufox_invalid_params", &error, false),
+    };
     state.engine = "camoufox".to_string();
     write_engine_file(&state.session_id, &state.engine);
     if state.camoufox.is_none() {
@@ -2531,6 +2535,9 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
         }
     }
     let backend = state.camoufox.as_mut().expect("Camoufox worker was just created");
+    if backend.launched && profile != backend.profile && !matches!(action, "session_info" | "gestures") {
+        return failure(id, "camoufox_invalid_params", "Close the session before changing the Camoufox profile; the current profile has not been modified", false);
+    }
     let requested_headless = cmd.get("headless").and_then(Value::as_bool);
     if backend.launched && requested_headless.is_some_and(|headless| headless == backend.headed) {
         return failure(id, "camoufox_unsupported", "Close the session before changing headed mode", false);
@@ -2542,10 +2549,11 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
     });
     if action == "launch" {
         command["headless"] = json!(headless);
+        command["profile"] = json!(profile);
     }
     let outcome = tokio::time::timeout(HARD_DEADLINE, async {
         if !backend.launched && !matches!(action, "launch" | "session_info" | "gestures" | "tab_list" | "read") {
-            let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless})).await;
+            let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless, "profile": profile})).await;
             if launched.get("success").and_then(Value::as_bool) != Some(true) {
                 launched["id"] = json!(id);
                 return launched;
@@ -2558,7 +2566,7 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
         Err(_) => {
             let reason = "Camoufox command exceeded 28s including startup. Input outcome is ambiguous; no replay. Close the session to recover.";
             backend.poison(reason);
-            failure(id, "camoufox_poisoned", reason, true)
+            failure(id, "camoufox_session_reset_required", reason, true)
         }
     }
 }

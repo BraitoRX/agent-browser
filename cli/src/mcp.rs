@@ -926,6 +926,7 @@ fn camoufox_tool(mut tool: Value) -> Value {
     }));
     props.get_mut("timeoutMs").unwrap()["minimum"] = json!(30000);
     props.get_mut("namespace").unwrap()["description"] = json!("Optional namespace isolating daemon sockets.");
+    props.get_mut("profile").unwrap()["description"] = json!("Absolute path to a private persistent Camoufox profile. Reuse it to retain login storage across restarts. Close before changing profiles; only one browser may own a profile. Omit to use configured defaults.");
     props.get_mut("extraArgs").unwrap()["description"] = json!("Advanced CLI arguments, still subject to Camoufox capability and safety validation. Engine overrides are rejected.");
     let removed: &[&str] = match name.as_str() {
         TOOL_OPEN => &["webgpu", "webmcp"],
@@ -950,7 +951,8 @@ fn camoufox_tool(mut tool: Value) -> Value {
         _ => {}
     }
     let description = match name.as_str() {
-        TOOL_OPEN => Some("Launch Camoufox and optionally navigate. After session loss, explicitly close/open; after closing the active tab, switch tabs or create one. Never replay ambiguous input."),
+        TOOL_OPEN => Some("Launch Camoufox and optionally navigate. A configured profile retains persistent login storage across restarts. Let the user sign in manually; never request passwords in chat. After session loss, explicitly close/open with the same profile. Never replay ambiguous input."),
+        TOOL_CLOSE => Some("Close the named browser session without deleting its persistent profile. Tabs and transient state end; persistent cookies and site storage remain. Leave a user's persistent browser open unless closure or recovery is requested."),
         TOOL_READ => Some("Read rendered body text from the selected frame, not a URL fetch or markdown extractor. Use scoped DOM queries or eval when accessibility snapshots omit content. Returns frameId/frameUrl."),
         TOOL_SNAPSHOT => Some("Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options. Every snapshot, including a scoped one, replaces exposed refs; navigation, frame detachment and scope changes clear them. DOM-only changes can still cause native locator failures. Use DOM queries for content absent from this accessibility view."),
         TOOL_SCREENSHOT => Some("Capture the top-level viewport as PNG, returning its path and captureId for coordinate gestures. Element crops, full-page capture, annotation and JPEG are not supported."),
@@ -1076,7 +1078,7 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_GESTURE,
             "Execute gesture",
-            "Execute a schema-validated native Camoufox gesture. Discover its schema first. Coordinates require a fresh screenshot captureId. Optional observation is returned in the same call. Input diagnostics do not assert application success. A poisoned/ambiguous input must not be retried; close the session. Disabled when action policies or confirm-actions are active.",
+            "Execute a schema-validated native Camoufox gesture. Discover its schema first. Coordinates require a fresh screenshot captureId. Optional observation is returned in the same call. Input diagnostics do not assert application success. Input whose outcome may be ambiguous must not be retried; close the session. Disabled when action policies or confirm-actions are active.",
             json!({
                 "name": {"type": "string"},
                 "params": {"type": "object", "description": "Parameters matching the discovered gesture schema."},
@@ -1352,7 +1354,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_DOWNLOAD,
             "Download file",
-            "Click an element once and save the download. Camoufox refuses existing destinations; after a save-only failure, use wait_for_download without replaying the click. A poisoned session requires close instead.",
+            "Click an element once and save the download. Camoufox refuses existing destinations; after a save-only failure, use wait_for_download without replaying the click. A session that requires a reset must be closed instead.",
             json!({ "selector": selector_schema(), "path": { "type": "string" } }),
             &["selector", "path"],
         ),
@@ -2397,6 +2399,13 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
         json!({
             "type": "string",
             "description": "Daemon idle timeout such as 30s, 5m, 1h, or raw milliseconds. Defaults to 1h; 0 disables idle shutdown."
+        }),
+    );
+    props.insert(
+        "profile".to_string(),
+        json!({
+            "type": "string",
+            "description": "Persistent browser profile directory, forwarded through --profile. Omit to use configured defaults."
         }),
     );
     props.insert(
@@ -4222,6 +4231,10 @@ fn append_common_global_args(
     }
     append_session_args(args, session);
 
+    if let Some(profile) = optional_string(arguments, "profile")? {
+        args.extend(["--profile".to_string(), profile]);
+    }
+
     if let Some(idle_timeout) = optional_string(arguments, "idleTimeout")? {
         args.push("--idle-timeout".to_string());
         args.push(idle_timeout);
@@ -4453,8 +4466,8 @@ fn response_text(value: &Value) -> Option<String> {
             {
                 let error = obj.get("error").and_then(Value::as_str)?;
                 let mut text = format!("{code}: {error}");
-                if obj.get("poisoned").and_then(Value::as_bool) == Some(true)
-                    || value["data"]["poisoned"].as_bool() == Some(true)
+                if obj.get("inputAmbiguous").and_then(Value::as_bool) == Some(true)
+                    || value["data"]["inputAmbiguous"].as_bool() == Some(true)
                 {
                     text.push_str("\nInput outcome may be ambiguous; do not replay. Close the session and inspect application state before continuing.");
                 } else if code == "camoufox_timeout" {
@@ -5356,7 +5369,7 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_lifecycle_poisoning_is_visible_in_text_only_clients() {
+    fn camoufox_lifecycle_reset_state_is_visible_in_text_only_clients() {
         for top_level in [true, false] {
             let mut response = json!({
                 "success": false,
@@ -5365,9 +5378,9 @@ mod tests {
                 "data": {}
             });
             if top_level {
-                response["poisoned"] = json!(true);
+                response["inputAmbiguous"] = json!(true);
             } else {
-                response["data"]["poisoned"] = json!(true);
+                response["data"]["inputAmbiguous"] = json!(true);
             }
             let result = tool_result_from_run(CliRun {
                 exit_code: Some(1),
@@ -5380,7 +5393,7 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_timeout_without_poisoning_preserves_cli_response_and_recovery_hint() {
+    fn camoufox_timeout_without_reset_requirement_preserves_cli_response_and_recovery_hint() {
         for timeout_kind in ["operation", "deadline"] {
             let response = json!({
                 "success": false,
@@ -5406,7 +5419,7 @@ mod tests {
     }
 
     #[test]
-    fn camoufox_timeout_poisoning_overrides_the_recovery_hint() {
+    fn camoufox_timeout_reset_requirement_overrides_the_recovery_hint() {
         for timeout_kind in ["operation", "deadline"] {
             for top_level in [true, false] {
                 let mut response = json!({
@@ -5416,9 +5429,9 @@ mod tests {
                     "data": {"timeoutKind": timeout_kind}
                 });
                 if top_level {
-                    response["poisoned"] = json!(true);
+                    response["inputAmbiguous"] = json!(true);
                 } else {
-                    response["data"]["poisoned"] = json!(true);
+                    response["data"]["inputAmbiguous"] = json!(true);
                 }
                 let result = tool_result_from_run(CliRun {
                     exit_code: Some(1),
@@ -5698,6 +5711,31 @@ mod tests {
             crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["action"], "request_detail");
         assert_eq!(command["requestId"], "n1");
+    }
+
+    #[test]
+    fn camoufox_persistent_profile_mcp_cli_parity() {
+        let _guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ENGINE"]);
+        let profile = env::temp_dir().join("camoufox-mcp-profile").to_string_lossy().into_owned();
+        let arguments = camoufox_arguments(TOOL_OPEN, &json!({"profile":profile})).unwrap();
+        let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
+        let flags = crate::flags::parse_flags(&args);
+        assert_eq!(flags.profile.as_deref(), Some(profile.as_str()));
+        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert_eq!(command["profile"], profile);
+        assert_eq!(command["engine"], "camoufox");
+        assert!(crate::native::camoufox::normalize_command(&command).is_ok());
+
+        let args = cli_tool_args(&arguments, vec!["get".into(), "title".into()], None).unwrap();
+        let flags = crate::flags::parse_flags(&args);
+        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert_eq!(command["profile"], profile);
+        assert!(crate::native::camoufox::normalize_command(&command).unwrap().get("profile").is_none());
+        let available = tools_for_config(&McpConfig::from_profiles_for_engine(vec![ToolProfile::All], true));
+        for tool in available {
+            assert_eq!(tool["inputSchema"]["properties"]["profile"]["type"], "string");
+        }
+        assert!(camoufox_arguments(TOOL_OPEN, &json!({"profile":profile, "restore":true})).is_err());
     }
 
     #[test]

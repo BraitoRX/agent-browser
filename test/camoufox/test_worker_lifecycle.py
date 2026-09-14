@@ -33,7 +33,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(response["data"]["launched"])
         self.assertFalse(response["data"]["browserConnected"])
         self.assertTrue(response["data"]["recoveryRequired"])
-        self.assertNotIn("poisoned", response)
+        self.assertNotIn("inputAmbiguous", response)
 
     async def test_target_closed_race_reconciles_browser_loss_without_replay(self):
         async def failed_action(*args):
@@ -84,7 +84,7 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
             response = await self.request()
         self.assertEqual(response["code"], "camoufox_session_closed")
 
-    async def test_attempted_input_remains_poisoned_after_target_loss(self):
+    async def test_attempted_input_requires_a_reset_after_target_loss(self):
         async def close_during_input():
             self.page._closed = True
             raise TargetClosedError()
@@ -97,15 +97,15 @@ class WorkerLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.worker, "run_action", new=AsyncMock(side_effect=failed_action)) as action:
             response = await self.request()
         action.assert_awaited_once()
-        self.assertTrue(response["poisoned"])
+        self.assertTrue(response["inputAmbiguous"])
         self.assertEqual(response["code"], "camoufox_no_active_tab")
         self.assertIn("without retrying the input", response["error"])
         self.assertEqual(self.runtime.journal.pending_buttons(), ["left"])
         refused = await self.request(url="about:blank")
-        self.assertEqual(refused["code"], "camoufox_poisoned")
+        self.assertEqual(refused["code"], "camoufox_session_reset_required")
         diagnostics = await self.request("session_info")
         self.assertTrue(diagnostics["success"])
-        self.assertTrue(diagnostics["data"]["poisoned"])
+        self.assertTrue(diagnostics["data"]["inputAmbiguous"])
 
     async def test_unrelated_playwright_error_is_not_session_loss(self):
         error = type("Error", (Exception,), {"__module__": "playwright._impl._errors"})

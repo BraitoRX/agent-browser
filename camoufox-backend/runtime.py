@@ -37,8 +37,12 @@ from har_capture import HarCapture
 from interaction_events import InteractionEvents
 from network_observer import NetworkObserver
 from network_control import NetworkControl
+from persistent_profile import PersistentProfile
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+LEADING_JS_TRIVIA_RE = re.compile(r"[\s\ufeff]+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/")
+RETURN_STATEMENT_RE = re.compile(r"return(?![\w$\\\u200c\u200d])")
+EVAL_RETURN_ERROR = "eval script contains a top-level return; wrap the script in an IIFE, for example: (() => { return document.title; })()"
 REF_TOKEN_RE = re.compile(r"\[ref=((?:f\d+)?e\d+)\]")
 HEADING_LEVEL_ANNOTATION_RE = re.compile(r"\[level=(\d+)\]")
 MAIN_FALLBACK_SELECTOR = "main"
@@ -407,6 +411,9 @@ class GestureContext:
     def locator_scope(self, spec: TargetSpec) -> Tuple[Any, str]:
         return self.runtime.locator_scope(spec)
 
+    async def action_locator(self, spec: TargetSpec) -> Tuple[Any, Any]:
+        return await self.runtime.resolve_action_locator(spec)
+
     async def require_capture(self, capture_id: str) -> Dict[str, Any]:
         return await self.runtime.require_capture(capture_id)
 
@@ -438,6 +445,8 @@ class CamoufoxRuntime:
         self._camoufox: Any = None
         self.browser: Any = None
         self.context: Any = None
+        self._profile: Optional[PersistentProfile] = None
+        self.profile_path: Optional[str] = None
         self.tabs: Dict[str, Tab] = {}
         self._page_to_tab: Dict[int, str] = {}
         self._tab_counter = 0
@@ -448,11 +457,19 @@ class CamoufoxRuntime:
         self._input_attempts = 0
         self._close_reason: Optional[str] = None
 
-    async def launch(self, headless: bool) -> Dict[str, Any]:
+    async def launch(self, headless: bool, profile: Optional[str] = None) -> Dict[str, Any]:
+        """Reuse a private on-disk context only when explicitly selected; never switch a live profile."""
         error = self.sync_session_state()
         if error is not None:
             raise error
+        try:
+            persistent = PersistentProfile(profile) if profile is not None else None
+            requested_path = str(persistent.path.resolve()) if persistent is not None else None
+        except (OSError, ValueError) as exc:
+            raise BackendError(CODE_INVALID, f"invalid Camoufox profile: {exc}") from exc
         if self._is_live():
+            if self.profile_path != requested_path:
+                raise BackendError(CODE_INVALID, "browser is already running with a different profile; close the session first")
             if self.headless != headless:
                 raise BackendError(
                     CODE_ERROR,
@@ -490,6 +507,15 @@ class CamoufoxRuntime:
             ) from exc
         self._closing = False
         try:
+            profile_kwargs: Dict[str, Any] = {}
+            if persistent is not None:
+                try:
+                    persistent.acquire()
+                    self._profile = persistent
+                    self.profile_path = str(persistent.path)
+                    profile_kwargs = persistent.launch_kwargs(str(executable))
+                except (OSError, ValueError) as exc:
+                    raise BackendError(CODE_INVALID, f"cannot use Camoufox profile: {exc}") from exc
             # Set AppKit policy on the main thread before launch_options probes displays in a thread.
             configure_macos_headed_worker(headless)
             # Camoufox 0.5.6 resolves assets beside executable_path. macOS stores them in Resources.
@@ -500,24 +526,43 @@ class CamoufoxRuntime:
                 enable_cache=True,
                 executable_path=str(asset_anchor),
                 exclude_addons=list(DefaultAddons),
+                **profile_kwargs,
             )
             options["executable_path"] = str(executable)
-            instance = AsyncCamoufox(from_options=options, persistent_context=False)
+            if persistent is not None:
+                if not profile_kwargs:
+                    try:
+                        persistent.save_identity(options, str(executable))
+                    except (OSError, ValueError) as exc:
+                        raise BackendError(CODE_INVALID, f"cannot save Camoufox profile identity: {exc}") from exc
+                options["user_data_dir"] = str(persistent.path)
+            instance = AsyncCamoufox(from_options=options, persistent_context=persistent is not None)
             self._camoufox = instance
-            browser = await instance.__aenter__()
-            self.browser = browser
-            self.context = await browser.new_context()
+            launched = await instance.__aenter__()
+            if persistent is not None:
+                self.context = launched
+                self.browser = launched.browser
+                if self.browser is None:
+                    raise BackendError(CODE_NOT_LAUNCHED, "persistent Camoufox context has no owning browser")
+            else:
+                self.browser = launched
+                self.context = await launched.new_context()
             self._configure_default_timeout(self.context)
             self._close_reason = None
             self.network.attach(self.context)
             self.inspector.attach_context(self.context)
-            browser.on("disconnected", self._on_browser_disconnected)
+            self.browser.on("disconnected", self._on_browser_disconnected)
             self.context.on("close", self._on_context_closed)
             self.context.on("page", self._on_context_page)
             self.launched = True
             self.headless = headless
-            page = await self.context.new_page()
-            self.active_id = self._register_tab(page, label=None).tab_id
+            pages = list(self.context.pages)
+            if not pages:
+                pages = [await self.context.new_page()]
+            for page in pages:
+                tab = self._register_tab(page, label=None)
+                if self.active_id is None:
+                    self.active_id = tab.tab_id
         except BaseException:
             await self.close()
             raise
@@ -624,6 +669,8 @@ class CamoufoxRuntime:
             "motion": self.motion,
             "humanize": self.humanize,
             "runtimeDir": str(self.runtime_dir),
+            "persistentProfile": self.profile_path is not None,
+            "profilePath": self.profile_path,
         }
 
     def browser_connected(self) -> bool:
@@ -661,6 +708,11 @@ class CamoufoxRuntime:
             except Exception:
                 pass
         self.browser = None
+        profile = self._profile
+        self._profile = None
+        if profile is not None:
+            profile.release()
+        self.profile_path = None
         self.launched = False
         self.active_id = None
         self.tabs.clear()
@@ -1004,9 +1056,21 @@ class CamoufoxRuntime:
 
     async def evaluate(self, script: str) -> Dict[str, Any]:
         """Use Camoufox's default isolated evaluation context, without opting into main-world eval."""
+        offset = 0
+        while trivia := LEADING_JS_TRIVIA_RE.match(script, offset):
+            offset = trivia.end()
+        if RETURN_STATEMENT_RE.match(script, offset):
+            raise BackendError(CODE_INVALID, EVAL_RETURN_ERROR)
         frame = self.active_scope()
         self.captures.invalidate_all()
-        result = await frame.evaluate(script)
+        try:
+            result = await frame.evaluate(script)
+        except Exception as exc:
+            if "playwright" in type(exc).__module__ and re.search(
+                r"SyntaxError: (?:return not in function|Illegal return statement)", str(exc), re.IGNORECASE,
+            ):
+                raise BackendError(CODE_INVALID, EVAL_RETURN_ERROR) from exc
+            raise
         return {"result": json_safe(result), **self.scope_metadata()}
 
     async def read(self) -> Dict[str, Any]:
@@ -1103,7 +1167,23 @@ class CamoufoxRuntime:
         if selector is not None:
             spec = ic.parse_selector(selector, "selector")
             scope, resolved = self.locator_scope(spec)
-            text = await scope.locator(resolved).aria_snapshot(**kwargs)
+            locator = scope.locator(resolved)
+            try:
+                if await asyncio.wait_for(locator.count(), timeout=2) == 0:
+                    raise BackendError(CODE_INVALID, f"snapshot selector {selector!r} does not match any element")
+                timeout_ms = max(500, ic.action_deadline_ms() - 1000)
+                text = await locator.aria_snapshot(timeout=timeout_ms, **kwargs)
+            except asyncio.TimeoutError:
+                raise BackendError(
+                    ic.CODE_TIMEOUT, f"resolve snapshot selector {selector!r} exceeded its 2000ms watchdog",
+                    deadline_exceeded=True,
+                ) from None
+            except Exception as exc:
+                if ic.is_playwright_timeout(exc) and not isinstance(exc, BackendError):
+                    raise ic.playwright_timeout_error(exc, f"snapshot selector {selector!r}") from exc
+                if "playwright" in type(exc).__module__ and "does not match any element" in str(exc):
+                    raise BackendError(CODE_INVALID, f"snapshot selector {selector!r} does not match any element") from exc
+                raise
         elif tab.selected_frame is not None:
             text = await self.active_scope().locator(":root").aria_snapshot(**kwargs)
         else:
@@ -1549,6 +1629,71 @@ class CamoufoxRuntime:
             raise BackendError(CODE_INVALID, "selector is required")
         return self.active_scope(), spec.selector
 
+    async def resolve_action_locator(self, spec: TargetSpec) -> Tuple[Any, Any]:
+        page, tab = self.require_active()
+        if spec.ref is None:
+            if spec.selector is None:
+                raise BackendError(CODE_INVALID, "selector is required")
+            return self.active_scope(), self.active_scope().locator(spec.selector)
+        if spec.dom_ref:
+            if spec.ref not in tab.dom_refs:
+                raise BackendError(
+                    CODE_STALE_REF,
+                    f"ref '@{spec.ref}' is not an active DOM ref for tab {tab.tab_id}; "
+                    "it is stale or was not returned by the latest dom_chunk call",
+                )
+            return self.active_scope(), self.active_scope().locator(tab.dom_refs[spec.ref])
+        if spec.ref not in tab.refs:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' was not exposed by the latest snapshot of tab {tab.tab_id}; "
+                "take a fresh snapshot",
+            )
+        if spec.frame_prefix is not None:
+            return page, page.locator(f"aria-ref={spec.ref}")
+        aria = page.locator(f"aria-ref={spec.ref}")
+        try:
+            count = await asyncio.wait_for(aria.count(), timeout=2)
+        except asyncio.TimeoutError:
+            raise BackendError(
+                ic.CODE_TIMEOUT, f"resolving ref '@{spec.ref}' exceeded its 2000ms watchdog",
+                deadline_exceeded=True,
+            ) from None
+        if count == 1:
+            return page, aria
+        meta = tab.refs_meta.get(spec.ref)
+        role = meta.get("role") if meta is not None else None
+        if not role:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' no longer resolves to a page element (it was exposed by the latest snapshot "
+                "but the element was re-rendered; role/name fallback unavailable); take a fresh snapshot",
+            )
+        name = meta.get("name") if meta is not None else None
+        try:
+            candidate = page.get_by_role(role, name=name) if name else page.get_by_role(role)
+        except Exception:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' no longer resolves to a page element (it was exposed by the latest snapshot "
+                "but the element was re-rendered; role/name fallback unavailable); take a fresh snapshot",
+            ) from None
+        try:
+            count = await asyncio.wait_for(candidate.count(), timeout=2)
+        except asyncio.TimeoutError:
+            raise BackendError(
+                ic.CODE_TIMEOUT, f"resolving ref '@{spec.ref}' exceeded its 2000ms watchdog",
+                deadline_exceeded=True,
+            ) from None
+        if count != 1:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' no longer resolves to a page element (it was exposed by the latest snapshot "
+                f"but the element was re-rendered; role/name fallback found {count} candidates); "
+                "take a fresh snapshot",
+            )
+        return page, candidate
+
     def require_exposed_ref(self, ref: str) -> None:
         _page, tab = self.require_active()
         if ref.startswith("d"):
@@ -1718,9 +1863,11 @@ class CamoufoxRuntime:
             "humanize": self.humanize,
             "activeTab": self.active_id,
             "tabs": self.list_tabs(),
+            "persistentProfile": self.profile_path is not None,
+            "profilePath": self.profile_path,
             "capabilities": {
                 "snapshotFormat": "aria-ai",
-                "refs": "aria-ref (element-backed, per-tab, cleared on navigation and replaced by new snapshots)",
+                "refs": "aria-ref (element-backed, per-tab, cleared on navigation and replaced by new snapshots; main-frame refs whose element was re-rendered are re-resolved by role/name, and an ambiguous or failed re-resolution returns camoufox_stale_ref so a fresh snapshot is needed)",
                 "screenshots": {"format": "png", "scale": "css", "captureTtlSeconds": ic.CAPTURE_TTL_SECONDS},
                 "gestures": sorted(registry_names),
                 "holdMaxMs": ic.HOLD_MAX_MS,
