@@ -792,11 +792,11 @@ impl CamoufoxBackend {
                     self.adblock = response["data"]["adblock"].as_bool().unwrap_or(false);
                     if let Some(port) = self.vnc_port {
                         response["data"]["vncUrl"] = json!(format!(
-                            "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=9&compression=0"
+                            "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=6&compression=0&resize=scale&reconnect=1"
                         ));
                         if let Some(name) = &self.container_name {
                             response["data"]["vncDomainUrl"] = json!(format!(
-                                "https://{name}.orb.local/vnc.html?autoconnect=1&quality=9&compression=0"
+                                "https://{name}.orb.local/vnc.html?autoconnect=1&quality=6&compression=0&resize=scale&reconnect=1"
                             ));
                         }
                         response["data"]["nativeVnc"] = json!(format!("vnc://127.0.0.1:{port}"));

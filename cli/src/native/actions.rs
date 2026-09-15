@@ -2607,11 +2607,11 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
                     response["data"] = json!({});
                 }
                 response["data"]["vncUrl"] = json!(format!(
-                    "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=9&compression=0"
+                    "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=6&compression=0&resize=scale&reconnect=1"
                 ));
                 if let Some(name) = &backend.container_name {
                     response["data"]["vncDomainUrl"] = json!(format!(
-                        "https://{name}.orb.local/vnc.html?autoconnect=1&quality=9&compression=0"
+                        "https://{name}.orb.local/vnc.html?autoconnect=1&quality=6&compression=0&resize=scale&reconnect=1"
                     ));
                 }
             }
