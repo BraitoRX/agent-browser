@@ -110,6 +110,11 @@ Shared conventions: `selector` accepts CSS or native aria refs `@eN` / `@fNeN` (
 | `count` | `selector` | `{count}` |
 | `boundingbox` | `selector` | `{boundingBox}` |
 | `isvisible` / `isenabled` / `ischecked` | `selector` | `{visible}` / `{enabled}` / `{checked}` |
+| `getbyrole` | `role`, `subaction?` (`click`/`fill`/`check`/`hover`/`text`, default `click`), `name?`, `exact?`, `value?` for fill | Semantic location in selected frame scope; `{found, count, selector, text}` for `text`; acting subactions delegate through the derived unique CSS selector, zero matches and ambiguous acting matches fail with `camoufox_invalid_params` |
+| `getbytext` / `getbyalttext` / `getbytitle` | `text`, `subaction?`, `exact?`, `value?` | same contract as `getbyrole` |
+| `getbylabel` / `getbyplaceholder` | `label` / `placeholder`, `subaction?`, `exact?`, `value?` | same contract as `getbyrole` |
+| `getbytestid` | `testId`, `subaction?`, `value?` | same contract as `getbyrole` |
+| `nth` | `selector`, `index` (negative allowed), `subaction?`, `value?` | same contract, index resolved after selector/ref resolution |
 | `gestures` | `name?` | list of summaries, or full schema/description/examples for one |
 | `gesture` | `name`, `params`, `observe?` (`none`/`snapshot`/`screenshot`) | gesture result; screenshot observation sets top-level `path` |
 | `close` | none | `{closed:true}` then exit |
@@ -120,7 +125,7 @@ Backend additions require a rebuilt fork binary and a fresh daemon/MCP server. S
 
 Frame IDs are stable per tab while the frame remains live and are never reused. Frame metadata returns at most 256 entries with `framesOmitted`; names/URLs there are clipped to 4096 characters. DOM/CSS, content/read/eval/snapshots and text/function waits follow selected scope. Native refs still route page-wide. Navigation/history/title/URL/load waits, network/state and screenshots remain top-level/context operations. Detached scope fails explicitly until recovery; `mainframe` works even then. Advanced drag/hold/path require main scope. Each scoped or full snapshot replaces exposed refs, matching native snapshot-cache lifetimes.
 
-Snapshots are not a complete DOM view. Use `page_outline`, `page_links`, and `dom_chunk` for bounded structured inspection; raw DOM strings and eval results still have the 16 MiB transport ceiling without pagination. CSS reaches open shadow roots, while eval must traverse them explicitly and DOM chunks do not expand descendant shadow roots. Closed roots, semantic find and arbitrary selector-engine chaining are not exposed. Raw href metadata may be relative and may contain secrets; page-link records preserve it and also include a resolved URL.
+Snapshots are not a complete DOM view. Use `innerhtml` on `html` for full-page reads, the find-family actions (`getbyrole`, `getbytext`, `getbylabel`, `getbyplaceholder`, `getbyalttext`, `getbytitle`, `getbytestid`, `nth`) for semantic location with a derived unique CSS selector, and `page_outline`, `page_links`, and `dom_chunk` for bounded structured CLI inspection; raw DOM strings and eval results still have the 16 MiB transport ceiling without pagination. CSS reaches open shadow roots, while eval must traverse them explicitly and DOM chunks do not expand descendant shadow roots. Closed roots and arbitrary selector-engine chaining are not exposed. Raw href metadata may be relative and may contain secrets; page-link records preserve it and also include a resolved URL.
 
 | action | fields | data / scope |
 | --- | --- | --- |
