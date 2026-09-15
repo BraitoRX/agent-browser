@@ -4197,7 +4197,10 @@ Options:
                              inside a container bubble). Requires Docker/OrbStack and the bubble image
                              (camoufox-backend/bubble/build.sh); launch response includes vncUrl
                              for the live view. Sessions, cookies and profiles persist exactly as
-                             with the default backend
+                             with the default backend. The container is named after the session
+                             (agent-browser-bubble-<session>), so on OrbStack the noVNC view is also
+                             reachable at a fixed domain: https://agent-browser-bubble-<session>.orb.local/vnc.html
+                             (vncDomainUrl in launch and session info)
   --idle-timeout <time>      Shut down daemon after inactivity: 10s, 3m, 1h, or raw ms
                              (default: 1h; 0 disables; dashboard input resets the timer)
   --no-auto-dialog           Disable automatic dismissal of alert/beforeunload dialogs (or AGENT_BROWSER_NO_AUTO_DIALOG)

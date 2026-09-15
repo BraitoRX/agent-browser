@@ -153,6 +153,40 @@ fn free_vnc_port() -> Result<u16, String> {
         .map_err(|error| format!("Cannot determine the VNC port: {error}"))
 }
 
+/// Deterministic bubble container name for a named session. OrbStack publishes
+/// the container at https://{name}.orb.local, so a session-derived name gives
+/// the bubble a fixed local domain and a fixed noVNC URL across relaunches.
+/// Anonymous ("default") sessions keep the PID+nanosecond scheme because they
+/// have no stable identity to derive a name from.
+fn bubble_container_name() -> String {
+    match env::var("AGENT_BROWSER_SESSION") {
+        Ok(session) if !session.trim().is_empty() && session != "default" => {
+            format!("agent-browser-bubble-{session}")
+        }
+        _ => format!(
+            "agent-browser-bubble-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.subsec_nanos())
+                .unwrap_or(0)
+        ),
+    }
+}
+
+/// Remove a leftover container holding the deterministic name. A previous
+/// daemon with the same session may not have cleaned up (crash, forced kill);
+/// without this the fixed name would collide and docker run would refuse to
+/// start. Missing containers are not an error.
+fn remove_bubble_container(name: &str) {
+    let _ = std::process::Command::new("docker")
+        .args(["rm", "-f", name])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
 fn bubble_run_args(
     assets: &Path,
     motion: &str,
@@ -568,7 +602,7 @@ pub struct CamoufoxBackend {
     pub adblock: bool,
     pub bubble: bool,
     bubble_profile_mounted: bool,
-    container_name: Option<String>,
+    pub container_name: Option<String>,
     pub vnc_port: Option<u16>,
 }
 
@@ -584,14 +618,8 @@ impl CamoufoxBackend {
         let assets = materialize_assets(&root)?;
         let (mut command, vnc_port, container_name, bubble_profile_mounted) = if bubble {
             let vnc_port = free_vnc_port()?;
-            let container_name = format!(
-                "agent-browser-bubble-{}-{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|elapsed| elapsed.subsec_nanos())
-                    .unwrap_or(0)
-            );
+            let container_name = bubble_container_name();
+            remove_bubble_container(&container_name);
             let host_profile = env::var("AGENT_BROWSER_PROFILE")
                 .ok()
                 .filter(|path| !path.is_empty())
@@ -766,6 +794,11 @@ impl CamoufoxBackend {
                         response["data"]["vncUrl"] = json!(format!(
                             "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=9&compression=0"
                         ));
+                        if let Some(name) = &self.container_name {
+                            response["data"]["vncDomainUrl"] = json!(format!(
+                                "https://{name}.orb.local/vnc.html?autoconnect=1&quality=9&compression=0"
+                            ));
+                        }
                         response["data"]["nativeVnc"] = json!(format!("vnc://127.0.0.1:{port}"));
                     }
                 }
@@ -880,6 +913,23 @@ mod tests {
         assert!(!ephemeral.contains("/profile"));
         assert!(!ephemeral.contains("AGENT_BROWSER_PROFILE"));
         assert!(ephemeral.contains("--motion human-fast"));
+    }
+
+    #[test]
+    fn camoufox_bubble_container_name_is_session_derived() {
+        let guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_SESSION"]);
+        guard.set("AGENT_BROWSER_SESSION", "tarea1");
+        assert_eq!(bubble_container_name(), "agent-browser-bubble-tarea1");
+        guard.set("AGENT_BROWSER_SESSION", "tarea2");
+        assert_eq!(bubble_container_name(), "agent-browser-bubble-tarea2");
+        guard.set("AGENT_BROWSER_SESSION", "default");
+        let anonymous = bubble_container_name();
+        assert!(anonymous.starts_with("agent-browser-bubble-"));
+        assert!(!anonymous.starts_with("agent-browser-bubble-tarea"));
+        guard.remove("AGENT_BROWSER_SESSION");
+        let unset = bubble_container_name();
+        assert!(unset.starts_with("agent-browser-bubble-"));
+        assert!(!unset.starts_with("agent-browser-bubble-tarea"));
     }
 
     #[test]

@@ -745,6 +745,9 @@ fn run_session_info(session: &str, json_mode: bool) {
                     reason
                 );
             }
+            if let Some(url) = data.get("vncDomainUrl").and_then(|v| v.as_str()) {
+                println!("VNC domain: {}", url);
+            }
         }
     } else if let Some(err) = runtime_error {
         println!("Runtime info unavailable: {}", err);

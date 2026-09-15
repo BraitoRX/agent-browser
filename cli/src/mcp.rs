@@ -2213,7 +2213,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_SESSION_INFO,
             "Session info",
-            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; runtime.inputBackend reports the dispatch backend (juggler or os-native) and runtime.vncUrl is the live noVNC view when os-native is active; top-level active describes the daemon only.",
+            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; runtime.inputBackend reports the dispatch backend (juggler or os-native) and runtime.vncUrl is the live noVNC view when os-native is active; runtime.vncDomainUrl is its fixed OrbStack domain (https://agent-browser-bubble-<session>.orb.local) when the session is named; top-level active describes the daemon only.",
             json!({}),
             &[],
         ),
