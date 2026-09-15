@@ -71,6 +71,8 @@ Headed macOS launches set the Python worker's AppKit activation policy to access
 
 The browser then runs inside an isolated container bubble: each session gets its own Xvfb display, its own real X cursor, and a live noVNC view. The daemon starts the container, mounts the session's persistent profile directory into it, and publishes the viewer port. Sessions, cookies, and website storage persist exactly as with the default backend; close and relaunch keep the profile. Every launch response includes `vncUrl` (noVNC, opens the live view) and `nativeVnc` (raw VNC) so a human can watch the browser and its cursor.
 
+At worker startup the backend remaps missing Latin keysyms (á é í ó ú ñ ü ç ¿ ¡ €) onto unused X keycodes, so accented text types through XTEST normally. An unmappable character (for example CJK) fails with a clean `camoufox_invalid_params` before anything is journaled or dispatched; the session stays usable and you can continue with corrected text. Genuine post-dispatch ambiguity still requires the explicit-close recovery described in the timeout policy.
+
 Honest scope, which the in-page evidence footer also states: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equate to hardware input; `isTrusted=true` does not establish undetectability. The claim is architectural: external input at the window-system level, per-session isolated graphical sessions, and no browser-internal automation APIs for dispatch.
 
 Requirements on macOS: Docker or OrbStack running, and the bubble image built once. The default backend stays byte-for-byte unchanged; this feature is opt-in per CLI or MCP startup:

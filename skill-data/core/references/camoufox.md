@@ -77,6 +77,8 @@ The default `juggler` backend dispatches mouse and keyboard through Playwright t
 
 Under os-native the browser runs inside an isolated container bubble (one Xvfb display and one real X cursor per session), the daemon mounts the session's persistent profile into it, and the launch response carries `vncUrl` (noVNC) and `nativeVnc` (raw VNC) for the live view. Sessions, cookies, and storage persist exactly as with the default backend; close and relaunch keep the profile. Requirements: Docker or OrbStack running and the image built once via `camoufox-backend/bubble/build.sh`. Closing the session or stopping the daemon removes the container.
 
+At worker startup the os-native backend remaps missing Latin keysyms (á é í ó ú ñ ü ç ¿ ¡ €) onto unused X keycodes, so accented text types through XTEST normally. Characters outside the remapped set (for example CJK) fail with a clean `camoufox_invalid_params` before anything is journaled or dispatched, leaving the session usable; correct the text and continue in the same session. Genuine post-dispatch ambiguity (geometry guard failures after input, unreleased keys, transport failures) still requires the explicit-close recovery.
+
 Honest scope: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equate to hardware input; `isTrusted=true` does not establish undetectability. The property is architectural: window-system-level input, per-session isolated graphical sessions, no browser-internal automation APIs for dispatch.
 
 ## Writing an extension

@@ -77,7 +77,7 @@ camoufox-backend/bubble/build.sh
 agent-browser --engine camoufox --input-backend os-native --session os-native-task open https://example.com
 ```
 
-Closing the session or stopping the daemon removes the container. The first launch includes the bubble startup inside the launch deadline.
+Closing the session or stopping the daemon removes the container. The first launch includes the bubble startup inside the launch deadline. The backend remaps missing Latin keysyms onto unused X keycodes at startup, so accented text types normally; an unmappable character fails with a clean `camoufox_invalid_params` before anything is journaled or dispatched, leaving the session usable. Genuine post-dispatch ambiguity (geometry guards after input, unreleased keys, transport failures) still requires explicit-close recovery.
 
 ## Native observation and gestures
 
