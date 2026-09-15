@@ -632,6 +632,8 @@ class Worker:
         recoverable only when no input was attempted during the action."""
         if _is_playwright_timeout(exc) and not pending:
             return
+        if isinstance(exc, BackendError) and exc.code in (CODE_INVALID, CODE_UNSUPPORTED):
+            return
         if pending or self._input_attempted_since(runtime, attempts_before):
             self.poison(f"{what} failed with ambiguous input state")
 
@@ -1167,6 +1169,7 @@ class Worker:
             return await self.do_type(runtime, payload)
         if action == "press":
             key = require_str(payload.get("key"), "key")
+            runtime.active_input_dispatch().validate_press(key)
             await self._guarded_input(
                 runtime,
                 self.deadline(runtime.active_input_dispatch().press(key)),

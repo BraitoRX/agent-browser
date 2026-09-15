@@ -298,6 +298,7 @@ async def osnative_locator_click(ctx: Any, dispatch: Any, locator: Any, button: 
 
 
 async def keyboard_press(ctx: Any, key: str) -> None:
+    ctx.input_dispatch().validate_press(key)
     keys = key.split("+")
     for item in keys:
         if item == "ControlOrMeta":

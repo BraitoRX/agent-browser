@@ -36,6 +36,13 @@ WHEEL_BUTTON_LEFT = 6
 WHEEL_BUTTON_RIGHT = 7
 SUPPORTED_KEYMAP_INDEX = 1
 
+LATIN_KEYSYMS = [
+    "aacute", "eacute", "iacute", "oacute", "uacute",
+    "ntilde", "udiaeresis", "ccedilla",
+    "questiondown", "exclamdown", "euro",
+]
+LATIN_KEYMAP_APPLIED = "latin-remap"
+
 NAMED_KEYSYMS: Dict[str, str] = {
     "Enter": "Return",
     "Backspace": "BackSpace",
@@ -90,6 +97,9 @@ class OsnativePointer:
                 "the X server on DISPLAY does not provide the XTEST extension; "
                 "the os-native input backend cannot dispatch input",
             )
+        self.latin_keymap_status = self.ensure_latin_keymap()
+        if self.latin_keymap_status is not None:
+            self.display.flush()
 
     def move(self, x: float, y: float) -> None:
         self.xtest.fake_input(
@@ -97,6 +107,61 @@ class OsnativePointer:
             x=max(0, int(round(x))), y=max(0, int(round(y))),
         )
         self.display.flush()
+
+    def ensure_latin_keymap(self) -> Optional[str]:
+        """Bind missing Latin keysyms to unused keycodes.
+
+        The stock Xvfb keymap has no bindings for accented characters, so
+        XTEST cannot emit them before this remap. Assigns each unbound Latin
+        keysym to one fully-empty keycode, leaving the existing layout intact.
+        Returns a diagnostic marker when a remap was applied.
+        """
+        from Xlib import XK
+
+        missing: List[Tuple[str, int]] = []
+        for name in LATIN_KEYSYMS:
+            keysym = int(getattr(XK, f"XK_{name}", 0) or 0)
+            if keysym and not self.display.keysym_to_keycode(keysym):
+                missing.append((name, keysym))
+        if not missing:
+            return None
+        info = self.display.display.info
+        first = info.min_keycode
+        count = info.max_keycode - info.min_keycode + 1
+        mapping = self.display.get_keyboard_mapping(first, count)
+        empty_keycodes = [
+            index + first
+            for index, per_keycode in enumerate(mapping)
+            if all(not keysym for keysym in per_keycode)
+        ]
+        if len(empty_keycodes) < len(missing):
+            raise BackendError(
+                CODE_ERROR,
+                "os-native input cannot provide a Latin keymap: not enough free "
+                "X keycodes to bind accented characters",
+            )
+        try:
+            for (_, keysym), keycode in zip(missing, empty_keycodes):
+                self.display.change_keyboard_mapping(
+                    first_keycode=keycode,
+                    keysyms=[(keysym,)],
+                )
+        except Exception as exc:
+            raise BackendError(
+                CODE_ERROR,
+                f"os-native input could not apply the Latin keymap remap: {type(exc).__name__}",
+            ) from exc
+        self.display.flush()
+        self.display._update_keymap(first, count)
+        assigned = {keycode for (_, _), keycode in zip(missing, empty_keycodes)}
+        for name, keysym in missing:
+            keycode = self.display.keysym_to_keycode(keysym)
+            if not keycode or keycode not in assigned:
+                raise BackendError(
+                    CODE_ERROR,
+                    f"os-native input Latin keymap remap did not bind '{name}'",
+                )
+        return LATIN_KEYMAP_APPLIED
 
     def button(self, detail: int, press: bool) -> None:
         event_type = self.X.ButtonPress if press else self.X.ButtonRelease
@@ -404,9 +469,9 @@ class OsnativeInputDispatch:
         return modifier_codes + key_codes
 
     async def press(self, key: str) -> None:
+        codes = self._keycodes(key)
         await self._guard()
         await self._focus()
-        codes = self._keycodes(key)
         for code in codes[:-1]:
             await asyncio.to_thread(self.pointer.key, code, True)
         try:
@@ -417,16 +482,23 @@ class OsnativeInputDispatch:
                 await asyncio.to_thread(self.pointer.key, code, False)
 
     async def type(self, text: str, delay: int = 0) -> None:
+        character_codes = [self._keycodes(character) for character in text]
         await self._guard()
         await self._focus()
-        for character in text:
-            codes = self._keycodes(character)
+        for character, codes in zip(text, character_codes):
             for code in codes:
                 await asyncio.to_thread(self.pointer.key, code, True)
             for code in reversed(codes):
                 await asyncio.to_thread(self.pointer.key, code, False)
             if delay:
                 await asyncio.sleep(delay / 1000.0)
+
+    def validate_text(self, text: str) -> None:
+        for character in text:
+            self._keycodes(character)
+
+    def validate_press(self, key: str) -> None:
+        self._keycodes(key)
 
     async def key_up(self, key: str) -> None:
         await self._guard()
@@ -466,6 +538,12 @@ class JugglerInputDispatch:
 
     async def type(self, text: str, delay: int = 0) -> None:
         await self.page.keyboard.type(text, delay=delay)
+
+    def validate_text(self, text: str) -> None:
+        return None
+
+    def validate_press(self, key: str) -> None:
+        return None
 
     async def key_up(self, key: str) -> None:
         await self.page.keyboard.up(key)

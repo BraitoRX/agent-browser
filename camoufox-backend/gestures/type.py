@@ -51,6 +51,8 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     ctx.set_stage("resolve")
     await require_in_viewport(ctx, locator, label)
     await trial_hover(ctx, locator, label)
+    dispatch = ctx.input_dispatch()
+    dispatch.validate_text(text)
     ctx.set_stage("focus")
     await locator_click(ctx, locator, label=label)
     if clear_first:
@@ -58,7 +60,6 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         await keyboard_press(ctx, "ControlOrMeta+A")
         await keyboard_press(ctx, "Backspace")
     ctx.set_stage("type")
-    dispatch = ctx.input_dispatch()
     for character in text:
         ctx.journal.begin_key_down(character)
         ctx.note_input_dispatched()
