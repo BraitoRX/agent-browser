@@ -133,7 +133,7 @@ def _start_locked(deadline: float) -> None:
         "x11vnc",
         [
             "x11vnc", "-display", DISPLAY_NAME, "-forever", "-shared", "-nopw", "-quiet",
-            "-rfbport", str(RFB_PORT), "-clip", VNC_CLIP, "-noxdamage", "-defer", "10",
+            "-rfbport", str(RFB_PORT), "-clip", VNC_CLIP, "-defer", "10", "-xdamage",
         ],
     )
     _processes.append(("x11vnc", vnc))

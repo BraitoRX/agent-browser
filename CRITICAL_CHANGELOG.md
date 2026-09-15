@@ -2,6 +2,13 @@
 
 Changes recorded here can break the locally configured Camoufox browser at runtime and are not captured by any published release. If the browser starts hanging clicks, hits the 22s worker deadline, and reports `camoufox_session_reset_required`, read this file first.
 
+## 2026-09-15 - x11vnc DAMAGE tracking enabled (removes -noxdamage)
+
+- What: the bubble's x11vnc now runs with `-xdamage` instead of `-noxdamage` (`camoufox-backend/bubble.py`). The X DAMAGE extension lets Xvfb tell x11vnc exactly which screen regions changed; previously x11vnc polled the full 1920x1080 framebuffer for differences, re-reading and comparing roughly 8 MB by CPU on every pass, and a connected noVNC viewer made that continuous.
+- Why: the human noVNC view lagged on simple scroll and animation while the browser itself had CPU headroom. Polling made viewer traffic cost proportional to the whole screen instead of the changed regions, on top of already fully software-rendered frames (no GPU in the container).
+- Risk: DAMAGE can, in rare setups, miss invalidations and leave stale regions on screen; x11vnc 0.9.16 plus Xvfb 2:21.1 were smoke-checked in the bubble image (x11vnc started with `-xdamage`, completed the RFB handshake, no errors), and a quiet screen now yields zero unsolicited updates instead of constant polling. If a viewer ever shows a stuck region, moving the mouse over it or reopening the viewer repaints; reverting the single flag in `bubble.py` restores the old polling behavior. `libxdamage1` was already an installed dependency, so no image rebuild is needed.
+- Activation: source committed; requires the Rust binary rebuild (bubble.py is embedded), an MCP reconnect, and a fresh daemon/container.
+
 ## 2026-09-15 - Deterministic bubble container names and fixed OrbStack noVNC domain
 
 - What: under `--input-backend os-native` the daemon now names the bubble container after the session (`agent-browser-bubble-<session>`) instead of PID+nanoseconds; anonymous `default` sessions keep the ephemeral scheme. Before `docker run` the daemon removes any leftover container holding the same name (`docker rm -f`), because a fixed name collides after an unclean previous shutdown. Launch and `session info` additionally report `vncDomainUrl`: `https://agent-browser-bubble-<session>.orb.local/vnc.html?...`, the fixed noVNC address OrbStack derives from the container name; the port-based `vncUrl`/`nativeVnc` are unchanged.
