@@ -189,6 +189,8 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "type" => &["selector", "text", "clear", "delay"],
         "press" => &["key"],
         "hover" => &["selector", "settleMs"],
+        "hover_hold" => &["selector", "maxMs"],
+        "hover_hold_stop" => &[],
         "focus" | "check" | "uncheck" | "gettext" | "inputvalue" | "count" | "boundingbox"
         | "isvisible" | "isenabled" | "ischecked" | "innerhtml" | "scrollintoview" => &["selector"],
         "getattribute" => &["selector", "attribute"],
@@ -530,6 +532,27 @@ mod tests {
             json!({"id":"14","action":"getbytext","text":"x","label":"y"}),
         ];
         for command in rejected {
+            let error = normalize_command(&command).unwrap_err();
+            assert!(error.contains("not supported by Camoufox V1"), "{command}: {error}");
+        }
+    }
+
+    #[test]
+    fn camoufox_hover_hold_normalize_accepts_canonical_fields() {
+        for command in [
+            json!({"id":"1","action":"hover_hold","selector":"#player","maxMs":30000}),
+            json!({"id":"2","action":"hover_hold","selector":"@e1"}),
+            json!({"id":"3","action":"hover_hold_stop"}),
+        ] {
+            let normalized = normalize_command(&command)
+                .unwrap_or_else(|error| panic!("{command} rejected: {error}"));
+            assert_eq!(normalized, command);
+        }
+        for command in [
+            json!({"id":"4","action":"hover_hold","selector":"#player","bogus":true}),
+            json!({"id":"5","action":"hover_hold_stop","maxMs":30000}),
+            json!({"id":"6","action":"hover_hold_stop","selector":"#player"}),
+        ] {
             let error = normalize_command(&command).unwrap_err();
             assert!(error.contains("not supported by Camoufox V1"), "{command}: {error}");
         }

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import platform
+import random
 import re
 import struct
 import sys
@@ -452,6 +453,57 @@ def _geoip_launch_value() -> Optional[bool]:
         return None
 
 
+class AmbientHover:
+    def __init__(self, runtime: "CamoufoxRuntime"):
+        self.runtime = runtime
+        self._task: Optional[asyncio.Task] = None
+        self._started_at = 0.0
+
+    def start(self, page: Any, tab: Tab, x: float, y: float, max_ms: int) -> None:
+        self._started_at = time.monotonic()
+        self._task = asyncio.create_task(
+            self._run(page, tab, page.url, x, y, self._started_at + max_ms / 1000.0)
+        )
+
+    async def stop(self) -> Dict[str, Any]:
+        task = self._task
+        if task is None or task.done():
+            self._task = None
+            return {"stopped": False, "heldMs": 0}
+        held_ms = max(0, int((time.monotonic() - self._started_at) * 1000))
+        task.cancel()
+        try:
+            await asyncio.gather(task, return_exceptions=True)
+        finally:
+            if self._task is task:
+                self._task = None
+        return {"stopped": True, "heldMs": held_ms}
+
+    async def _run(self, page: Any, tab: Tab, url: str, x: float, y: float, expires_at: float) -> None:
+        try:
+            while True:
+                remaining = expires_at - time.monotonic()
+                if remaining <= 0:
+                    return
+                await asyncio.sleep(min(random.uniform(0.2, 0.4), remaining))
+                remaining = expires_at - time.monotonic()
+                if (remaining <= 0 or self.runtime._closing or self.runtime._close_reason is not None
+                        or self.runtime.tabs.get(tab.tab_id) is not tab or tab.closed
+                        or page.is_closed() or page.url != url):
+                    return
+                if self.runtime.action_in_flight:
+                    continue
+                await asyncio.wait_for(
+                    page.mouse.move(x + random.uniform(-2, 2), y + random.uniform(-2, 2)),
+                    timeout=remaining,
+                )
+        except Exception:
+            pass
+        finally:
+            if self._task is asyncio.current_task():
+                self._task = None
+
+
 class CamoufoxRuntime:
     engine = "camoufox"
     GestureContextClass = GestureContext
@@ -480,6 +532,8 @@ class CamoufoxRuntime:
         self.launched = False
         self.headless: Optional[bool] = None
         self._closing = False
+        self.action_in_flight = False
+        self.ambient_hover = AmbientHover(self)
         self._input_attempts = 0
         self._close_reason: Optional[str] = None
 
@@ -744,6 +798,7 @@ class CamoufoxRuntime:
         return self._close_reason is not None
 
     async def close(self) -> Dict[str, Any]:
+        await self.ambient_hover.stop()
         if self._closing:
             return {"closed": True, "alreadyClosing": True}
         self._closing = True

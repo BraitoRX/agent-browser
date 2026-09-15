@@ -2428,6 +2428,7 @@ fn skip_launch_action(action: &str) -> bool {
             | "close"
             | "read"
             | "har_stop"
+            | "hover_hold_stop"
             | "credentials_set"
             | "credentials_get"
             | "credentials_delete"
@@ -2562,7 +2563,7 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
         command["adblock"] = json!(adblock);
     }
     let outcome = tokio::time::timeout(HARD_DEADLINE, async {
-        if !backend.launched && !matches!(action, "launch" | "session_info" | "gestures" | "tab_list" | "read") {
+        if !backend.launched && !matches!(action, "launch" | "session_info" | "gestures" | "tab_list" | "read" | "hover_hold_stop") {
             let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless, "profile": profile, "adblock": adblock})).await;
             if launched.get("success").and_then(Value::as_bool) != Some(true) {
                 launched["id"] = json!(id);
@@ -2619,6 +2620,9 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     }
     if !use_camoufox && matches!(action, "gesture" | "gestures") {
         return error_response(&id, "Gesture commands require --engine camoufox");
+    }
+    if !use_camoufox && matches!(action, "hover_hold" | "hover_hold_stop") {
+        return error_response(&id, "Hover hold commands require --engine camoufox");
     }
 
     if let Err(err) = validate_restore_config_from_command(cmd) {
@@ -12745,6 +12749,16 @@ mod tests {
     use std::fs;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    #[test]
+    fn camoufox_hover_hold_stop_skips_implicit_launch_policy_actions() {
+        assert!(skip_launch_action("hover_hold_stop"));
+        let command = json!({"id": "stop", "action": "hover_hold_stop"});
+        assert_eq!(
+            policy_actions_for_command(&command, "hover_hold_stop", true),
+            vec!["hover_hold_stop".to_string()],
+        );
+    }
 
     /// A binding-recovery failure must tear the connection down: the attach
     /// paths set `state.browser` before calling this, so returning the error

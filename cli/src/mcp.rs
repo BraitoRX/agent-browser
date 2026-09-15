@@ -41,6 +41,7 @@ const TOOL_KEYUP: &str = "agent_browser_keyup";
 const TOOL_KEYBOARD_TYPE: &str = "agent_browser_keyboard_type";
 const TOOL_KEYBOARD_INSERT_TEXT: &str = "agent_browser_keyboard_insert_text";
 const TOOL_HOVER: &str = "agent_browser_hover";
+const TOOL_HOVER_HOLD: &str = "agent_browser_hover_hold";
 const TOOL_FOCUS: &str = "agent_browser_focus";
 const TOOL_CHECK: &str = "agent_browser_check";
 const TOOL_UNCHECK: &str = "agent_browser_uncheck";
@@ -607,6 +608,7 @@ const CAMOUFOX_CORE_TOOLS: &[&str] = &[
     TOOL_IS_ENABLED,
     TOOL_IS_CHECKED,
     TOOL_HOVER,
+    TOOL_HOVER_HOLD,
     TOOL_FOCUS,
     TOOL_DBLCLICK,
     TOOL_WAIT_FOR_URL,
@@ -960,6 +962,7 @@ fn camoufox_tool(mut tool: Value) -> Value {
         TOOL_WAIT_FOR_FUNCTION => Some("Wait for a JavaScript expression in the selected frame's isolated world to become truthy."),
         TOOL_WAIT_FOR_TEXT => Some("Wait for visible matching text in the selected frame."),
         TOOL_DRAG => Some("Drag one main-frame element to another with native input. Frame-prefixed refs are not supported for drag. Never replay an ambiguous input."),
+        TOOL_HOVER_HOLD => Some("Keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs. Screenshots and reads continue during the hold. Pass stop=true to stop instead of a selector."),
         TOOL_INSTALL => Some("Explicitly provision the private Camoufox Python environment and browser cache. Python 3.10+ is required. This may take several minutes; installation is never automatic at startup."),
         _ => None,
     };
@@ -1244,6 +1247,29 @@ fn tools() -> Vec<Value> {
             &["key"],
         ),
         tool(TOOL_HOVER, "Hover element", "Hover an element.", json!({ "selector": selector_schema() }), &["selector"]),
+        {
+            let mut definition = tool(
+                TOOL_HOVER_HOLD,
+                "Hover hold",
+                "Camoufox only: keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs. Screenshots and reads continue during the hold. Pass stop=true to stop instead of a selector.",
+                json!({
+                    "selector": selector_schema(),
+                    "maxMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 30000, "description": "Maximum hold duration in milliseconds. Only valid when starting a hold." },
+                    "stop": { "type": "boolean", "description": "Pass true to stop; omit selector and maxMs." }
+                }),
+                &[],
+            );
+            definition["inputSchema"]["properties"]["selector"]["minLength"] = json!(1);
+            definition["inputSchema"]["oneOf"] = json!([
+                { "required": ["selector"], "not": { "required": ["stop"] } },
+                {
+                    "required": ["stop"],
+                    "properties": { "stop": { "const": true } },
+                    "not": { "anyOf": [{ "required": ["selector"] }, { "required": ["maxMs"] }] }
+                }
+            ]);
+            definition
+        },
         tool(TOOL_FOCUS, "Focus element", "Focus an element.", json!({ "selector": selector_schema() }), &["selector"]),
         tool(TOOL_CHECK, "Check element", "Check a checkbox or switch.", json!({ "selector": selector_schema() }), &["selector"]),
         tool(TOOL_UNCHECK, "Uncheck element", "Uncheck a checkbox or switch.", json!({ "selector": selector_schema() }), &["selector"]),
@@ -2613,6 +2639,7 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_KEYBOARD_TYPE => call_keyboard(arguments, "type"),
         TOOL_KEYBOARD_INSERT_TEXT => call_keyboard(arguments, "inserttext"),
         TOOL_HOVER => call_simple_selector(arguments, "hover"),
+        TOOL_HOVER_HOLD => call_cli_tool(arguments, hover_hold_args(arguments)?, None),
         TOOL_FOCUS => call_simple_selector(arguments, "focus"),
         TOOL_CHECK => call_simple_selector(arguments, "check"),
         TOOL_UNCHECK => call_simple_selector(arguments, "uncheck"),
@@ -3268,6 +3295,29 @@ fn call_is(arguments: &Value, what: &str) -> Result<Value, ProtocolError> {
         vec!["is".to_string(), what.to_string(), selector],
         None,
     )
+}
+
+fn hover_hold_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
+    let selector = optional_string(arguments, "selector")?;
+    let stop = optional_bool(arguments, "stop")?;
+    let max_ms = optional_u64(arguments, "maxMs")?;
+    if max_ms.is_some_and(|value| !(1000..=120000).contains(&value)) {
+        return Err(ProtocolError::invalid_params("maxMs must be between 1000 and 120000"));
+    }
+    let mut args = vec!["hover-hold".to_string()];
+    match (selector, stop) {
+        (Some(selector), None) if !selector.trim().is_empty() && selector != "stop" => {
+            args.push(selector);
+            if let Some(max_ms) = max_ms {
+                args.extend(["--max-ms".to_string(), max_ms.to_string()]);
+            }
+        }
+        (None, Some(true)) if max_ms.is_none() => args.push("stop".to_string()),
+        _ => return Err(ProtocolError::invalid_params(
+            "Provide exactly one non-empty selector or stop=true. The selector 'stop' is reserved, and stopping does not accept maxMs.",
+        )),
+    }
+    Ok(args)
 }
 
 fn call_find(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -4601,6 +4651,8 @@ mod tests {
         assert!(!CAMOUFOX_CORE_TOOLS.contains(&TOOL_PAGE_LINKS));
         assert!(!CAMOUFOX_CORE_TOOLS.contains(&TOOL_DOM_CHUNK));
         assert!(CAMOUFOX_CORE_TOOLS.contains(&TOOL_FIND));
+        assert!(CAMOUFOX_CORE_TOOLS.contains(&TOOL_HOVER_HOLD));
+        assert!(names.contains(&TOOL_HOVER_HOLD));
         assert!(names.contains(&TOOL_CLICK));
         assert!(names.contains(&TOOL_SCREENSHOT));
         assert!(names.contains(&TOOL_GET_CDP_URL));
@@ -5530,6 +5582,7 @@ mod tests {
     fn camoufox_dom_contract_core_additions_and_unsupported_rejection() {
         let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
         assert!(config.allows(TOOL_FIND));
+        assert!(config.allows(TOOL_HOVER_HOLD));
         assert!(!config.allows(TOOL_PAGE_OUTLINE));
         assert!(!config.allows(TOOL_PAGE_LINKS));
         assert!(!config.allows(TOOL_DOM_CHUNK));
@@ -5559,6 +5612,74 @@ mod tests {
         assert!(!names.contains(&TOOL_UPLOAD));
         assert!(!names.contains(&TOOL_A11Y));
         assert!(!names.contains(&TOOL_WINDOW_NEW));
+    }
+
+    #[test]
+    fn camoufox_hover_hold_exposes_schema_and_cli_parity() {
+        let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
+        let available = tools_for_config(&config);
+        let hold = available.iter().find(|tool| tool["name"] == TOOL_HOVER_HOLD).unwrap();
+        assert!(config.allows(TOOL_HOVER_HOLD));
+        assert_eq!(hold["title"], "Hover hold");
+        assert_eq!(hold["annotations"]["readOnlyHint"], false);
+        assert_eq!(hold["inputSchema"]["properties"]["maxMs"]["minimum"], 1000);
+        assert_eq!(hold["inputSchema"]["properties"]["maxMs"]["maximum"], 120000);
+        assert_eq!(hold["inputSchema"]["oneOf"][0]["required"], json!(["selector"]));
+        assert_eq!(hold["inputSchema"]["oneOf"][1]["required"], json!(["stop"]));
+        assert_eq!(hold["inputSchema"]["oneOf"][1]["properties"]["stop"]["const"], true);
+        assert!(hold["description"].as_str().unwrap().contains("Screenshots and reads continue"));
+
+        for (input, expected_args, action) in [
+            (json!({"selector": "#player"}), vec!["hover-hold", "#player"], "hover_hold"),
+            (json!({"selector": "@e1", "maxMs": 60000}), vec!["hover-hold", "@e1", "--max-ms", "60000"], "hover_hold"),
+            (json!({"stop": true}), vec!["hover-hold", "stop"], "hover_hold_stop"),
+        ] {
+            let arguments = camoufox_arguments(TOOL_HOVER_HOLD, &input).unwrap();
+            let args = hover_hold_args(&arguments).unwrap();
+            assert_eq!(args, expected_args);
+            let args = cli_tool_args(&arguments, args, None).unwrap();
+            let flags = crate::flags::parse_flags(&args);
+            let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+            assert_eq!(command["action"], action);
+            assert_eq!(command.get("maxMs"), input.get("maxMs"));
+            assert_eq!(command.get("selector"), input.get("selector"));
+            let mut expected = json!({"id": command["id"], "action": action});
+            if let Some(selector) = input.get("selector") {
+                expected["selector"] = selector.clone();
+            }
+            if let Some(max_ms) = input.get("maxMs") {
+                expected["maxMs"] = max_ms.clone();
+            }
+            assert_eq!(crate::native::camoufox::normalize_command(&command).unwrap(), expected);
+        }
+    }
+
+    #[test]
+    fn camoufox_hover_hold_rejects_invalid_arguments_before_cli_dispatch() {
+        for input in [
+            json!({}),
+            json!({"selector": ""}),
+            json!({"selector": "  "}),
+            json!({"selector": "stop"}),
+            json!({"selector": 1}),
+            json!({"stop": false}),
+            json!({"stop": "true"}),
+            json!({"stop": null}),
+            json!({"selector": "#player", "stop": true}),
+            json!({"selector": "#player", "stop": false}),
+            json!({"stop": true, "maxMs": 30000}),
+            json!({"selector": "#player", "maxMs": 999}),
+            json!({"selector": "#player", "maxMs": 120001}),
+            json!({"selector": "#player", "maxMs": 30000.0}),
+            json!({"selector": "#player", "maxMs": "30000"}),
+            json!({"selector": "#player", "maxMs": true}),
+            json!({"selector": "#player", "maxMs": null}),
+        ] {
+            assert!(hover_hold_args(&input).is_err(), "{input}");
+        }
+        assert!(camoufox_arguments(TOOL_HOVER_HOLD, &json!({"selector": "#player", "bogus": true})).is_err());
+        let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
+        assert!(call_tool(Some(&json!({"name": TOOL_HOVER_HOLD, "arguments": {"selector": "#player", "stop": true}})), &config).is_err());
     }
 
     #[test]

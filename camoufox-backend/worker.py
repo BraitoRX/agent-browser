@@ -48,7 +48,7 @@ from registry import (
     schema_summary,
     validate_params,
 )
-from gestures._common import bounded, element_box, require_visible, step_timeout_ms
+from gestures._common import box_center, bounded, element_box, require_visible, step_timeout_ms
 
 TRANSPORT = sys.stdout
 sys.stdout = sys.stderr
@@ -142,7 +142,7 @@ def check_launch_options(payload: Dict[str, Any]) -> None:
 BROWSER_ACTIONS = {
     "launch", "navigate", "back", "forward", "reload", "url", "title", "content",
     "evaluate", "read", "snapshot", "screenshot", "click", "dblclick", "fill",
-    "type", "press", "hover", "focus", "check", "uncheck", "select", "drag",
+    "type", "press", "hover", "hover_hold", "hover_hold_stop", "focus", "check", "uncheck", "select", "drag",
     "scroll", "scrollintoview", "wait", "waitforurl", "waitforloadstate", "waitforfunction",
     "tab_new", "tab_list", "tab_switch", "tab_close", "frame", "mainframe",
     "gettext", "getattribute", "innerhtml", "inputvalue", "count", "boundingbox",
@@ -165,11 +165,19 @@ QUERY_ACTIONS = {
 }
 MUTATING_ACTIONS = {
     "launch", "navigate", "back", "forward", "reload", "evaluate",
-    "click", "dblclick", "fill", "type", "press", "hover", "focus",
+    "click", "dblclick", "fill", "type", "press", "hover", "hover_hold", "focus",
     "check", "uncheck", "select", "drag", "scroll", "scrollintoview",
     "tab_new", "tab_switch", "tab_close",
     "cookies_set", "cookies_clear", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
     "har_start", "har_stop", "dialog", "download", "waitfordownload",
+}
+INPUT_AMBIENT_STOP = {
+    "click", "dblclick", "fill", "type", "press", "hover", "focus", "check", "uncheck",
+    "select", "drag", "scroll", "scrollintoview", "download", "waitfordownload", "dialog",
+    "gesture", "hover_hold",
+}
+LIFECYCLE_AMBIENT_STOP = {
+    "navigate", "back", "forward", "reload", "tab_new", "tab_switch", "tab_close", "frame", "mainframe",
 }
 
 ACTION_FIELDS = {
@@ -185,6 +193,8 @@ ACTION_FIELDS = {
     "type": {"selector", "text", "clear", "delay"},
     "press": {"key"},
     "hover": {"selector", "settleMs"},
+    "hover_hold": {"selector", "maxMs"},
+    "hover_hold_stop": set(),
     "select": {"selector", "values"},
     "drag": {"source", "target", "button", "steps", "holdBeforeDropMs", "reveal"},
     "scroll": {"direction", "amount", "selector", "chunkSize", "settleMs"},
@@ -261,6 +271,7 @@ class Worker:
         self.poison_reason: Optional[str] = None
         self.stopping = False
         self.runtime: Optional[Any] = None
+        self._action_in_flight = False
         self.deadline_ms = ic.action_deadline_ms()
         self.policy_active = False
 
@@ -297,6 +308,7 @@ class Worker:
             from runtime import CamoufoxRuntime
 
             self.runtime = CamoufoxRuntime(self.runtime_dir, self.motion)
+            self.runtime.action_in_flight = self._action_in_flight
         return self.runtime
 
     def poison(self, reason: str) -> None:
@@ -306,7 +318,7 @@ class Worker:
     def require_available(self, action: str) -> None:
         if not self.poisoned:
             return
-        if action in ("close", "session_info", "tab_list", "gestures"):
+        if action in ("close", "session_info", "tab_list", "gestures", "hover_hold_stop"):
             return
         raise BackendError(
             CODE_POISONED,
@@ -529,31 +541,45 @@ class Worker:
             self.poison(f"{action} deadline exceeded before the browser reached a stable state")
 
     async def run_action(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        self.require_available(action)
-        validate_request_fields(action, payload)
-        if action == "close":
-            return await self.do_close()
-        if action == "gesture" and self.policy_active:
-            raise BackendError(
-                CODE_UNSUPPORTED,
-                "generic gesture execution is prohibited while policyActive is true; "
-                "only typed actions are permitted",
-            )
-        if self.registry_error is not None and action in ("gesture", "gestures"):
-            raise BackendError(CODE_REGISTRY, f"gesture registry failed to load: {self.registry_error}")
-        if action in BROWSER_ACTIONS:
-            mutating = action in MUTATING_ACTIONS
-            if action in FIND_ACTIONS and payload.get("subaction", "click") != "text":
-                mutating = True
-            try:
-                return await self.deadline(self.dispatch_browser(action, payload), what=f"browser action '{action}'")
-            finally:
-                if mutating and self.runtime is not None:
-                    self.runtime.captures.invalidate_all()
-                    self.runtime.clear_dom_refs()
-        if action in LOCAL_ACTIONS:
-            return await self.dispatch_local(action, payload)
-        raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported by the camoufox backend")
+        self._action_in_flight = True
+        if self.runtime is not None:
+            self.runtime.action_in_flight = True
+        try:
+            ambient = getattr(self.runtime, "ambient_hover", None)
+            find_input = action in FIND_ACTIONS and payload.get("subaction", "click") != "text"
+            replaced = False
+            if ambient is not None and (action in INPUT_AMBIENT_STOP | LIFECYCLE_AMBIENT_STOP or find_input):
+                replaced = (await ambient.stop())["stopped"]
+            self.require_available(action)
+            validate_request_fields(action, payload)
+            if action == "close":
+                return await self.do_close()
+            if action == "gesture" and self.policy_active:
+                raise BackendError(
+                    CODE_UNSUPPORTED,
+                    "generic gesture execution is prohibited while policyActive is true; "
+                    "only typed actions are permitted",
+                )
+            if self.registry_error is not None and action in ("gesture", "gestures"):
+                raise BackendError(CODE_REGISTRY, f"gesture registry failed to load: {self.registry_error}")
+            if action in BROWSER_ACTIONS:
+                mutating = action in MUTATING_ACTIONS or find_input
+                try:
+                    result = await self.deadline(self.dispatch_browser(action, payload), what=f"browser action '{action}'")
+                    if action == "hover_hold":
+                        result["replaced"] = replaced or result["replaced"]
+                    return result
+                finally:
+                    if mutating and self.runtime is not None:
+                        self.runtime.captures.invalidate_all()
+                        self.runtime.clear_dom_refs()
+            if action in LOCAL_ACTIONS:
+                return await self.dispatch_local(action, payload)
+            raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported by the camoufox backend")
+        finally:
+            self._action_in_flight = False
+            if self.runtime is not None:
+                self.runtime.action_in_flight = False
 
     async def deadline(self, coro, timeout_ms: Optional[int] = None, *, what: str = "action"):
         effective_ms = min(timeout_ms or self.deadline_ms, ic.MAX_ACTION_DEADLINE_MS)
@@ -931,6 +957,38 @@ class Worker:
             return {"checked": await self.deadline(locator.is_checked())}
         raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported")
 
+    async def do_hover_hold(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
+        selector = require_str(payload.get("selector"), "selector")
+        if not selector.strip():
+            raise BackendError(CODE_INVALID, "'selector' must not be empty")
+        max_ms = payload.get("maxMs", 30000)
+        if not isinstance(max_ms, int) or isinstance(max_ms, bool):
+            raise BackendError(CODE_INVALID, "'maxMs' must be an integer")
+        max_ms = require_int(max_ms, "maxMs", 1000, 120000)
+        replaced = (await runtime.ambient_hover.stop())["stopped"]
+        spec = ic.parse_selector(selector, "selector")
+        _scope, locator = await runtime.resolve_action_locator(spec)
+        page, tab = runtime.require_active()
+        context = runtime.GestureContextClass(runtime, self.deadline_ms)
+        context.set_stage("resolve")
+        box = await element_box(context, locator, f"selector {selector!r}")
+        x, y = box_center(box)
+
+        async def move_once() -> None:
+            context.set_stage("hover")
+            context.note_input_dispatched()
+            await bounded(context, page.mouse.move(x, y), "hover hold")
+
+        await self._guarded_input(runtime, move_once(), what="hover hold")
+        runtime.ambient_hover.start(page, tab, x, y, max_ms)
+        return {
+            "holding": True,
+            "point": {"x": x, "y": y},
+            "maxMs": max_ms,
+            "replaced": replaced,
+            "diagnostics": context.diagnostics(),
+        }
+
     async def do_find(self, runtime, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         subaction = payload.get("subaction") or "click"
         fill_value = payload.get("value")
@@ -1008,6 +1066,8 @@ class Worker:
 
     async def dispatch_browser(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self.get_runtime()
+        if action == "hover_hold_stop":
+            return await runtime.ambient_hover.stop()
         if action == "launch":
             check_launch_options(payload)
             metadata = payload.get("metadata")
@@ -1116,6 +1176,8 @@ class Worker:
             return {"pressed": key}
         if action == "hover":
             return await self.do_gesture_call(runtime, "hover", payload)
+        if action == "hover_hold":
+            return await self.do_hover_hold(runtime, payload)
         if action == "focus":
             selector = require_str(payload.get("selector"), "selector")
             _scope, locator = await runtime.resolve_action_locator(ic.parse_selector(selector, "selector"))

@@ -1844,6 +1844,34 @@ Examples:
   agent-browser hover @e4
 "##
         }
+        "hover-hold" => {
+            r##"
+agent-browser hover-hold - Keep hover-revealed UI visible with Camoufox
+
+Usage: agent-browser hover-hold <selector> [--max-ms <1000-120000>]
+       agent-browser hover-hold stop
+
+Keeps native mouse micro-movement near the selector while screenshots
+and read-only queries continue. The selector must be visible and have
+a layout box in the selected frame. Starting another hold replaces it.
+
+The hold automatically stops before input actions, navigation, tab or
+frame changes, session close, or expiry. Use stop to cancel explicitly.
+
+Options:
+  --max-ms <ms>        Maximum hold duration, 1000 to 120000 (default: 30000)
+
+Global Options:
+  --engine camoufox    Required browser engine
+  --json              Output as JSON
+  --session <name>    Use specific session
+
+Examples:
+  agent-browser --engine camoufox hover-hold "#player" --max-ms 60000
+  agent-browser --engine camoufox hover-hold @e4
+  agent-browser --engine camoufox hover-hold stop
+"##
+        }
         "focus" => {
             r##"
 agent-browser focus - Focus an element
@@ -3910,6 +3938,8 @@ Core Commands:
   keyboard type <text>       Type text with real keystrokes (no selector)
   keyboard inserttext <text> Insert text without key events
   hover <sel>                Hover element
+  hover-hold <sel> [--max-ms <ms>]  Keep hover UI visible (Camoufox)
+  hover-hold stop            Stop the ambient hover hold
   focus <sel>                Focus element
   check <sel>                Check checkbox
   uncheck <sel>              Uncheck checkbox

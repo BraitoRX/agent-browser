@@ -570,6 +570,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             })?;
             Ok(json!({ "id": id, "action": "hover", "selector": sel }))
         }
+        "hover-hold" => parse_hover_hold(&rest, &id),
         "focus" => {
             let sel = rest.first().ok_or_else(|| ParseError::MissingArguments {
                 context: "focus".to_string(),
@@ -2308,6 +2309,53 @@ fn parse_gesture(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
     let params = params.ok_or_else(|| ParseError::MissingArguments { context: "gesture --params".to_string(), usage: USAGE })?;
     Ok(json!({"id": id, "action": "gesture", "name": name, "params": params, "observe": observe.unwrap_or("none")}))
+}
+
+fn parse_hover_hold(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "hover-hold <selector> [--max-ms <1000-120000>] | hover-hold stop";
+    let selector = rest
+        .first()
+        .filter(|value| !value.trim().is_empty() && !value.starts_with('-'))
+        .ok_or_else(|| ParseError::MissingArguments {
+            context: "hover-hold".to_string(),
+            usage: USAGE,
+        })?;
+    if *selector == "stop" {
+        if rest.len() != 1 {
+            return Err(ParseError::InvalidValue {
+                message: "hover-hold stop does not accept arguments".to_string(),
+                usage: USAGE,
+            });
+        }
+        return Ok(json!({"id": id, "action": "hover_hold_stop"}));
+    }
+    let mut command = json!({"id": id, "action": "hover_hold", "selector": selector});
+    let mut index = 1;
+    while index < rest.len() {
+        if rest[index] != "--max-ms" || command.get("maxMs").is_some() {
+            return Err(ParseError::InvalidValue {
+                message: "Expected one selector and at most one --max-ms option".to_string(),
+                usage: USAGE,
+            });
+        }
+        let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
+            context: "hover-hold --max-ms".to_string(),
+            usage: USAGE,
+        })?;
+        let max_ms = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+            message: "--max-ms must be an integer between 1000 and 120000".to_string(),
+            usage: USAGE,
+        })?;
+        if !(1000..=120000).contains(&max_ms) {
+            return Err(ParseError::InvalidValue {
+                message: "--max-ms must be between 1000 and 120000".to_string(),
+                usage: USAGE,
+            });
+        }
+        command["maxMs"] = json!(max_ms);
+        index += 2;
+    }
+    Ok(command)
 }
 
 /// Parse the bounded Camoufox page outline command.
@@ -4754,6 +4802,50 @@ mod tests {
         let cmd = parse_command(&args("tab select"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "tab_switch");
         assert_eq!(cmd["tabId"], "select");
+    }
+
+    #[test]
+    fn camoufox_hover_hold_commands_parse_canonical_actions() {
+        let start = parse_command(&args("hover-hold @e1"), &default_flags()).unwrap();
+        assert_eq!(start["action"], "hover_hold");
+        assert_eq!(start["selector"], "@e1");
+        assert!(start.get("maxMs").is_none());
+        for max_ms in [1000, 30000, 120000] {
+            let start = parse_command(
+                &args(&format!("hover-hold #player --max-ms {max_ms}")),
+                &default_flags(),
+            )
+            .unwrap();
+            assert_eq!(start["action"], "hover_hold");
+            assert_eq!(start["selector"], "#player");
+            assert_eq!(start["maxMs"], max_ms);
+        }
+        let stop = parse_command(&args("hover-hold stop"), &default_flags()).unwrap();
+        assert_eq!(stop["action"], "hover_hold_stop");
+        assert_eq!(stop.as_object().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn camoufox_hover_hold_rejects_invalid_arguments() {
+        for command in [
+            "hover-hold",
+            "hover-hold --max-ms 1000",
+            "hover-hold #player --max-ms",
+            "hover-hold #player --max-ms 999",
+            "hover-hold #player --max-ms 120001",
+            "hover-hold #player --max-ms -1000",
+            "hover-hold #player --max-ms 30000.0",
+            "hover-hold #player --max-ms abc",
+            "hover-hold #player --maxMs 30000",
+            "hover-hold #player --max-ms 1000 --max-ms 2000",
+            "hover-hold #player extra",
+            "hover-hold stop --max-ms 1000",
+            "hover-hold stop #player",
+        ] {
+            assert!(parse_command(&args(command), &default_flags()).is_err(), "{command}");
+        }
+        assert!(parse_hover_hold(&[""], "empty").is_err());
+        assert!(parse_hover_hold(&["  "], "empty").is_err());
     }
 
     #[test]
