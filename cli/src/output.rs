@@ -675,6 +675,19 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{}", title);
             return;
         }
+        // Find read-only result: the unique selector is the payload, not the text
+        if data.get("found").and_then(|v| v.as_bool()) == Some(true) {
+            if let Some(selector) = data.get("selector").and_then(|v| v.as_str()) {
+                let count = data.get("count").and_then(|v| v.as_i64()).unwrap_or(1);
+                let text = data.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                println!("{} {}", color::success_indicator(), color::bold(selector));
+                println!("  matches: {}", count);
+                if !text.is_empty() {
+                    println!("  text: {}", text.lines().next().unwrap_or(""));
+                }
+                return;
+            }
+        }
         // Text
         if let Some(text) = data.get("text").and_then(|v| v.as_str()) {
             print_with_boundaries(text, origin, opts);

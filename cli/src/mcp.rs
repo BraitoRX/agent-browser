@@ -4507,6 +4507,19 @@ fn response_text(value: &Value) -> Option<String> {
             {
                 return Some(crate::output::format_a11y_text(data));
             }
+            if data.get("found").and_then(|v| v.as_bool()) == Some(true)
+                && data.get("selector").and_then(|v| v.as_str()).is_some()
+            {
+                return Some(
+                    serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+                );
+            }
+            if let Some(capture) = data.get("visualCapture").and_then(|v| v.as_object()) {
+                if let Some(capture_id) = capture.get("captureId").and_then(|v| v.as_str()) {
+                    let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
+                    return Some(format!("{}\ncaptureId: {}", path, capture_id));
+                }
+            }
             for key in [
                 "snapshot", "text", "html", "report", "value", "content", "title", "url", "path",
             ] {
@@ -4911,7 +4924,7 @@ mod tests {
         assert!(result["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("agent-browser mcp --tools all"));
+            .contains("agent-browser mcp --tools core,network,react"));
         let debug_profile = result["structuredContent"]["profiles"]
             .as_array()
             .unwrap()
