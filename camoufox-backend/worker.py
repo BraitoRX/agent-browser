@@ -36,6 +36,7 @@ from input_context import (
     optional_enum,
     optional_int,
     optional_str,
+    require_int,
     require_str,
     require_str_list,
 )
@@ -150,8 +151,14 @@ BROWSER_ACTIONS = {
     "storage_get", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
     "har_start", "har_stop", "dialog", "download", "waitfordownload", "downloads",
     "page_outline", "page_links", "dom_chunk",
+    "getbyrole", "getbytext", "getbylabel", "getbyplaceholder", "getbyalttext",
+    "getbytitle", "getbytestid", "nth",
 }
 LOCAL_ACTIONS = {"gestures", "gesture", "session_info"}
+FIND_ACTIONS = {
+    "getbyrole", "getbytext", "getbylabel", "getbyplaceholder", "getbyalttext",
+    "getbytitle", "getbytestid", "nth",
+}
 QUERY_ACTIONS = {
     "gettext", "getattribute", "innerhtml", "inputvalue", "count", "boundingbox",
     "isvisible", "isenabled", "ischecked",
@@ -217,6 +224,14 @@ ACTION_FIELDS = {
     "page_outline": {"selector"},
     "page_links": {"selector", "cursor", "limit"},
     "dom_chunk": {"selector", "cursor", "limit"},
+    "getbyrole": {"role", "subaction", "name", "exact", "value"},
+    "getbytext": {"text", "subaction", "exact", "value"},
+    "getbylabel": {"label", "subaction", "exact", "value"},
+    "getbyplaceholder": {"placeholder", "subaction", "exact", "value"},
+    "getbyalttext": {"text", "subaction", "exact", "value"},
+    "getbytitle": {"text", "subaction", "exact", "value"},
+    "getbytestid": {"testId", "subaction", "value"},
+    "nth": {"selector", "index", "subaction", "value"},
 }
 for _action in QUERY_ACTIONS | {"focus", "check", "uncheck", "scrollintoview"}:
     ACTION_FIELDS.setdefault(_action, {"selector"})
@@ -528,6 +543,8 @@ class Worker:
             raise BackendError(CODE_REGISTRY, f"gesture registry failed to load: {self.registry_error}")
         if action in BROWSER_ACTIONS:
             mutating = action in MUTATING_ACTIONS
+            if action in FIND_ACTIONS and payload.get("subaction", "click") != "text":
+                mutating = True
             try:
                 return await self.deadline(self.dispatch_browser(action, payload), what=f"browser action '{action}'")
             finally:
@@ -914,6 +931,81 @@ class Worker:
             return {"checked": await self.deadline(locator.is_checked())}
         raise BackendError(CODE_UNSUPPORTED, f"action '{action}' is not supported")
 
+    async def do_find(self, runtime, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        subaction = payload.get("subaction") or "click"
+        fill_value = payload.get("value")
+        if subaction == "fill" and fill_value is None:
+            raise BackendError(CODE_INVALID, "fill subaction requires a value")
+        scope = runtime.active_scope()
+        if action == "nth":
+            selector = require_str(payload.get("selector"), "selector")
+            index = require_int(payload.get("index"), "index", -2_147_483_648, 2_147_483_647)
+            spec = ic.parse_selector(selector, "selector")
+            _scope, locator = await runtime.resolve_action_locator(spec)
+            locator = locator.nth(index)
+        else:
+            exact = bool(optional_bool(payload.get("exact"), "exact", False))
+            if action == "getbyrole":
+                role = require_str(payload.get("role"), "role")
+                name = optional_str(payload.get("name"), "name")
+                if name:
+                    locator = scope.get_by_role(role, name=name, exact=exact)
+                else:
+                    locator = scope.get_by_role(role)
+            elif action == "getbytext":
+                text = require_str(payload.get("text"), "text")
+                locator = scope.get_by_text(text, exact=exact)
+            elif action == "getbylabel":
+                label = require_str(payload.get("label"), "label")
+                locator = scope.get_by_label(label, exact=exact)
+            elif action == "getbyplaceholder":
+                placeholder = require_str(payload.get("placeholder"), "placeholder")
+                locator = scope.get_by_placeholder(placeholder, exact=exact)
+            elif action == "getbyalttext":
+                text = require_str(payload.get("text"), "text")
+                locator = scope.get_by_alt_text(text, exact=exact)
+            elif action == "getbytitle":
+                text = require_str(payload.get("text"), "text")
+                locator = scope.get_by_title(text, exact=exact)
+            else:
+                test_id = require_str(payload.get("testId"), "testId")
+                locator = scope.get_by_test_id(test_id)
+        count = await self.deadline(locator.count())
+        if count == 0:
+            raise BackendError(
+                CODE_INVALID,
+                f"{action} locator matched 0 elements; refine the value, use exact, "
+                "or take a fresh snapshot",
+            )
+        if count > 1 and subaction != "text":
+            raise BackendError(
+                CODE_INVALID,
+                f"{action} locator matched {count} elements; refine with exact/name, "
+                "scope, or find nth",
+            )
+        target = locator.first if count > 1 else locator
+        css = await self.deadline(target.evaluate(
+            "(element) => { const path = []; let el = element; while (el && el.nodeType === 1 && path.length < 50) "
+            "{ if (el.id) { try { if (document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) "
+            "{ path.unshift('#' + CSS.escape(el.id)); return path.join(' > '); } } catch (e) {} } "
+            "let selector = el.tagName.toLowerCase(); const parent = el.parentElement; if (parent) "
+            "{ const sameTag = Array.from(parent.children).filter((c) => c.tagName === el.tagName); "
+            "if (sameTag.length > 1) selector += ':nth-of-type(' + (sameTag.indexOf(el) + 1) + ')'; } "
+            "path.unshift(selector); el = parent; } return path.join(' > '); }"
+        ))
+        if not css:
+            raise BackendError(CODE_INVALID, "could not derive a unique CSS selector for the matched element")
+        if subaction == "text":
+            text = await self.deadline(target.evaluate(
+                "(element) => (element.textContent || '').trim().substring(0, 4096)"
+            ))
+            return {"found": True, "count": count, "selector": css, "text": text}
+        delegated: Dict[str, Any] = {"id": payload.get("id"), "action": subaction, "selector": css}
+        if subaction == "fill" and fill_value is not None:
+            delegated["value"] = fill_value
+        result = await self.dispatch_browser(subaction, delegated)
+        return {"found": True, "count": count, "selector": css, **result}
+
     async def dispatch_browser(self, action: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         runtime = self.get_runtime()
         if action == "launch":
@@ -1111,6 +1203,8 @@ class Worker:
             assert timeout_ms is not None
             await self.deadline(runtime.active_scope().wait_for_function(expression, timeout=timeout_ms))
             return {"waited": "function"}
+        if action in FIND_ACTIONS:
+            return await self.do_find(runtime, action, payload)
         if action in QUERY_ACTIONS:
             return await self.do_query(runtime, action, payload)
         if action == "page_outline":

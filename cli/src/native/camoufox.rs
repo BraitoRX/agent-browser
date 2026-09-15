@@ -228,6 +228,14 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "page_outline" => &["selector"],
         "page_links" => &["selector", "cursor", "limit"],
         "dom_chunk" => &["selector", "cursor", "limit"],
+        "getbyrole" => &["role", "subaction", "name", "exact", "value"],
+        "getbytext" => &["text", "subaction", "exact", "value"],
+        "getbylabel" => &["label", "subaction", "exact", "value"],
+        "getbyplaceholder" => &["placeholder", "subaction", "exact", "value"],
+        "getbyalttext" => &["text", "subaction", "exact", "value"],
+        "getbytitle" => &["text", "subaction", "exact", "value"],
+        "getbytestid" => &["testId", "subaction", "value"],
+        "nth" => &["selector", "index", "subaction", "value"],
         _ => return Err(format!("Action '{action}' is not supported by Camoufox V1")),
     };
     let mut result = command.clone();
@@ -491,6 +499,37 @@ mod tests {
             json!({"id":"1","action":"requests","domains":["example.com"]}),
             json!({"id":"1","action":"route","url":"*","handler":"continue"}),
         ] {
+            let error = normalize_command(&command).unwrap_err();
+            assert!(error.contains("not supported by Camoufox V1"), "{command}: {error}");
+        }
+    }
+
+    #[test]
+    fn camoufox_find_normalize_accepts_semantic_locators_and_rejects_unknown_fields() {
+        let accepted = [
+            json!({"id":"1","action":"getbyrole","role":"button","subaction":"text","name":null,"exact":false}),
+            json!({"id":"2","action":"getbyrole","role":"button","subaction":"click","name":"Submit","exact":true,"value":"x"}),
+            json!({"id":"3","action":"nth","selector":"nav a","index":-1,"subaction":"click"}),
+            json!({"id":"4","action":"nth","selector":"@e1","index":0,"subaction":"fill","value":"text"}),
+            json!({"id":"5","action":"getbytext","text":"Sign in","subaction":"click","exact":true}),
+            json!({"id":"6","action":"getbylabel","label":"Email","subaction":"fill","exact":false,"value":"a@b.c"}),
+            json!({"id":"7","action":"getbyplaceholder","placeholder":"Search","subaction":"text","exact":false}),
+            json!({"id":"8","action":"getbyalttext","text":"Logo","subaction":"click","exact":false}),
+            json!({"id":"9","action":"getbytitle","text":"Details","subaction":"hover","exact":true}),
+            json!({"id":"10","action":"getbytestid","testId":"submit","subaction":"click"}),
+        ];
+        for command in accepted {
+            let normalized = normalize_command(&command)
+                .unwrap_or_else(|error| panic!("{command} rejected: {error}"));
+            assert_eq!(normalized, command);
+        }
+        let rejected = [
+            json!({"id":"11","action":"getbyrole","role":"button","bogus":"x"}),
+            json!({"id":"12","action":"getbytestid","testId":"submit","exact":true}),
+            json!({"id":"13","action":"nth","selector":"a","index":0,"exact":true}),
+            json!({"id":"14","action":"getbytext","text":"x","label":"y"}),
+        ];
+        for command in rejected {
             let error = normalize_command(&command).unwrap_err();
             assert!(error.contains("not supported by Camoufox V1"), "{command}: {error}");
         }
