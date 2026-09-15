@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import platform
 import random
 import re
@@ -27,18 +28,28 @@ from input_context import (
     CODE_STALE_CAPTURE,
     CODE_STALE_REF,
     Captures,
+    INPUT_BACKEND_OSNATIVE,
     InputJournal,
     MOTION_HUMANIZE,
     TargetSpec,
     css_point,
+    input_backend,
     iso_now,
     json_safe,
 )
 from browser_inspector import BrowserInspector
+from bubble import bubble_enabled, ensure_bubble_stack, stop_bubble_stack
 from har_capture import HarCapture
 from interaction_events import InteractionEvents
 from network_observer import NetworkObserver
 from network_control import NetworkControl
+from osnative_input import (
+    JugglerInputDispatch,
+    OsnativeGeometry,
+    OsnativeInputDispatch,
+    OsnativePointer,
+    discover_osnative_geometry,
+)
 from persistent_profile import PersistentProfile
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -426,6 +437,9 @@ class GestureContext:
     async def viewport_size(self) -> Dict[str, float]:
         return await self.runtime.viewport_size()
 
+    def input_dispatch(self) -> Any:
+        return self.runtime.input_dispatch(self.page)
+
     async def resolve_capture_point(self, spec: TargetSpec, capture_id_used: Optional[str]) -> Tuple[float, float, str]:
         return await self.runtime.resolve_capture_point(spec, capture_id_used)
 
@@ -494,7 +508,9 @@ class AmbientHover:
                 if self.runtime.action_in_flight:
                     continue
                 await asyncio.wait_for(
-                    page.mouse.move(x + random.uniform(-2, 2), y + random.uniform(-2, 2)),
+                    self.runtime.input_dispatch(page).move(
+                        x + random.uniform(-2, 2), y + random.uniform(-2, 2)
+                    ),
                     timeout=remaining,
                 )
         except Exception:
@@ -512,6 +528,9 @@ class CamoufoxRuntime:
         self.runtime_dir = Path(runtime_dir)
         self.motion = motion
         self.humanize = MOTION_HUMANIZE[motion]
+        self.input_backend = input_backend()
+        self.osnative_pointer: Optional[OsnativePointer] = None
+        self.osnative_geometry: Optional[OsnativeGeometry] = None
         self.captures = Captures()
         self.journal = InputJournal()
         self.network = NetworkObserver(self)
@@ -539,6 +558,9 @@ class CamoufoxRuntime:
 
     async def launch(self, headless: bool, profile: Optional[str] = None, adblock: bool = False) -> Dict[str, Any]:
         """Reuse a private on-disk context only when explicitly selected; never switch a live profile."""
+        if bubble_enabled():
+            headless = False
+            await asyncio.to_thread(ensure_bubble_stack)
         error = self.sync_session_state()
         if error is not None:
             raise error
@@ -561,6 +583,15 @@ class CamoufoxRuntime:
                     "browser is already running with a different adblock setting; close the session first",
                 )
             return self.launch_info()
+        if self.input_backend == INPUT_BACKEND_OSNATIVE:
+            display = os.environ.get("DISPLAY")
+            if not display:
+                raise BackendError(
+                    CODE_NOT_LAUNCHED,
+                    "the os-native input backend requires an X DISPLAY for the browser; "
+                    "set the DISPLAY environment variable to the private X display "
+                    "(for example an Xvfb screen) before launch",
+                )
         try:
             record = json.loads((self.runtime_dir / "runtime.json").read_text("utf-8"))
             executable = Path(record["browser"]["executablePath"])
@@ -675,6 +706,8 @@ class CamoufoxRuntime:
             pages = list(self.context.pages)
             if not pages:
                 pages = [await self.context.new_page()]
+            if self.input_backend == INPUT_BACKEND_OSNATIVE:
+                await self._connect_osnative()
             for page in pages:
                 tab = self._register_tab(page, label=None)
                 if self.active_id is None:
@@ -683,6 +716,43 @@ class CamoufoxRuntime:
             await self.close()
             raise
         return self.launch_info()
+
+    async def _connect_osnative(self) -> None:
+        display = os.environ.get("DISPLAY") or ""
+        try:
+            pointer = await asyncio.to_thread(OsnativePointer, display)
+        except BackendError:
+            await self.close()
+            raise
+        except Exception as exc:
+            await self.close()
+            raise BackendError(
+                CODE_NOT_LAUNCHED,
+                f"the os-native input backend could not open the X display "
+                f"(DISPLAY={display or '<unset>'}): {type(exc).__name__}",
+            ) from exc
+        self.osnative_pointer = pointer
+        try:
+            self.osnative_geometry = await discover_osnative_geometry(pointer)
+        except BackendError:
+            await self.close()
+            raise
+
+    def input_dispatch(self, page: Any) -> Any:
+        if self.input_backend == INPUT_BACKEND_OSNATIVE:
+            if self.osnative_pointer is None or self.osnative_geometry is None:
+                raise BackendError(
+                    CODE_NOT_LAUNCHED,
+                    "the os-native input backend is not connected; the browser must be "
+                    "launched again on an X display",
+                )
+            return OsnativeInputDispatch(
+                page, self.osnative_pointer, self.osnative_geometry, self.humanize,
+            )
+        return JugglerInputDispatch(page)
+
+    def active_input_dispatch(self) -> Any:
+        return self.input_dispatch(self.active_page())
 
     def _configure_default_timeout(self, context: Any) -> None:
         """Keep Playwright's own waits inside the worker's per-action deadline.
@@ -785,6 +855,7 @@ class CamoufoxRuntime:
             "adblock": self.adblock,
             "motion": self.motion,
             "humanize": self.humanize,
+            "inputBackend": self.input_backend,
             "runtimeDir": str(self.runtime_dir),
             "persistentProfile": self.profile_path is not None,
             "profilePath": self.profile_path,
@@ -826,6 +897,11 @@ class CamoufoxRuntime:
             except Exception:
                 pass
         self.browser = None
+        pointer = self.osnative_pointer
+        self.osnative_pointer = None
+        self.osnative_geometry = None
+        if pointer is not None:
+            await asyncio.to_thread(pointer.close)
         profile = self._profile
         self._profile = None
         if profile is not None:
@@ -839,6 +915,8 @@ class CamoufoxRuntime:
         self.journal.clear()
         self.captures.invalidate_all()
         self._close_reason = None
+        if bubble_enabled():
+            await asyncio.to_thread(stop_bubble_stack)
         return {"closed": True}
 
     async def release_inputs(self) -> Dict[str, Any]:
@@ -847,16 +925,17 @@ class CamoufoxRuntime:
         if page is None:
             result["released"] = not (self.journal.pending_buttons() or self.journal.pending_keys())
             return result
+        dispatch = self.input_dispatch(page)
         for button in self.journal.pending_buttons():
             try:
-                await asyncio.wait_for(page.mouse.up(button=button), timeout=1.5)
+                await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                 self.journal.finish_button_up(button)
                 result["buttons"].append(button)
             except Exception:
                 result["released"] = False
         for key in self.journal.pending_keys():
             try:
-                await asyncio.wait_for(page.keyboard.up(key), timeout=1.5)
+                await asyncio.wait_for(dispatch.key_up(key), timeout=1.5)
                 self.journal.finish_key_up(key)
                 result["keys"].append(key)
             except Exception:
@@ -990,9 +1069,6 @@ class CamoufoxRuntime:
     def active_page(self) -> Any:
         page, _tab = self.require_active()
         return page
-
-    def page_keyboard(self) -> Any:
-        return self.active_page().keyboard
 
     def page_waiter(self) -> Any:
         return self.active_page()
@@ -2097,6 +2173,7 @@ class CamoufoxRuntime:
             "adblock": self.adblock,
             "motion": self.motion,
             "humanize": self.humanize,
+            "inputBackend": self.input_backend,
             "activeTab": self.active_id,
             "tabs": self.list_tabs(),
             "persistentProfile": self.profile_path is not None,

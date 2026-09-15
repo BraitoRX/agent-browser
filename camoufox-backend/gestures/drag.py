@@ -133,12 +133,19 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     if any_coordinate and (source.kind != target.kind or reveal_steps):
         raise BackendError(CODE_INVALID, "coordinate drags require two coordinates from the same capture and no reveal steps")
 
+    dispatch = ctx.input_dispatch()
+    osnative = getattr(dispatch, "osnative", False)
     for selector, settle_ms in reveal_steps:
         ctx.set_stage("reveal")
         reveal_spec = parse_selector(selector, "reveal.selector")
         _scope, reveal_locator = await locator_for(ctx, reveal_spec)
-        ctx.note_input_dispatched()
-        await bounded(ctx, reveal_locator.hover(timeout=10_000), "reveal hover")
+        if osnative:
+            box = await require_in_viewport(ctx, reveal_locator, "reveal target")
+            ctx.note_input_dispatched()
+            await bounded(ctx, dispatch.move(*box_center(box)), "reveal hover")
+        else:
+            ctx.note_input_dispatched()
+            await bounded(ctx, reveal_locator.hover(timeout=10_000), "reveal hover")
         if settle_ms > 0:
             await asyncio.sleep(settle_ms / 1000.0)
 
@@ -205,7 +212,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     journal = ctx.journal
     ctx.set_stage("move-source")
     ctx.note_input_dispatched()
-    await bounded(ctx, ctx.page.mouse.move(press_x, press_y), "mouse move to source")
+    await bounded(ctx, dispatch.move(press_x, press_y), "mouse move to source")
     if source.kind == "selector":
         if (await require_in_viewport_no_scroll(ctx, source_locator, "drag source") != source_box
                 or await require_in_viewport_no_scroll(ctx, target_locator, "drag target") != target_box):
@@ -214,28 +221,28 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     journal.begin_button_down(button)
     ctx.note_input_dispatched()
     try:
-        await bounded(ctx, ctx.page.mouse.down(button=button), "mouse down")
+        await bounded(ctx, dispatch.down(button=button), "mouse down")
         ctx.check_deadline()
         ctx.set_stage("move-target")
         if steps > 1:
-            await bounded(ctx, ctx.page.mouse.move(drop_x, drop_y, steps=steps), "mouse move to target")
+            await bounded(ctx, dispatch.move(drop_x, drop_y, steps=steps), "mouse move to target")
         else:
-            await bounded(ctx, ctx.page.mouse.move(drop_x, drop_y), "mouse move to target")
+            await bounded(ctx, dispatch.move(drop_x, drop_y), "mouse move to target")
         ctx.set_stage("move-target-again")
-        await bounded(ctx, ctx.page.mouse.move(drop_x, drop_y), "mouse move to target (settle)")
+        await bounded(ctx, dispatch.move(drop_x, drop_y), "mouse move to target (settle)")
         if hold_ms > 0:
             ctx.set_stage("hold-before-drop")
             await asyncio.sleep(hold_ms / 1000.0)
         ctx.check_deadline()
         ctx.set_stage("up")
         ctx.note_input_dispatched()
-        await bounded(ctx, ctx.page.mouse.up(button=button), "mouse up")
+        await bounded(ctx, dispatch.up(button=button), "mouse up")
         journal.finish_button_up(button)
     finally:
         if journal.buttons.get(button):
             ctx.set_stage("cleanup-release")
             try:
-                await asyncio.wait_for(ctx.page.mouse.up(button=button), timeout=1.5)
+                await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                 journal.finish_button_up(button)
             except Exception:
                 pass

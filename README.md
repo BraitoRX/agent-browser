@@ -65,6 +65,23 @@ On macOS, launch configuration reads bundle assets from `Contents/Resources` whi
 
 Headed macOS launches set the Python worker's AppKit activation policy to accessory on the main thread before display detection, keeping the helper out of the Dock without hiding the Camoufox browser. Headless and non-macOS launches skip this setup. No Python framework or browser bundle is modified by launch itself. This backend requires a rebuilt fork binary and a fresh daemon; editing source alone does not update a running session.
 
+### OS-native input (`--input-backend os-native`)
+
+`--input-backend os-native` changes where input comes from. The default `juggler` backend dispatches mouse and keyboard through the browser's automation bridge (Playwright to Juggler), the path upstream tooling uses. The `os-native` backend injects through the window system of a private X display with XTEST, the same input pipeline a physical mouse on that display uses, with no browser automation API involved in dispatch. Element resolution, snapshots, screenshots, and evaluation remain Playwright; only the input dispatch changes level.
+
+The browser then runs inside an isolated container bubble: each session gets its own Xvfb display, its own real X cursor, and a live noVNC view. The daemon starts the container, mounts the session's persistent profile directory into it, and publishes the viewer port. Sessions, cookies, and website storage persist exactly as with the default backend; close and relaunch keep the profile. Every launch response includes `vncUrl` (noVNC, opens the live view) and `nativeVnc` (raw VNC) so a human can watch the browser and its cursor.
+
+Honest scope, which the in-page evidence footer also states: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equate to hardware input; `isTrusted=true` does not establish undetectability. The claim is architectural: external input at the window-system level, per-session isolated graphical sessions, and no browser-internal automation APIs for dispatch.
+
+Requirements on macOS: Docker or OrbStack running, and the bubble image built once. The default backend stays byte-for-byte unchanged; this feature is opt-in per CLI or MCP startup:
+
+```bash
+camoufox-backend/bubble/build.sh
+"$AB" --engine camoufox --input-backend os-native --session os-native-task open https://example.com
+```
+
+The first launch starts the bubble, which adds a few seconds inside the launch deadline. Closing the session or stopping the daemon removes the container.
+
 <table>
 <thead><tr><th>Environment variable</th><th>Purpose</th></tr></thead>
 <tbody>
@@ -73,6 +90,7 @@ Headed macOS launches set the Python worker's AppKit activation policy to access
 <tr><td><code>AGENT_BROWSER_MOTION</code></td><td>Session-launch profile: <code>human-fast</code> (default), <code>fast</code>, or <code>precision</code>. Close the daemon session before changing it.</td></tr>
 <tr><td><code>AGENT_BROWSER_GESTURES_DIR</code></td><td>Explicit trusted module directories separated by the OS path separator. No implicit CWD scan. Restart the session to reload modules.</td></tr>
 <tr><td><code>AGENT_BROWSER_ADBLOCK</code></td><td>Load the managed runtime's bundled uBlock Origin addon at Camoufox launch. Off by default; close the session before changing it.</td></tr>
+<tr><td><code>AGENT_BROWSER_INPUT_BACKEND</code></td><td>Input dispatch backend: <code>juggler</code> (default) or <code>os-native</code>. The <code>--input-backend</code> flag takes precedence when set.</td></tr>
 <tr><td><code>AGENT_BROWSER_ACTION_DEADLINE_MS</code></td><td>Worker action deadline, default 22000 ms, clamped to 1000 to 25000 ms. The daemon has a 28-second hard limit including implicit startup and observation.</td></tr>
 </tbody>
 </table>

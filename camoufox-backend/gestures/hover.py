@@ -65,15 +65,19 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         _scope, locator = await locator_for(ctx, spec)
         ctx.set_stage("resolve")
         box = await require_in_viewport(ctx, locator, "target")
+        x, y = box_center(box)
         ctx.set_stage("hover")
         ctx.note_input_dispatched()
-        await bounded(ctx, locator.hover(timeout=10_000), "hover")
-        x, y = box_center(box)
+        dispatch = ctx.input_dispatch()
+        if getattr(dispatch, "osnative", False):
+            await bounded(ctx, dispatch.move(x, y), "hover")
+        else:
+            await bounded(ctx, locator.hover(timeout=10_000), "hover")
     else:
         x, y, _capture = await ctx.resolve_capture_point(spec, None)
         ctx.set_stage("dispatch")
         ctx.note_input_dispatched()
-        await bounded(ctx, ctx.page.mouse.move(x, y), "mouse move")
+        await bounded(ctx, ctx.input_dispatch().move(x, y), "mouse move")
 
     if settle_ms > 0:
         ctx.set_stage("settle")

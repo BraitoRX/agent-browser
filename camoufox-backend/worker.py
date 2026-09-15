@@ -977,7 +977,7 @@ class Worker:
         async def move_once() -> None:
             context.set_stage("hover")
             context.note_input_dispatched()
-            await bounded(context, page.mouse.move(x, y), "hover hold")
+            await bounded(context, context.input_dispatch().move(x, y), "hover hold")
 
         await self._guarded_input(runtime, move_once(), what="hover hold")
         runtime.ambient_hover.start(page, tab, x, y, max_ms)
@@ -1169,7 +1169,7 @@ class Worker:
             key = require_str(payload.get("key"), "key")
             await self._guarded_input(
                 runtime,
-                self.deadline(runtime.page_keyboard().press(key)),
+                self.deadline(runtime.active_input_dispatch().press(key)),
                 keys=_key_parts(key),
                 what="keyboard press",
             )
@@ -1592,6 +1592,11 @@ async def run_worker(runtime_dir: Path, motion: str) -> int:
 
 def main(argv=None) -> int:
     args = parse_args(argv)
+    try:
+        ic.input_backend()
+    except BackendError as exc:
+        print(f"worker startup failed: {exc.code}: {exc.message}", file=sys.stderr)
+        return 1
     runtime_dir = Path(args.runtime_dir).expanduser()
     if not runtime_dir.is_absolute():
         runtime_dir = (Path.cwd() / runtime_dir).resolve()

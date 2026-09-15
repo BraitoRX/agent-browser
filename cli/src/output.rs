@@ -497,7 +497,9 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
 
     if let Some(data) = &resp.data {
         print_lifecycle_note(data);
-        if action == Some("snapshot") && data.get("engine").and_then(Value::as_str) == Some("camoufox") {
+        if action == Some("snapshot")
+            && data.get("engine").and_then(Value::as_str) == Some("camoufox")
+        {
             if let Some(snapshot) = data.get("snapshot").and_then(Value::as_str) {
                 print_with_boundaries(snapshot, boundary_origin(data), opts);
             }
@@ -521,7 +523,10 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 ))
         {
             let text = serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string());
-            println!("{}", format_with_boundaries(&text, boundary_origin(data), opts));
+            println!(
+                "{}",
+                format_with_boundaries(&text, boundary_origin(data), opts)
+            );
             return;
         }
 
@@ -4187,6 +4192,12 @@ Options:
   --confirm-actions <list>   Categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
   --confirm-interactive      Interactive confirmation prompts; auto-denies if stdin is not a TTY (or AGENT_BROWSER_CONFIRM_INTERACTIVE)
   --engine <name>            Browser engine: chrome (default), lightpanda, camoufox V1 subset
+  --input-backend <name>     Camoufox only: input dispatch backend, juggler (default, browser-internal)
+                             or os-native (XTEST against the browser's private X display, delivered
+                             inside a container bubble). Requires Docker/OrbStack and the bubble image
+                             (camoufox-backend/bubble/build.sh); launch response includes vncUrl
+                             for the live view. Sessions, cookies and profiles persist exactly as
+                             with the default backend
   --idle-timeout <time>      Shut down daemon after inactivity: 10s, 3m, 1h, or raw ms
                              (default: 1h; 0 disables; dashboard input resets the timer)
   --no-auto-dialog           Disable automatic dismissal of alert/beforeunload dialogs (or AGENT_BROWSER_NO_AUTO_DIALOG)
@@ -4286,6 +4297,10 @@ Environment:
   AGENT_BROWSER_PROFILE         Persistent profile directory; Camoufox requires an absolute private path
   AGENT_BROWSER_PYTHON           Install-time Python executable (default python3)
   AGENT_BROWSER_MOTION           Camoufox launch profile: human-fast, fast, precision
+  AGENT_BROWSER_INPUT_BACKEND    Camoufox input backend: juggler (default) or os-native
+                                 (--input-backend flag takes precedence when set)
+  AGENT_BROWSER_BUBBLE           Set by the daemon for os-native mode; the worker then runs its
+                                 Xvfb/x11vnc stack inside the bubble container. Do not set manually
   AGENT_BROWSER_GESTURES_DIR     Explicit trusted gesture directories (OS path separator)
   AGENT_BROWSER_ACTION_DEADLINE_MS Camoufox deadline: default 22000, clamp 1000-25000; Rust hard cap 28s
   AGENT_BROWSER_PLUGINS          JSON plugin registry override

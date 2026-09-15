@@ -71,6 +71,14 @@ HAR observes future requests independently of the ordinary request buffer. Body 
 
 A target is exactly `{"selector":"@e2"}` or `{"coordinates":{"x":120,"y":80,"captureId":"..."}}`. Never mix the shapes. Coordinate drags require two endpoints sharing the same fresh capture and no reveal. Selector endpoints resolve to box centers; observe the resulting application value rather than assuming geometric movement achieved a semantic target.
 
+## Input backends
+
+The default `juggler` backend dispatches mouse and keyboard through Playwright to Juggler, the path upstream tooling uses. `--input-backend os-native` (or `AGENT_BROWSER_INPUT_BACKEND=os-native`) routes the same dispatch through X11 XTEST against the private X display the browser runs on: the same input pipeline a physical mouse on that display uses, with no browser automation API involved in dispatch. Element resolution, snapshots, screenshots, and evaluation remain Playwright in both backends.
+
+Under os-native the browser runs inside an isolated container bubble (one Xvfb display and one real X cursor per session), the daemon mounts the session's persistent profile into it, and the launch response carries `vncUrl` (noVNC) and `nativeVnc` (raw VNC) for the live view. Sessions, cookies, and storage persist exactly as with the default backend; close and relaunch keep the profile. Requirements: Docker or OrbStack running and the image built once via `camoufox-backend/bubble/build.sh`. Closing the session or stopping the daemon removes the container.
+
+Honest scope: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equate to hardware input; `isTrusted=true` does not establish undetectability. The property is architectural: window-system-level input, per-session isolated graphical sessions, no browser-internal automation APIs for dispatch.
+
 ## Writing an extension
 
 Use `camoufox-backend/examples/custom_gesture_example.py` as the starting point. Configure an absolute trusted directory with `AGENT_BROWSER_GESTURES_DIR` before launching a fresh session. Files beginning with `_` are helpers and are skipped. Discovery is sorted; names are unique and cannot shadow built-ins. Changes reload only with a new worker; if the directory environment changes, use a new daemon session too.

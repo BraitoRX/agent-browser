@@ -209,6 +209,7 @@ pub(super) fn check(checks: &mut Vec<Check>, opts: &DoctorOptions) {
         hide_scrollbars: true,
         webgpu: true,
         profile: None,
+        input_backend: None,
         state: None,
         provider: None,
         device: None,

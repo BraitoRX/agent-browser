@@ -354,10 +354,17 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         });
     }
     if flags.engine.as_deref() == Some("camoufox") {
-        let action = result.get("action").and_then(Value::as_str).unwrap_or("").to_string();
+        let action = result
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
         if !matches!(action.as_str(), "close" | "confirm" | "deny") {
-            crate::native::camoufox::validate_flags(flags).map_err(|message| ParseError::InvalidValue {
-                message, usage: "--engine camoufox <command>",
+            crate::native::camoufox::validate_flags(flags).map_err(|message| {
+                ParseError::InvalidValue {
+                    message,
+                    usage: "--engine camoufox <command>",
+                }
             })?;
         }
         result["engine"] = json!("camoufox");
@@ -367,16 +374,25 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         if flags.headed || flags.cli_headed {
             result["headless"] = json!(!flags.headed);
         } else if action == "launch" {
-            result.as_object_mut().expect("parsed command is an object").remove("headless");
+            result
+                .as_object_mut()
+                .expect("parsed command is an object")
+                .remove("headless");
         }
         if flags.adblock || flags.cli_adblock {
             result["adblock"] = json!(flags.adblock);
         } else if action == "launch" {
-            result.as_object_mut().expect("parsed command is an object").remove("adblock");
+            result
+                .as_object_mut()
+                .expect("parsed command is an object")
+                .remove("adblock");
         }
         if !matches!(action.as_str(), "batch" | "confirm" | "deny") {
-            crate::native::camoufox::normalize_command(&result).map_err(|message| ParseError::InvalidValue {
-                message, usage: "--engine camoufox <supported-command>",
+            crate::native::camoufox::normalize_command(&result).map_err(|message| {
+                ParseError::InvalidValue {
+                    message,
+                    usage: "--engine camoufox <supported-command>",
+                }
             })?;
         }
     }
@@ -481,10 +497,15 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         ),
         "gestures" => {
             if rest.len() > 1 || rest.first().is_some_and(|name| name.starts_with('-')) {
-                return Err(ParseError::InvalidValue { message: "Expected at most one gesture name".to_string(), usage: "gestures [name]" });
+                return Err(ParseError::InvalidValue {
+                    message: "Expected at most one gesture name".to_string(),
+                    usage: "gestures [name]",
+                });
             }
             let mut command = json!({"id": id, "action": "gestures"});
-            if let Some(name) = rest.first() { command["name"] = json!(name); }
+            if let Some(name) = rest.first() {
+                command["name"] = json!(name);
+            }
             Ok(command)
         }
         "gesture" => parse_gesture(&rest, &id),
@@ -2281,34 +2302,61 @@ fn parse_webmcp(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
 /// CLI and MCP share this envelope parser; modules own parameter schemas.
 fn parse_gesture(rest: &[&str], id: &str) -> Result<Value, ParseError> {
-    const USAGE: &str = "gesture <name> --params '<JSON object>' [--observe none|snapshot|screenshot]";
-    let name = rest.first().filter(|name| !name.starts_with('-')).ok_or_else(|| ParseError::MissingArguments {
-        context: "gesture".to_string(), usage: USAGE,
-    })?;
+    const USAGE: &str =
+        "gesture <name> --params '<JSON object>' [--observe none|snapshot|screenshot]";
+    let name = rest
+        .first()
+        .filter(|name| !name.starts_with('-'))
+        .ok_or_else(|| ParseError::MissingArguments {
+            context: "gesture".to_string(),
+            usage: USAGE,
+        })?;
     let mut params = None;
     let mut observe = None;
     let mut index = 1;
     while index < rest.len() {
-        let value = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
-            context: rest[index].to_string(), usage: USAGE,
-        })?;
+        let value = rest
+            .get(index + 1)
+            .ok_or_else(|| ParseError::MissingArguments {
+                context: rest[index].to_string(),
+                usage: USAGE,
+            })?;
         match rest[index] {
             "--params" if params.is_none() => {
-                let parsed: Value = serde_json::from_str(value).map_err(|_| ParseError::InvalidValue {
-                    message: "--params must be a valid JSON object".to_string(), usage: USAGE,
-                })?;
+                let parsed: Value =
+                    serde_json::from_str(value).map_err(|_| ParseError::InvalidValue {
+                        message: "--params must be a valid JSON object".to_string(),
+                        usage: USAGE,
+                    })?;
                 if !parsed.is_object() {
-                    return Err(ParseError::InvalidValue { message: "--params must be a JSON object".to_string(), usage: USAGE });
+                    return Err(ParseError::InvalidValue {
+                        message: "--params must be a JSON object".to_string(),
+                        usage: USAGE,
+                    });
                 }
                 params = Some(parsed);
             }
-            "--observe" if observe.is_none() && matches!(*value, "none" | "snapshot" | "screenshot") => observe = Some(*value),
-            _ => return Err(ParseError::InvalidValue { message: "Unknown, repeated, or invalid gesture option".to_string(), usage: USAGE }),
+            "--observe"
+                if observe.is_none() && matches!(*value, "none" | "snapshot" | "screenshot") =>
+            {
+                observe = Some(*value)
+            }
+            _ => {
+                return Err(ParseError::InvalidValue {
+                    message: "Unknown, repeated, or invalid gesture option".to_string(),
+                    usage: USAGE,
+                })
+            }
         }
         index += 2;
     }
-    let params = params.ok_or_else(|| ParseError::MissingArguments { context: "gesture --params".to_string(), usage: USAGE })?;
-    Ok(json!({"id": id, "action": "gesture", "name": name, "params": params, "observe": observe.unwrap_or("none")}))
+    let params = params.ok_or_else(|| ParseError::MissingArguments {
+        context: "gesture --params".to_string(),
+        usage: USAGE,
+    })?;
+    Ok(
+        json!({"id": id, "action": "gesture", "name": name, "params": params, "observe": observe.unwrap_or("none")}),
+    )
 }
 
 fn parse_hover_hold(rest: &[&str], id: &str) -> Result<Value, ParseError> {
@@ -2338,10 +2386,12 @@ fn parse_hover_hold(rest: &[&str], id: &str) -> Result<Value, ParseError> {
                 usage: USAGE,
             });
         }
-        let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
-            context: "hover-hold --max-ms".to_string(),
-            usage: USAGE,
-        })?;
+        let raw = rest
+            .get(index + 1)
+            .ok_or_else(|| ParseError::MissingArguments {
+                context: "hover-hold --max-ms".to_string(),
+                usage: USAGE,
+            })?;
         let max_ms = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
             message: "--max-ms must be an integer between 1000 and 120000".to_string(),
             usage: USAGE,
@@ -2395,12 +2445,15 @@ fn parse_paginated_page_command(
                         usage,
                     });
                 }
-                cursor = Some(*rest.get(index + 1).ok_or_else(|| {
-                    ParseError::MissingArguments {
-                        context: format!("{} --cursor", action.replace('_', "-")),
-                        usage,
-                    }
-                })?);
+                cursor =
+                    Some(
+                        *rest
+                            .get(index + 1)
+                            .ok_or_else(|| ParseError::MissingArguments {
+                                context: format!("{} --cursor", action.replace('_', "-")),
+                                usage,
+                            })?,
+                    );
                 index += 2;
             }
             "--limit" => {
@@ -2410,10 +2463,12 @@ fn parse_paginated_page_command(
                         usage,
                     });
                 }
-                let raw = rest.get(index + 1).ok_or_else(|| ParseError::MissingArguments {
-                    context: format!("{} --limit", action.replace('_', "-")),
-                    usage,
-                })?;
+                let raw = rest
+                    .get(index + 1)
+                    .ok_or_else(|| ParseError::MissingArguments {
+                        context: format!("{} --limit", action.replace('_', "-")),
+                        usage,
+                    })?;
                 let limit = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
                     message: format!("--limit expects an integer, got '{}'", raw),
                     usage,
@@ -3506,7 +3561,16 @@ fn parse_set(rest: &[&str], id: &str) -> Result<Value, ParseError> {
 
 /// Parse network interception, request inspection, and HAR recording commands.
 fn parse_network(rest: &[&str], id: &str) -> Result<Value, ParseError> {
-    const VALID: &[&str] = &["route", "unroute", "requests", "request", "har", "websockets", "workers", "downloads"];
+    const VALID: &[&str] = &[
+        "route",
+        "unroute",
+        "requests",
+        "request",
+        "har",
+        "websockets",
+        "workers",
+        "downloads",
+    ];
 
     match rest.first().copied() {
         Some("downloads") if rest.len() == 1 || (rest.len() == 2 && rest[1] == "--clear") => {
@@ -3748,6 +3812,7 @@ mod tests {
             enable: Vec::new(),
             cdp: None,
             profile: None,
+            input_backend: None,
             state: None,
             proxy: None,
             proxy_bypass: None,
@@ -4842,7 +4907,10 @@ mod tests {
             "hover-hold stop --max-ms 1000",
             "hover-hold stop #player",
         ] {
-            assert!(parse_command(&args(command), &default_flags()).is_err(), "{command}");
+            assert!(
+                parse_command(&args(command), &default_flags()).is_err(),
+                "{command}"
+            );
         }
         assert!(parse_hover_hold(&[""], "empty").is_err());
         assert!(parse_hover_hold(&["  "], "empty").is_err());
@@ -4854,11 +4922,8 @@ mod tests {
         assert_eq!(outline["action"], "page_outline");
         assert_eq!(outline["selector"], "xpath=//main");
 
-        let links = parse_command(
-            &args("page-links #article --limit 75"),
-            &default_flags(),
-        )
-        .unwrap();
+        let links =
+            parse_command(&args("page-links #article --limit 75"), &default_flags()).unwrap();
         assert_eq!(links["action"], "page_links");
         assert_eq!(links["selector"], "#article");
         assert_eq!(links["limit"], 75);
@@ -4994,8 +5059,7 @@ mod tests {
         assert_eq!(downloads["action"], "downloads");
         assert_eq!(downloads["clear"], false);
 
-        let cleared =
-            parse_command(&args("network downloads --clear"), &default_flags()).unwrap();
+        let cleared = parse_command(&args("network downloads --clear"), &default_flags()).unwrap();
         assert_eq!(cleared["action"], "downloads");
         assert_eq!(cleared["clear"], true);
 
@@ -5025,11 +5089,8 @@ mod tests {
 
     #[test]
     fn camoufox_inspection_har_start_and_stop_retain_payload_fields() {
-        let start = parse_command(
-            &args("network har start --content none"),
-            &default_flags(),
-        )
-        .unwrap();
+        let start =
+            parse_command(&args("network har start --content none"), &default_flags()).unwrap();
         assert_eq!(start["action"], "har_start");
         assert_eq!(start["content"], "none");
 

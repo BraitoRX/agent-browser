@@ -22,6 +22,11 @@ MAX_CAPTURE_ID_LENGTH = 128
 MOTIONS = ("human-fast", "fast", "precision")
 MOTION_HUMANIZE: Dict[str, Any] = {"human-fast": 0.25, "fast": False, "precision": False}
 
+INPUT_BACKEND_ENV = "AGENT_BROWSER_INPUT_BACKEND"
+INPUT_BACKEND_JUGGLER = "juggler"
+INPUT_BACKEND_OSNATIVE = "os-native"
+INPUT_BACKENDS = (INPUT_BACKEND_JUGGLER, INPUT_BACKEND_OSNATIVE)
+
 CODE_INVALID = "camoufox_invalid_params"
 CODE_INVALID_REQUEST = "camoufox_invalid_request"
 CODE_UNSUPPORTED = "camoufox_unsupported"
@@ -100,6 +105,19 @@ def action_deadline_ms(env: Optional[Dict[str, str]] = None) -> int:
     except (TypeError, ValueError):
         return DEFAULT_ACTION_DEADLINE_MS
     return max(1_000, min(MAX_ACTION_DEADLINE_MS, value))
+
+
+def input_backend(env: Optional[Dict[str, str]] = None) -> str:
+    source = env if env is not None else os.environ
+    raw = source.get(INPUT_BACKEND_ENV)
+    if raw is None:
+        return INPUT_BACKEND_JUGGLER
+    if raw not in INPUT_BACKENDS:
+        raise BackendError(
+            CODE_INVALID,
+            f"'{INPUT_BACKEND_ENV}' must be one of: {', '.join(INPUT_BACKENDS)}",
+        )
+    return raw
 
 
 def iso_now() -> str:

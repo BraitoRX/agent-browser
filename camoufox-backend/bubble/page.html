@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pointer XTEST · Camoufox Linux</title>
+<style>
+  :root { color-scheme: dark; font: 15px/1.5 -apple-system, BlinkMacSystemFont, sans-serif; color: #e7edf6; background: #10151e; }
+  * { box-sizing: border-box; }
+  body { max-width: 1040px; margin: 0 auto; padding: 30px 34px; }
+  .eyebrow { color: #96baff; font: 11px ui-monospace, monospace; letter-spacing: .14em; text-transform: uppercase; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+  h1 { font-size: 32px; letter-spacing: -.04em; margin: 8px 0 0; }
+  .sub { color: #a6b2c4; margin: 10px 0 20px; max-width: 820px; }
+  .route { background: #182338; border: 1px solid #294369; border-radius: 9px; padding: 12px 16px; color: #b9d1ff; font: 12px ui-monospace, monospace; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 18px; }
+  .card { background: #1a2230; border: 1px solid #334056; border-radius: 12px; padding: 20px; }
+  .card h2 { font-size: 13px; font-weight: 500; color: #a7b6cc; margin: 0 0 12px; }
+  button { font: inherit; color: #e9f0fb; background: #263650; border: 1px solid #506991; padding: 11px 20px; border-radius: 7px; cursor: pointer; }
+  button:hover { background: #355480; border-color: #96baff; }
+  button:active { transform: translateY(1px); }
+  #run { font-size: 12px; white-space: nowrap; }
+  .result { display: flex; align-items: baseline; gap: 14px; margin-top: 12px; }
+  .count { font-size: 34px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .trusted { font: 12px ui-monospace, monospace; color: #96a8c0; }
+  .accepted .trusted, .accepted .count { color: #79e5be; }
+  #pad { margin-top: 14px; border: 1px dashed #536480; border-radius: 9px; padding: 20px; text-align: center; background: #18202c; cursor: default; }
+  #pad:hover { background: #16382d; border-color: #79e5be; }
+  #pad span { display: block; font-size: 12px; color: #9aacbf; }
+  .telemetry { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 20px; }
+  .telemetry p { margin: 0 0 7px; font-size: 11px; color: #98aac3; text-transform: uppercase; letter-spacing: .07em; }
+  #last, #focus { font: 12px ui-monospace, monospace; color: #c5d6ef; }
+  #log { height: 82px; overflow: hidden; white-space: pre-wrap; font: 11px/1.65 ui-monospace, monospace; margin-top: 12px; color: #9cacbf; }
+  footer { border-top: 1px solid #303c4d; margin-top: 18px; padding-top: 12px; color: #aeb9ca; font-size: 11px; }
+  footer strong { color: #efcc86; }
+</style>
+<body data-request="0" data-events="[]" data-last-move="{}">
+<header>
+  <div><div class="eyebrow">Laboratorio local / Linux aislado</div><h1>Entrada externa. Evidencia visible.</h1></div>
+  <button id="run">Repetir secuencia</button>
+</header>
+<p class="sub">El puntero que ves es el cursor real de este escritorio X privado, movido con XTEST desde un proceso externo. Playwright solo abre, observa y captura.</p>
+<div class="route">Python externo → XTEST (servidor X privado) → cursor del escritorio → eventos de esta página</div>
+<div class="grid">
+  <section class="card" id="card-a"><h2>01 / CLIC EXTERNO</h2><button id="target-a" data-clicks="0">Activar A</button><div class="result"><span class="count" id="count-a">0</span><span class="trusted" id="trusted-a">Esperando evento</span></div></section>
+  <section class="card" id="card-b"><h2>02 / CLIC EXTERNO</h2><button id="target-b" data-clicks="0">Activar B</button><div class="result"><span class="count" id="count-b">0</span><span class="trusted" id="trusted-b">Esperando evento</span></div></section>
+</div>
+<div id="pad">Zona de hover nativo<span>El fondo cambia por CSS :hover con el cursor real del escritorio.</span></div>
+<div class="telemetry">
+  <div><p>Último movimiento recibido</p><div id="last">Sin movimiento</div></div>
+  <div><p>Estado de ventana</p><div id="focus">Esperando</div></div>
+</div>
+<div id="log">La evidencia se guarda también en evidence.json.</div>
+<footer><strong>Alcance:</strong> XTEST inyecta en la misma cola de entrada que un mouse físico de este display; no es un dispositivo HID del host. <strong>Capturas:</strong> el cursor compuesto se lee del propio servidor X y va etiquetado. <code>isTrusted=true</code> no demuestra indetectabilidad.</footer>
+<script>
+  const evidence = [];
+  let moveSequence = 0;
+  function record(event) {
+    const entry = {type: event.type, trusted: event.isTrusted, target: event.target.id, x: event.clientX, y: event.clientY, screenX: event.screenX, screenY: event.screenY, buttons: event.buttons, at: event.timeStamp};
+    if (event.type === 'mousemove') {
+      entry.sequence = ++moveSequence;
+      document.body.dataset.lastMove = JSON.stringify(entry);
+      document.querySelector('#last').textContent = `x=${entry.x}  y=${entry.y}  isTrusted=${entry.trusted}`;
+    } else {
+      evidence.push(entry);
+      if (evidence.length > 160) evidence.shift();
+      document.body.dataset.events = JSON.stringify(evidence);
+      document.querySelector('#log').textContent = evidence.slice(-4).map(e => `${e.type.padEnd(12)} ${String(e.target).padEnd(12)} trusted=${e.trusted}  (${e.x}, ${e.y})`).join('\n');
+    }
+  }
+  for (const type of ['mousemove', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) document.addEventListener(type, record, true);
+  for (const name of ['a', 'b']) {
+    document.querySelector(`#target-${name}`).addEventListener('click', event => {
+      const target = event.currentTarget;
+      target.dataset.clicks = Number(target.dataset.clicks) + 1;
+      document.querySelector(`#count-${name}`).textContent = target.dataset.clicks;
+      document.querySelector(`#trusted-${name}`).textContent = `click.isTrusted = ${event.isTrusted}`;
+      document.querySelector(`#card-${name}`).classList.add('accepted');
+    });
+  }
+  document.querySelector('#run').addEventListener('click', () => { document.body.dataset.request = Number(document.body.dataset.request) + 1; });
+  function focusState() { document.querySelector('#focus').textContent = `focus=${document.hasFocus()}  visibility=${document.visibilityState}`; }
+  window.addEventListener('focus', focusState);
+  window.addEventListener('blur', focusState);
+  document.addEventListener('visibilitychange', focusState);
+  focusState();
+</script>
+</body>
+</html>

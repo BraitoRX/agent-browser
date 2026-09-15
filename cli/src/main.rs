@@ -719,9 +719,16 @@ fn run_session_info(session: &str, json_mode: bool) {
             println!("Engine: {}", engine);
         }
         let camoufox = data.get("engine").and_then(|v| v.as_str()) == Some("camoufox");
-        let browser_launched = data.get("browserLaunched").and_then(|v| v.as_bool()).or_else(|| {
-            if camoufox { data.get("launched").and_then(|v| v.as_bool()) } else { None }
-        });
+        let browser_launched = data
+            .get("browserLaunched")
+            .and_then(|v| v.as_bool())
+            .or_else(|| {
+                if camoufox {
+                    data.get("launched").and_then(|v| v.as_bool())
+                } else {
+                    None
+                }
+            });
         if let Some(launched) = browser_launched {
             println!("Browser launched: {}", launched);
         }
@@ -733,7 +740,10 @@ fn run_session_info(session: &str, json_mode: bool) {
                 println!("Recovery required: {}", required);
             }
             if let Some(reason) = data.get("closeReason").and_then(|v| v.as_str()) {
-                println!("Close reason: {} (close the affected session before reopening)", reason);
+                println!(
+                    "Close reason: {} (close the affected session before reopening)",
+                    reason
+                );
             }
         }
     } else if let Some(err) = runtime_error {
@@ -1424,12 +1434,21 @@ fn main() {
             };
             match result {
                 Ok(data) => {
-                    if flags.json { println!("{}", json!({"success": true, "data": data})); }
-                    else { println!("Camoufox runtime installed at {}", data["runtimeDir"].as_str().unwrap_or("")); }
+                    if flags.json {
+                        println!("{}", json!({"success": true, "data": data}));
+                    } else {
+                        println!(
+                            "Camoufox runtime installed at {}",
+                            data["runtimeDir"].as_str().unwrap_or("")
+                        );
+                    }
                 }
                 Err(error) => {
-                    if flags.json { print_json_error(error); }
-                    else { eprintln!("{} {}", color::error_indicator(), error); }
+                    if flags.json {
+                        print_json_error(error);
+                    } else {
+                        eprintln!("{} {}", color::error_indicator(), error);
+                    }
                     exit(1);
                 }
             }
@@ -1549,11 +1568,18 @@ fn main() {
             if let Some(profile) = &flags.profile {
                 env::set_var("AGENT_BROWSER_PROFILE", profile);
             }
+            if let Some(backend) = &flags.input_backend {
+                env::set_var("AGENT_BROWSER_INPUT_BACKEND", backend);
+            }
             if flags.headed || flags.cli_headed {
                 env::set_var("AGENT_BROWSER_HEADED", if flags.headed { "1" } else { "0" });
             }
-            if let Some(policy) = &flags.action_policy { env::set_var("AGENT_BROWSER_ACTION_POLICY", policy); }
-            if let Some(actions) = &flags.confirm_actions { env::set_var("AGENT_BROWSER_CONFIRM_ACTIONS", actions); }
+            if let Some(policy) = &flags.action_policy {
+                env::set_var("AGENT_BROWSER_ACTION_POLICY", policy);
+            }
+            if let Some(actions) = &flags.confirm_actions {
+                env::set_var("AGENT_BROWSER_CONFIRM_ACTIONS", actions);
+            }
         }
         if let Err(err) = mcp::run_mcp(&clean[1..]) {
             eprintln!("{} {}", color::error_indicator(), err);
@@ -1757,6 +1783,7 @@ fn main() {
         hide_scrollbars: flags.hide_scrollbars,
         webgpu: flags.webgpu,
         profile: flags.profile.as_deref(),
+        input_backend: flags.input_backend.as_deref(),
         state: flags.state.as_deref(),
         provider: flags.provider.as_deref(),
         device: flags.device.as_deref(),

@@ -381,6 +381,7 @@ pub struct Flags {
     pub init_scripts: Vec<String>,
     pub enable: Vec<String>,
     pub profile: Option<String>,
+    pub input_backend: Option<String>,
     pub state: Option<String>,
     pub proxy: Option<String>,
     pub proxy_bypass: Option<String>,
@@ -636,6 +637,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
         confirm_interactive: env_var_is_truthy("AGENT_BROWSER_CONFIRM_INTERACTIVE")
             || config.confirm_interactive.unwrap_or(false),
         engine: env::var("AGENT_BROWSER_ENGINE").ok().or(config.engine),
+        input_backend: env::var("AGENT_BROWSER_INPUT_BACKEND").ok(),
         screenshot_dir: env::var("AGENT_BROWSER_SCREENSHOT_DIR")
             .ok()
             .or(config.screenshot_dir),
@@ -865,6 +867,19 @@ pub fn parse_flags(args: &[String]) -> Flags {
                 if let Some(s) = args.get(i + 1) {
                     flags.profile = Some(s.clone());
                     flags.cli_profile = true;
+                    i += 1;
+                }
+            }
+            "--input-backend" => {
+                if let Some(s) = args.get(i + 1) {
+                    match s.as_str() {
+                        "juggler" | "os-native" => flags.input_backend = Some(s.to_string()),
+                        other => eprintln!(
+                            "{} --input-backend must be juggler or os-native, got '{}'",
+                            color::warning_indicator(),
+                            other
+                        ),
+                    }
                     i += 1;
                 }
             }
@@ -1188,6 +1203,7 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--download-path",
         "--max-output",
         "--allowed-domains",
+        "--input-backend",
         "--action-policy",
         "--confirm-actions",
         "--config",
@@ -1280,6 +1296,14 @@ mod tests {
     #[test]
     fn test_parse_idle_timeout_hours() {
         assert_eq!(parse_idle_timeout("1h").unwrap(), "3600000");
+    }
+
+    #[test]
+    fn test_parse_input_backend_flag() {
+        let flags = parse_flags(&["--input-backend".to_string(), "os-native".to_string()]);
+        assert_eq!(flags.input_backend.as_deref(), Some("os-native"));
+        let flags = parse_flags(&["--input-backend".to_string(), "juggler".to_string()]);
+        assert_eq!(flags.input_backend.as_deref(), Some("juggler"));
     }
 
     #[test]
@@ -1469,6 +1493,20 @@ mod tests {
     #[test]
     fn test_clean_args_removes_idle_timeout_before_command() {
         let cleaned = clean_args(&args("--idle-timeout 10s open example.com"));
+        assert_eq!(cleaned, vec!["open", "example.com"]);
+    }
+
+    #[test]
+    fn test_clean_args_removes_input_backend_before_command() {
+        let cleaned = clean_args(&args("--input-backend os-native open example.com"));
+        assert_eq!(cleaned, vec!["open", "example.com"]);
+    }
+
+    #[test]
+    fn test_clean_args_removes_input_backend_between_flags() {
+        let cleaned = clean_args(&args(
+            "--engine camoufox --input-backend os-native open example.com",
+        ));
         assert_eq!(cleaned, vec!["open", "example.com"]);
     }
 

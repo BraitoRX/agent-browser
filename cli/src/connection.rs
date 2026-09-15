@@ -449,6 +449,7 @@ pub struct DaemonOptions<'a> {
     pub hide_scrollbars: bool,
     pub webgpu: bool,
     pub profile: Option<&'a str>,
+    pub input_backend: Option<&'a str>,
     pub state: Option<&'a str>,
     pub provider: Option<&'a str>,
     pub device: Option<&'a str>,
@@ -527,6 +528,9 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     if let Some(prof) = opts.profile {
         cmd.env("AGENT_BROWSER_PROFILE", prof);
     }
+    if let Some(backend) = opts.input_backend {
+        cmd.env("AGENT_BROWSER_INPUT_BACKEND", backend);
+    }
     if let Some(st) = opts.state {
         cmd.env("AGENT_BROWSER_STATE", st);
     }
@@ -597,6 +601,7 @@ fn daemon_config_fingerprint(opts: &DaemonOptions) -> String {
     opts.idle_timeout.hash(&mut hasher);
     opts.default_timeout.hash(&mut hasher);
     opts.no_auto_dialog.hash(&mut hasher);
+    opts.input_backend.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
 
@@ -1051,7 +1056,9 @@ pub fn send_command(cmd: Value, session: &str) -> Result<Response, String> {
 /// listening, so backing off cannot help. Callers use daemon_unreachable()
 /// to respawn via ensure_daemon and retry once instead.
 fn is_transient_error(error: &str) -> bool {
-    if error.starts_with("camoufox_no_replay:") { return false; }
+    if error.starts_with("camoufox_no_replay:") {
+        return false;
+    }
     has_os_error(error, 35) // EAGAIN on macOS
         || has_os_error(error, 11) // EAGAIN on Linux
         || error.contains("WouldBlock")
@@ -1069,7 +1076,9 @@ fn is_transient_error(error: &str) -> bool {
 /// (exited or never started), as opposed to a live-but-busy daemon. The
 /// remedy is a respawn through ensure_daemon, not a retry.
 pub fn daemon_unreachable(error: &str) -> bool {
-    if error.starts_with("camoufox_no_replay:") { return false; }
+    if error.starts_with("camoufox_no_replay:") {
+        return false;
+    }
     error.contains("Failed to connect")
         || has_os_error(error, 2) // No such file or directory (socket gone)
         || has_os_error(error, 61) // Connection refused (macOS)
@@ -1111,7 +1120,9 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
     let transport_error = |message: String| {
         if camoufox {
             format!("camoufox_no_replay: {message}. Input outcome may be ambiguous; do not retry. Close the session and inspect application state.")
-        } else { message }
+        } else {
+            message
+        }
     };
 
     stream.set_read_timeout(Some(read_timeout_for(cmd))).ok();
@@ -1130,7 +1141,8 @@ fn send_command_once(cmd: &Value, session: &str) -> Result<Response, String> {
         .read_line(&mut response_line)
         .map_err(|e| transport_error(format!("Failed to read: {}", e)))?;
 
-    serde_json::from_str(&response_line).map_err(|e| transport_error(format!("Invalid response: {}", e)))
+    serde_json::from_str(&response_line)
+        .map_err(|e| transport_error(format!("Invalid response: {}", e)))
 }
 
 #[cfg(test)]
@@ -1272,6 +1284,7 @@ mod tests {
             hide_scrollbars: true,
             webgpu: false,
             profile: None,
+            input_backend: None,
             state: None,
             provider: None,
             device: None,

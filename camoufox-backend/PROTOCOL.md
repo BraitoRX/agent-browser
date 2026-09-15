@@ -220,8 +220,18 @@ For macOS app bundles, launch options use an asset anchor under `Contents/Resour
 | `AGENT_BROWSER_CAMOUFOX_RUNTIME` | Rust absolute runtime-root override |
 | `AGENT_BROWSER_PYTHON` | Rust installer interpreter, default python3 |
 | `AGENT_BROWSER_MOTION` | Rust worker launch profile; worker CLI uses `--motion` |
+| `AGENT_BROWSER_INPUT_BACKEND` | Input dispatch backend: `juggler` (default) or `os-native`; the CLI `--input-backend` flag sets it |
+| `AGENT_BROWSER_BUBBLE` | Set to `1` by the daemon under os-native; the worker then starts its Xvfb/x11vnc/websockify stack inside the bubble container before launch. Never set it manually |
 | `HOME`, `XDG_CACHE_HOME` | forced to the private runtime home by worker/bootstrap |
 | `NO_COLOR` | respected by the parent CLI only, not needed here |
+
+## Input backends
+
+The default `juggler` backend dispatches all input through Playwright (`page.mouse`, `page.keyboard`, locator actions) to Juggler. `AGENT_BROWSER_INPUT_BACKEND=os-native` routes the same dispatch surface through X11 XTEST (`osnative_input.py`) against the private X display the browser runs on: window-system-level input with no browser automation API in the dispatch path. Resolution, observation, screenshots, and evaluation stay Playwright. Per-action calibration maps CSS targets to screen coordinates from the Camoufox window geometry (principal window by area, WM_CLASS `('Navigator','camoufox')`) and page metrics; a geometry mismatch before dispatch fails without sending input. Journaling, deadlines, release-in-finally, and the no-replay rules are identical for both backends.
+
+Under os-native the worker runs inside a container bubble (`AGENT_BROWSER_BUBBLE=1`, set by the daemon): `bubble.py` starts Xvfb 1920×1200, x11vnc clipped to the 1920×1080 window area, and noVNC on 6080 before the browser launches, and tears them down on close. The Rust daemon spawns the worker with `docker run -i` (`agent-browser-camoufox:bubble` image), mounts the persistent profile at `/profile`, publishes the VNC port, and injects `vncUrl`/`nativeVnc` into the launch response. The bubble image is built once with `bubble/build.sh`; `effective headless` is always false inside a bubble because the window renders on the private display.
+
+Honest scope: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equate to hardware input; `isTrusted=true` does not establish undetectability.
 
 ## Known risks / open items
 

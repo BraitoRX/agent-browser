@@ -88,7 +88,8 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
 
     ctx.set_stage("move")
     ctx.note_input_dispatched()
-    await bounded(ctx, ctx.page.mouse.move(x, y), "mouse move")
+    dispatch = ctx.input_dispatch()
+    await bounded(ctx, dispatch.move(x, y), "mouse move")
     if settle_before > 0:
         await asyncio.sleep(settle_before / 1000.0)
 
@@ -105,7 +106,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
     remaining_seconds = duration_ms / 1000.0
     timed_out = False
     try:
-        await bounded(ctx, ctx.page.mouse.down(button=button), "mouse down")
+        await bounded(ctx, dispatch.down(button=button), "mouse down")
         ctx.set_stage("hold")
         while remaining_seconds > 0:
             slice_seconds = min(0.25, ctx.remaining_seconds() - 0.25)
@@ -119,7 +120,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         ctx.set_stage("release")
         if journal.buttons.get(button):
             try:
-                await asyncio.wait_for(ctx.page.mouse.up(button=button), timeout=1.5)
+                await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                 journal.finish_button_up(button)
             except Exception:
                 pass

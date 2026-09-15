@@ -64,6 +64,21 @@ The backend saves its generated device configuration for the same recorded brows
 
 This does not import a Chrome profile or provide a password vault. Tabs, sessionStorage, and session-only cookies are not guaranteed across restarts. Websites can expire or revoke logins and still show CAPTCHAs. Only sign into accounts you intend the assistant to access.
 
+## OS-native input
+
+`--input-backend os-native` changes where input is dispatched. The default `juggler` backend sends mouse and keyboard through Playwright to Juggler, the browser's automation bridge. The `os-native` backend injects through X11 XTEST against the private X display the browser runs on: the same input pipeline a physical mouse on that display uses, with no browser automation API involved in dispatch. Element resolution, snapshots, screenshots, and evaluation remain Playwright in both backends.
+
+Under os-native the browser runs inside an isolated container bubble with one Xvfb display and one real X cursor per session. The daemon starts the container, mounts the session's persistent profile directory into it, and returns `vncUrl` (noVNC) and `nativeVnc` (raw VNC) in the launch response for the live view. Sessions, cookies, and website storage persist exactly as with the default backend: close and relaunch keep the profile.
+
+Scope is architectural, not a stealth claim: XTEST injects into the same queue as a physical mouse of that display, but it is not a host HID device and does not equal hardware input, and `isTrusted=true` does not establish undetectability. The default backend is unchanged; this mode is opt-in per startup. macOS requires Docker or OrbStack running and a one-time image build:
+
+```bash
+camoufox-backend/bubble/build.sh
+agent-browser --engine camoufox --input-backend os-native --session os-native-task open https://example.com
+```
+
+Closing the session or stopping the daemon removes the container. The first launch includes the bubble startup inside the launch deadline.
+
 ## Native observation and gestures
 
 Native AI snapshots include link URLs and pointer-cursor markers without extra MCP options. Interactive/compact filtering is unavailable; CLI `--urls`/`--cursor` are compatibility requests for annotations already present. Quoted accessible names retain valid refs, with raw link destinations in `refs[ref].url`. Refs such as `@e2` and `@f1e2` must come from the tab's latest snapshot; every scoped or full snapshot replaces that ref set. Navigation/frame detachment clears refs; when a main-frame ref's element was re-rendered, the backend re-resolves it by role/name, and an ambiguous or empty re-resolution returns `camoufox_stale_ref` so a fresh snapshot is required. Frame-prefixed refs such as `@f1e2` have no fallback. Re-snapshot after material changes. Screenshots are viewport PNGs at CSS scale, not JPEG, full-page, cropped or annotated captures.

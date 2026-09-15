@@ -19,6 +19,7 @@ from input_context import (
 )
 
 STEP_TIMEOUT_MS = 2_000
+BOX_STABILITY_DELAY_MS = 150
 
 
 async def bounded(ctx: Any, awaitable: Awaitable[Any], what: str, timeout_ms: Optional[int] = None) -> Any:
@@ -137,7 +138,29 @@ async def require_in_viewport_no_scroll(ctx: Any, locator: Any, label: str) -> D
     return box
 
 
+async def require_stable_box(ctx: Any, locator: Any, label: str) -> Dict[str, float]:
+    box = await element_box(ctx, locator, label)
+    delay_seconds = min(BOX_STABILITY_DELAY_MS / 1000.0, max(0.0, ctx.remaining_seconds() - 0.5))
+    if delay_seconds <= 0:
+        return box
+    await asyncio.sleep(delay_seconds)
+    fresh = await element_box(ctx, locator, label)
+    if (abs(fresh["x"] - box["x"]) > 1.0 or abs(fresh["y"] - box["y"]) > 1.0
+            or abs(fresh["width"] - box["width"]) > 1.0 or abs(fresh["height"] - box["height"]) > 1.0):
+        raise BackendError(CODE_TIMEOUT, f"{label} is unstable (its layout is still changing)")
+    return fresh
+
+
 async def trial_hover(ctx: Any, locator: Any, label: str) -> None:
+    dispatch = ctx.input_dispatch()
+    if getattr(dispatch, "osnative", False):
+        box = await require_stable_box(ctx, locator, label)
+        if not await inside_viewport(ctx, box, label):
+            raise BackendError(CODE_TIMEOUT, f"hit test for {label}: element is outside the viewport")
+        x, y = box_center(box)
+        ctx.note_input_dispatched()
+        await bounded(ctx, dispatch.move(x, y), f"hit test move for {label}")
+        return
     timeout_ms = step_timeout_ms(ctx)
     await bounded(ctx, locator.hover(trial=True, timeout=timeout_ms), f"hit test for {label}", timeout_ms)
 
@@ -180,25 +203,26 @@ async def resolve_capture_point(ctx: Any, spec: TargetSpec, capture_id_used: Opt
 
 async def mouse_click_at(ctx: Any, x: float, y: float, button: str, count: int) -> None:
     journal = ctx.journal
+    dispatch = ctx.input_dispatch()
     ctx.set_stage("move")
     ctx.note_input_dispatched()
-    await bounded(ctx, ctx.page.mouse.move(x, y), "mouse move")
+    await bounded(ctx, dispatch.move(x, y), "mouse move")
     for index in range(count):
         ctx.check_deadline()
         ctx.set_stage("down")
         journal.begin_button_down(button)
         ctx.note_input_dispatched()
         try:
-            await bounded(ctx, ctx.page.mouse.down(button=button, click_count=index + 1), "mouse down")
+            await bounded(ctx, dispatch.down(button=button, click_count=index + 1), "mouse down")
             ctx.check_deadline()
             ctx.set_stage("up")
             ctx.note_input_dispatched()
-            await bounded(ctx, ctx.page.mouse.up(button=button, click_count=index + 1), "mouse up")
+            await bounded(ctx, dispatch.up(button=button, click_count=index + 1), "mouse up")
             journal.finish_button_up(button)
         finally:
             if journal.buttons.get(button):
                 try:
-                    await asyncio.wait_for(ctx.page.mouse.up(button=button), timeout=1.5)
+                    await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                     journal.finish_button_up(button)
                 except Exception:
                     pass
@@ -206,8 +230,12 @@ async def mouse_click_at(ctx: Any, x: float, y: float, button: str, count: int) 
 
 async def locator_click(ctx: Any, locator: Any, button: str = "left", count: int = 1,
                         label: Optional[str] = None) -> None:
-    timeout_ms = step_timeout_ms(ctx)
     label = label or str(locator)
+    dispatch = ctx.input_dispatch()
+    if getattr(dispatch, "osnative", False):
+        await osnative_locator_click(ctx, dispatch, locator, button, count, label)
+        return
+    timeout_ms = step_timeout_ms(ctx)
     ctx.journal.begin_button_down(button)
     ctx.note_input_dispatched()
     try:
@@ -227,10 +255,46 @@ async def locator_click(ctx: Any, locator: Any, button: str = "left", count: int
     finally:
         if ctx.journal.buttons.get(button):
             try:
-                await asyncio.wait_for(ctx.page.mouse.up(button=button), timeout=1.5)
+                await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                 ctx.journal.finish_button_up(button)
             except Exception:
                 pass
+
+
+async def osnative_locator_click(ctx: Any, dispatch: Any, locator: Any, button: str,
+                                 count: int, label: str) -> None:
+    timeout_ms = step_timeout_ms(ctx)
+    await bounded(ctx, locator.scroll_into_view_if_needed(timeout=timeout_ms), f"scroll {label} into view", timeout_ms)
+    box = await require_stable_box(ctx, locator, label)
+    if not await inside_viewport(ctx, box, label):
+        raise BackendError(
+            CODE_INVALID,
+            f"{label} does not fit fully inside the current viewport after scrolling",
+        )
+    x, y = box_center(box)
+    ctx.set_stage("move")
+    ctx.note_input_dispatched()
+    await bounded(ctx, dispatch.move(x, y), f"move to {label}")
+    journal = ctx.journal
+    for index in range(count):
+        ctx.check_deadline()
+        ctx.set_stage("down")
+        journal.begin_button_down(button)
+        ctx.note_input_dispatched()
+        try:
+            await bounded(ctx, dispatch.down(button=button, click_count=index + 1), f"mouse down on {label}")
+            ctx.check_deadline()
+            ctx.set_stage("up")
+            ctx.note_input_dispatched()
+            await bounded(ctx, dispatch.up(button=button, click_count=index + 1), f"mouse up on {label}")
+            journal.finish_button_up(button)
+        finally:
+            if journal.buttons.get(button):
+                try:
+                    await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
+                    journal.finish_button_up(button)
+                except Exception:
+                    pass
 
 
 async def keyboard_press(ctx: Any, key: str) -> None:
@@ -243,11 +307,11 @@ async def keyboard_press(ctx: Any, key: str) -> None:
             ctx.journal.begin_key_down(item)
     ctx.note_input_dispatched()
     try:
-        await bounded(ctx, ctx.page.keyboard.press(key), "keyboard press")
+        await bounded(ctx, ctx.input_dispatch().press(key), "keyboard press")
     finally:
         for item in ctx.journal.pending_keys():
             try:
-                await asyncio.wait_for(ctx.page.keyboard.up(item), timeout=0.5)
+                await asyncio.wait_for(ctx.input_dispatch().key_up(item), timeout=0.5)
                 ctx.journal.finish_key_up(item)
             except Exception:
                 pass

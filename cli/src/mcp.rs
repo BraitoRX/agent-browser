@@ -453,7 +453,12 @@ const CORE_PROFILE_TOOLS: &[&str] = &[
 ];
 
 const GESTURES_PROFILE_TOOLS: &[&str] = &[
-    TOOL_GESTURES, TOOL_GESTURE, TOOL_INSTALL, TOOL_SESSION_INFO, TOOL_SKILLS_LIST, TOOL_SKILLS_GET,
+    TOOL_GESTURES,
+    TOOL_GESTURE,
+    TOOL_INSTALL,
+    TOOL_SESSION_INFO,
+    TOOL_SKILLS_LIST,
+    TOOL_SKILLS_GET,
 ];
 
 const WEBMCP_PROFILE_TOOLS: &[&str] = &[
@@ -909,7 +914,13 @@ fn tools_for_config(config: &McpConfig) -> Vec<Value> {
                 .and_then(|name| name.as_str())
                 .is_some_and(|name| config.allows(name))
         })
-        .map(|tool| if config.camoufox { camoufox_tool(tool) } else { tool })
+        .map(|tool| {
+            if config.camoufox {
+                camoufox_tool(tool)
+            } else {
+                tool
+            }
+        })
         .collect()
 }
 
@@ -917,7 +928,16 @@ fn tools_for_config(config: &McpConfig) -> Vec<Value> {
 fn camoufox_tool(mut tool: Value) -> Value {
     let name = tool["name"].as_str().unwrap_or("").to_string();
     let props = tool["inputSchema"]["properties"].as_object_mut().unwrap();
-    for key in ["restore", "restoreSave", "restoreCheckUrl", "restoreCheckText", "restoreCheckFn", "allowedDomains", "caCert", "clearCaCert"] {
+    for key in [
+        "restore",
+        "restoreSave",
+        "restoreCheckUrl",
+        "restoreCheckText",
+        "restoreCheckFn",
+        "allowedDomains",
+        "caCert",
+        "clearCaCert",
+    ] {
         props.remove(key);
     }
     props.insert("engine".into(), json!({
@@ -925,12 +945,21 @@ fn camoufox_tool(mut tool: Value) -> Value {
         "description": "This MCP server is bound to Camoufox. Use a separate server for another engine."
     }));
     props.get_mut("timeoutMs").unwrap()["minimum"] = json!(30000);
-    props.get_mut("namespace").unwrap()["description"] = json!("Optional namespace isolating daemon sockets.");
+    props.get_mut("namespace").unwrap()["description"] =
+        json!("Optional namespace isolating daemon sockets.");
     props.get_mut("profile").unwrap()["description"] = json!("Absolute path to a private persistent Camoufox profile. Reuse it to retain login storage across restarts. Close before changing profiles; only one browser may own a profile. Omit to use configured defaults.");
     props.get_mut("extraArgs").unwrap()["description"] = json!("Advanced CLI arguments, still subject to Camoufox capability and safety validation. Engine overrides are rejected.");
     let removed: &[&str] = match name.as_str() {
         TOOL_OPEN => &["webgpu", "webmcp"],
-        TOOL_READ => &["url", "raw", "requireMd", "llms", "outline", "filter", "readTimeoutMs"],
+        TOOL_READ => &[
+            "url",
+            "raw",
+            "requireMd",
+            "llms",
+            "outline",
+            "filter",
+            "readTimeoutMs",
+        ],
         TOOL_SNAPSHOT => &["interactive", "compact", "includeUrls"],
         TOOL_SCREENSHOT => &["selector", "fullPage", "annotate", "quality"],
         TOOL_CLICK => &["newTab"],
@@ -943,10 +972,14 @@ fn camoufox_tool(mut tool: Value) -> Value {
     match name.as_str() {
         TOOL_SNAPSHOT => {
             props.get_mut("depth").unwrap()["maximum"] = json!(100);
-            props.get_mut("depth").unwrap()["description"] = json!("Native tree depth limit, 0–100. Zero or omission means unlimited.");
+            props.get_mut("depth").unwrap()["description"] =
+                json!("Native tree depth limit, 0–100. Zero or omission means unlimited.");
             props.insert("selector".into(), selector_schema());
         }
-        TOOL_SELECT => props.get_mut("values").unwrap()["description"] = json!("Exact option values to select, not labels."),
+        TOOL_SELECT => {
+            props.get_mut("values").unwrap()["description"] =
+                json!("Exact option values to select, not labels.")
+        }
         _ => {}
     }
     let description = match name.as_str() {
@@ -992,27 +1025,48 @@ fn validate_camoufox_engine_args(args: &[String]) -> Result<(), ProtocolError> {
 /// Validate the advertised engine-specific boundary before any subprocess or browser input.
 fn camoufox_arguments(name: &str, arguments: &Value) -> Result<Value, ProtocolError> {
     validate_arguments_object(arguments)?;
-    let definition = camoufox_tool(tools().into_iter().find(|tool| tool["name"] == name).unwrap());
+    let definition = camoufox_tool(
+        tools()
+            .into_iter()
+            .find(|tool| tool["name"] == name)
+            .unwrap(),
+    );
     let props = definition["inputSchema"]["properties"].as_object().unwrap();
     if let Some(arguments) = arguments.as_object() {
         for (key, value) in arguments {
             let Some(property) = props.get(key) else {
-                return Err(ProtocolError::invalid_params(format!("Argument '{key}' is not available for {name} on Camoufox")));
+                return Err(ProtocolError::invalid_params(format!(
+                    "Argument '{key}' is not available for {name} on Camoufox"
+                )));
             };
-            if property.get("enum").and_then(Value::as_array).is_some_and(|values| !values.contains(value)) {
-                return Err(ProtocolError::invalid_params(format!("Unsupported value for '{key}' on Camoufox")));
+            if property
+                .get("enum")
+                .and_then(Value::as_array)
+                .is_some_and(|values| !values.contains(value))
+            {
+                return Err(ProtocolError::invalid_params(format!(
+                    "Unsupported value for '{key}' on Camoufox"
+                )));
             }
         }
     }
     if optional_timeout(arguments)? < 30_000 {
-        return Err(ProtocolError::invalid_params("Camoufox timeoutMs must be at least 30000"));
+        return Err(ProtocolError::invalid_params(
+            "Camoufox timeoutMs must be at least 30000",
+        ));
     }
-    validate_camoufox_engine_args(&optional_string_array(arguments, "extraArgs")?.unwrap_or_default())?;
+    validate_camoufox_engine_args(
+        &optional_string_array(arguments, "extraArgs")?.unwrap_or_default(),
+    )?;
     if name == TOOL_BATCH {
         if let Some(commands) = arguments.get("commands").and_then(Value::as_array) {
             for command in commands {
                 if let Some(items) = command.as_array() {
-                    let args: Vec<String> = items.iter().filter_map(Value::as_str).map(str::to_string).collect();
+                    let args: Vec<String> = items
+                        .iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect();
                     validate_camoufox_engine_args(&args)?;
                 }
             }
@@ -2159,7 +2213,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_SESSION_INFO,
             "Session info",
-            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; top-level active describes the daemon only.",
+            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; runtime.inputBackend reports the dispatch backend (juggler or os-native) and runtime.vncUrl is the live noVNC view when os-native is active; top-level active describes the daemon only.",
             json!({}),
             &[],
         ),
@@ -2816,7 +2870,11 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
 
 fn call_tools_profiles(config: &McpConfig) -> Result<Value, ProtocolError> {
     let profiles = tool_profile_summaries(config);
-    let compose = if config.camoufox { "core,network,gestures" } else { "core,network,react" };
+    let compose = if config.camoufox {
+        "core,network,gestures"
+    } else {
+        "core,network,react"
+    };
     let text = format!(
         "Active MCP tools profile(s): {}\n\nAvailable profiles:\n{}\n\nRestart the MCP server with `agent-browser mcp --tools <profile>` or combine profiles with commas, for example `agent-browser mcp --tools {compose}`. The all profile exposes only tools available for this server's engine.",
         config.profile_names().join(", "),
@@ -2928,10 +2986,7 @@ fn call_paginated_page(arguments: &Value, command: &str) -> Result<Value, Protoc
     call_cli_tool(arguments, paginated_page_args(arguments, command)?, None)
 }
 
-fn paginated_page_args(
-    arguments: &Value,
-    command: &str,
-) -> Result<Vec<String>, ProtocolError> {
+fn paginated_page_args(arguments: &Value, command: &str) -> Result<Vec<String>, ProtocolError> {
     let mut args = vec![command.to_string()];
     if let Some(selector) = optional_string(arguments, "selector")? {
         args.push(selector);
@@ -3071,7 +3126,9 @@ fn call_read(arguments: &Value) -> Result<Value, ProtocolError> {
 /// Preserve Chrome's interactive default without requesting unsupported Camoufox filtering.
 fn call_snapshot(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = vec!["snapshot".to_string()];
-    let camoufox = arguments.get("engine").and_then(Value::as_str)
+    let camoufox = arguments
+        .get("engine")
+        .and_then(Value::as_str)
         .map(|engine| engine == "camoufox")
         .unwrap_or_else(|| env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
     if optional_bool(arguments, "interactive")?.unwrap_or(!camoufox) {
@@ -3149,15 +3206,24 @@ fn call_drag(arguments: &Value) -> Result<Value, ProtocolError> {
 
 fn call_gestures(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = vec!["gestures".to_string()];
-    if let Some(name) = optional_string(arguments, "name")? { args.push(name); }
+    if let Some(name) = optional_string(arguments, "name")? {
+        args.push(name);
+    }
     call_cli_tool(arguments, args, None)
 }
 
 fn call_gesture(arguments: &Value) -> Result<Value, ProtocolError> {
     let name = required_string(arguments, "name")?;
-    let params = arguments.get("params").filter(|value| value.is_object())
+    let params = arguments
+        .get("params")
+        .filter(|value| value.is_object())
         .ok_or_else(|| ProtocolError::invalid_params("params must be a JSON object"))?;
-    let mut args = vec!["gesture".to_string(), name, "--params".to_string(), params.to_string()];
+    let mut args = vec![
+        "gesture".to_string(),
+        name,
+        "--params".to_string(),
+        params.to_string(),
+    ];
     if let Some(observe) = optional_string(arguments, "observe")? {
         args.extend(["--observe".to_string(), observe]);
     }
@@ -3302,7 +3368,9 @@ fn hover_hold_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
     let stop = optional_bool(arguments, "stop")?;
     let max_ms = optional_u64(arguments, "maxMs")?;
     if max_ms.is_some_and(|value| !(1000..=120000).contains(&value)) {
-        return Err(ProtocolError::invalid_params("maxMs must be between 1000 and 120000"));
+        return Err(ProtocolError::invalid_params(
+            "maxMs must be between 1000 and 120000",
+        ));
     }
     let mut args = vec!["hover-hold".to_string()];
     match (selector, stop) {
@@ -4074,7 +4142,8 @@ fn call_install(arguments: &Value) -> Result<Value, ProtocolError> {
     }
     let mut arguments = arguments.clone();
     let camoufox = arguments.get("engine").and_then(Value::as_str) == Some("camoufox")
-        || (arguments.get("engine").is_none() && env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
+        || (arguments.get("engine").is_none()
+            && env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
     if camoufox && arguments.get("timeoutMs").is_none() {
         arguments["timeoutMs"] = json!(2_100_000);
     }
@@ -4277,7 +4346,9 @@ fn append_common_global_args(
 ) -> Result<(), ProtocolError> {
     if let Some(engine) = optional_string(arguments, "engine")? {
         if !matches!(engine.as_str(), "chrome" | "lightpanda" | "camoufox") {
-            return Err(ProtocolError::invalid_params("engine must be chrome, lightpanda, or camoufox"));
+            return Err(ProtocolError::invalid_params(
+                "engine must be chrome, lightpanda, or camoufox",
+            ));
         }
         args.extend(["--engine".to_string(), engine]);
     }
@@ -4361,8 +4432,12 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
         } else {
             Stdio::null()
         });
-    let selected_engine = args.windows(2).rev().find(|pair| pair[0] == "--engine")
-        .map(|pair| pair[1].clone()).or_else(|| env::var("AGENT_BROWSER_ENGINE").ok());
+    let selected_engine = args
+        .windows(2)
+        .rev()
+        .find(|pair| pair[0] == "--engine")
+        .map(|pair| pair[1].clone())
+        .or_else(|| env::var("AGENT_BROWSER_ENGINE").ok());
     let camoufox = selected_engine.as_deref() == Some("camoufox");
     if camoufox && timeout_ms < 30_000 {
         return Err("Camoufox MCP timeoutMs must be at least 30000 so the daemon can report its bounded input outcome".to_string());
@@ -4413,7 +4488,9 @@ fn run_cli(args: &[String], stdin_body: Option<String>, timeout_ms: u64) -> Resu
                     #[cfg(unix)]
                     if camoufox {
                         // The CLI group includes only its installer children, not the detached daemon.
-                        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+                        unsafe {
+                            libc::kill(-(child.id() as i32), libc::SIGKILL);
+                        }
                     }
                     let _ = child.kill();
                     let _ = child.wait();
@@ -5419,7 +5496,11 @@ mod tests {
 
     #[test]
     fn camoufox_lifecycle_errors_preserve_cli_data_and_expose_codes() {
-        for code in ["camoufox_session_closed", "camoufox_target_closed", "camoufox_no_active_tab"] {
+        for code in [
+            "camoufox_session_closed",
+            "camoufox_target_closed",
+            "camoufox_no_active_tab",
+        ] {
             let response = json!({
                 "success": false,
                 "code": code,
@@ -5463,7 +5544,10 @@ mod tests {
                 stderr: String::new(),
             });
             assert_eq!(result["structuredContent"]["response"], response);
-            assert!(result["content"][0]["text"].as_str().unwrap().contains("do not replay"));
+            assert!(result["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .contains("do not replay"));
         }
     }
 
@@ -5545,7 +5629,10 @@ mod tests {
         });
         assert_eq!(result["isError"], false);
         assert_eq!(result["structuredContent"]["response"], response);
-        assert!(result["content"][0]["text"].as_str().unwrap().contains("browserConnected"));
+        assert!(result["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("browserConnected"));
     }
 
     #[test]
@@ -5618,28 +5705,56 @@ mod tests {
     fn camoufox_hover_hold_exposes_schema_and_cli_parity() {
         let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
         let available = tools_for_config(&config);
-        let hold = available.iter().find(|tool| tool["name"] == TOOL_HOVER_HOLD).unwrap();
+        let hold = available
+            .iter()
+            .find(|tool| tool["name"] == TOOL_HOVER_HOLD)
+            .unwrap();
         assert!(config.allows(TOOL_HOVER_HOLD));
         assert_eq!(hold["title"], "Hover hold");
         assert_eq!(hold["annotations"]["readOnlyHint"], false);
         assert_eq!(hold["inputSchema"]["properties"]["maxMs"]["minimum"], 1000);
-        assert_eq!(hold["inputSchema"]["properties"]["maxMs"]["maximum"], 120000);
-        assert_eq!(hold["inputSchema"]["oneOf"][0]["required"], json!(["selector"]));
+        assert_eq!(
+            hold["inputSchema"]["properties"]["maxMs"]["maximum"],
+            120000
+        );
+        assert_eq!(
+            hold["inputSchema"]["oneOf"][0]["required"],
+            json!(["selector"])
+        );
         assert_eq!(hold["inputSchema"]["oneOf"][1]["required"], json!(["stop"]));
-        assert_eq!(hold["inputSchema"]["oneOf"][1]["properties"]["stop"]["const"], true);
-        assert!(hold["description"].as_str().unwrap().contains("Screenshots and reads continue"));
+        assert_eq!(
+            hold["inputSchema"]["oneOf"][1]["properties"]["stop"]["const"],
+            true
+        );
+        assert!(hold["description"]
+            .as_str()
+            .unwrap()
+            .contains("Screenshots and reads continue"));
 
         for (input, expected_args, action) in [
-            (json!({"selector": "#player"}), vec!["hover-hold", "#player"], "hover_hold"),
-            (json!({"selector": "@e1", "maxMs": 60000}), vec!["hover-hold", "@e1", "--max-ms", "60000"], "hover_hold"),
-            (json!({"stop": true}), vec!["hover-hold", "stop"], "hover_hold_stop"),
+            (
+                json!({"selector": "#player"}),
+                vec!["hover-hold", "#player"],
+                "hover_hold",
+            ),
+            (
+                json!({"selector": "@e1", "maxMs": 60000}),
+                vec!["hover-hold", "@e1", "--max-ms", "60000"],
+                "hover_hold",
+            ),
+            (
+                json!({"stop": true}),
+                vec!["hover-hold", "stop"],
+                "hover_hold_stop",
+            ),
         ] {
             let arguments = camoufox_arguments(TOOL_HOVER_HOLD, &input).unwrap();
             let args = hover_hold_args(&arguments).unwrap();
             assert_eq!(args, expected_args);
             let args = cli_tool_args(&arguments, args, None).unwrap();
             let flags = crate::flags::parse_flags(&args);
-            let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+            let command =
+                crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
             assert_eq!(command["action"], action);
             assert_eq!(command.get("maxMs"), input.get("maxMs"));
             assert_eq!(command.get("selector"), input.get("selector"));
@@ -5650,7 +5765,10 @@ mod tests {
             if let Some(max_ms) = input.get("maxMs") {
                 expected["maxMs"] = max_ms.clone();
             }
-            assert_eq!(crate::native::camoufox::normalize_command(&command).unwrap(), expected);
+            assert_eq!(
+                crate::native::camoufox::normalize_command(&command).unwrap(),
+                expected
+            );
         }
     }
 
@@ -5677,7 +5795,11 @@ mod tests {
         ] {
             assert!(hover_hold_args(&input).is_err(), "{input}");
         }
-        assert!(camoufox_arguments(TOOL_HOVER_HOLD, &json!({"selector": "#player", "bogus": true})).is_err());
+        assert!(camoufox_arguments(
+            TOOL_HOVER_HOLD,
+            &json!({"selector": "#player", "bogus": true})
+        )
+        .is_err());
         let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
         assert!(call_tool(Some(&json!({"name": TOOL_HOVER_HOLD, "arguments": {"selector": "#player", "stop": true}})), &config).is_err());
     }
@@ -5716,10 +5838,12 @@ mod tests {
             .iter()
             .find(|tool| tool["name"].as_str() == Some(TOOL_CLICK))
             .unwrap();
-        assert!(click["inputSchema"]["properties"]["selector"]["description"]
-            .as_str()
-            .unwrap()
-            .contains("xpath="));
+        assert!(
+            click["inputSchema"]["properties"]["selector"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("xpath=")
+        );
         let get_html = available
             .iter()
             .find(|tool| tool["name"].as_str() == Some(TOOL_GET_HTML))
@@ -5729,11 +5853,9 @@ mod tests {
             .unwrap()
             .contains("whole document"));
 
-        let args = paginated_page_args(
-            &json!({"cursor": "d-token-100", "limit": 250}),
-            "dom-chunk",
-        )
-        .unwrap();
+        let args =
+            paginated_page_args(&json!({"cursor": "d-token-100", "limit": 250}), "dom-chunk")
+                .unwrap();
         let flags = crate::flags::parse_flags(&args);
         let command =
             crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
@@ -5868,32 +5990,50 @@ mod tests {
 
     #[test]
     fn camoufox_persistent_profile_mcp_cli_parity() {
-        let _guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ENGINE"]);
-        let profile = env::temp_dir().join("camoufox-mcp-profile").to_string_lossy().into_owned();
+        let _guard =
+            crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_PROFILE", "AGENT_BROWSER_ENGINE"]);
+        let profile = env::temp_dir()
+            .join("camoufox-mcp-profile")
+            .to_string_lossy()
+            .into_owned();
         let arguments = camoufox_arguments(TOOL_OPEN, &json!({"profile":profile})).unwrap();
         let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
         let flags = crate::flags::parse_flags(&args);
         assert_eq!(flags.profile.as_deref(), Some(profile.as_str()));
-        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["profile"], profile);
         assert_eq!(command["engine"], "camoufox");
         assert!(crate::native::camoufox::normalize_command(&command).is_ok());
 
         let args = cli_tool_args(&arguments, vec!["get".into(), "title".into()], None).unwrap();
         let flags = crate::flags::parse_flags(&args);
-        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["profile"], profile);
-        assert!(crate::native::camoufox::normalize_command(&command).unwrap().get("profile").is_none());
-        let available = tools_for_config(&McpConfig::from_profiles_for_engine(vec![ToolProfile::All], true));
+        assert!(crate::native::camoufox::normalize_command(&command)
+            .unwrap()
+            .get("profile")
+            .is_none());
+        let available = tools_for_config(&McpConfig::from_profiles_for_engine(
+            vec![ToolProfile::All],
+            true,
+        ));
         for tool in available {
-            assert_eq!(tool["inputSchema"]["properties"]["profile"]["type"], "string");
+            assert_eq!(
+                tool["inputSchema"]["properties"]["profile"]["type"],
+                "string"
+            );
         }
-        assert!(camoufox_arguments(TOOL_OPEN, &json!({"profile":profile, "restore":true})).is_err());
+        assert!(
+            camoufox_arguments(TOOL_OPEN, &json!({"profile":profile, "restore":true})).is_err()
+        );
     }
 
     #[test]
     fn camoufox_adblock_mcp_cli_parity() {
-        let _guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_ADBLOCK", "AGENT_BROWSER_ENGINE"]);
+        let _guard =
+            crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_ADBLOCK", "AGENT_BROWSER_ENGINE"]);
 
         let arguments = camoufox_arguments(TOOL_OPEN, &json!({"adblock": true})).unwrap();
         assert_eq!(arguments["engine"], "camoufox");
@@ -5901,7 +6041,8 @@ mod tests {
         assert!(args.contains(&"--adblock".to_string()) && args.contains(&"true".to_string()));
         let flags = crate::flags::parse_flags(&args);
         assert!(flags.adblock && flags.cli_adblock);
-        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["adblock"], true);
         assert_eq!(command["engine"], "camoufox");
         assert!(crate::native::camoufox::normalize_command(&command).is_ok());
@@ -5911,14 +6052,16 @@ mod tests {
         assert!(args.contains(&"--adblock".to_string()) && args.contains(&"false".to_string()));
         let flags = crate::flags::parse_flags(&args);
         assert!(!flags.adblock && flags.cli_adblock);
-        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["adblock"], false);
 
         let arguments = camoufox_arguments(TOOL_OPEN, &json!({})).unwrap();
         let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
         let flags = crate::flags::parse_flags(&args);
         assert!(!flags.adblock && !flags.cli_adblock);
-        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert!(command.get("adblock").is_none());
 
         let arguments = camoufox_arguments(TOOL_OPEN, &json!({"adblock": "yes"})).unwrap();

@@ -95,29 +95,30 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         raise BackendError(CODE_INVALID, "remaining deadline cannot cover the path and release")
 
     journal = ctx.journal
+    dispatch = ctx.input_dispatch()
     ctx.set_stage("down")
     journal.begin_button_down(button)
     ctx.note_input_dispatched()
     try:
-        await bounded(ctx, ctx.page.mouse.move(origin_x, origin_y), "mouse move to origin")
-        await bounded(ctx, ctx.page.mouse.down(button=button), "mouse down")
+        await bounded(ctx, dispatch.move(origin_x, origin_y), "mouse move to origin")
+        await bounded(ctx, dispatch.down(button=button), "mouse down")
         ctx.set_stage("path")
         per_step_sleep = (duration_ms / 1000.0 / len(points)) if duration_ms > 0 else 0.0
         for x, y in points:
             ctx.check_deadline()
             ctx.note_input_dispatched()
-            await bounded(ctx, ctx.page.mouse.move(origin_x + x, origin_y + y), "mouse move waypoint")
+            await bounded(ctx, dispatch.move(origin_x + x, origin_y + y), "mouse move waypoint")
             if per_step_sleep > 0:
                 await asyncio.sleep(per_step_sleep)
         ctx.set_stage("up")
         ctx.note_input_dispatched()
-        await bounded(ctx, ctx.page.mouse.up(button=button), "mouse up")
+        await bounded(ctx, dispatch.up(button=button), "mouse up")
         journal.finish_button_up(button)
     finally:
         if journal.buttons.get(button):
             ctx.set_stage("cleanup-release")
             try:
-                await asyncio.wait_for(ctx.page.mouse.up(button=button), timeout=1.5)
+                await asyncio.wait_for(dispatch.up(button=button), timeout=1.5)
                 journal.finish_button_up(button)
             except Exception:
                 pass

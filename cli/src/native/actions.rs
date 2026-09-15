@@ -2510,7 +2510,10 @@ fn policy_actions_for_command(
 }
 
 async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value {
-    use super::camoufox::{failure, normalize_command, requested_profile, CamoufoxBackend, HARD_DEADLINE};
+    use super::camoufox::{
+        failure, normalize_command, requested_profile, CamoufoxBackend, BUBBLE_PROFILE_DIR,
+        HARD_DEADLINE,
+    };
     let id = cmd.get("id").and_then(Value::as_str).unwrap_or("");
     let action = cmd.get("action").and_then(Value::as_str).unwrap_or("");
     if action == "close" {
@@ -2535,26 +2538,53 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
             Err(error) => return failure(id, "camoufox_not_launched", &error, false),
         }
     }
-    let backend = state.camoufox.as_mut().expect("Camoufox worker was just created");
-    if backend.launched && profile != backend.profile && !matches!(action, "session_info" | "gestures") {
+    let backend = state
+        .camoufox
+        .as_mut()
+        .expect("Camoufox worker was just created");
+    let effective_profile = if backend.bubble && profile.is_some() {
+        Some(BUBBLE_PROFILE_DIR.to_string())
+    } else {
+        profile.clone()
+    };
+    if backend.launched
+        && effective_profile != backend.profile
+        && !matches!(action, "session_info" | "gestures")
+    {
         return failure(id, "camoufox_invalid_params", "Close the session before changing the Camoufox profile; the current profile has not been modified", false);
     }
     let requested_headless = cmd.get("headless").and_then(Value::as_bool);
     if backend.launched && requested_headless.is_some_and(|headless| headless == backend.headed) {
-        return failure(id, "camoufox_unsupported", "Close the session before changing headed mode", false);
+        return failure(
+            id,
+            "camoufox_unsupported",
+            "Close the session before changing headed mode",
+            false,
+        );
     }
     let headless = requested_headless.unwrap_or_else(|| {
-        if backend.launched { !backend.headed } else {
-            !env::var("AGENT_BROWSER_HEADED").is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        if backend.launched {
+            !backend.headed
+        } else {
+            !env::var("AGENT_BROWSER_HEADED")
+                .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         }
     });
     let requested_adblock = cmd.get("adblock").and_then(Value::as_bool);
     if backend.launched && requested_adblock.is_some_and(|adblock| adblock != backend.adblock) {
-        return failure(id, "camoufox_unsupported", "Close the session before changing the adblock setting", false);
+        return failure(
+            id,
+            "camoufox_unsupported",
+            "Close the session before changing the adblock setting",
+            false,
+        );
     }
     let adblock = requested_adblock.unwrap_or_else(|| {
-        if backend.launched { backend.adblock } else {
-            env::var("AGENT_BROWSER_ADBLOCK").is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        if backend.launched {
+            backend.adblock
+        } else {
+            env::var("AGENT_BROWSER_ADBLOCK")
+                .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         }
     });
     if action == "launch" {
@@ -2570,7 +2600,18 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
                 return launched;
             }
         }
-        backend.execute(&command).await
+        let mut response = backend.execute(&command).await;
+        if action == "session_info" && backend.bubble {
+            if let Some(port) = backend.vnc_port {
+                if response.get("data").is_none() {
+                    response["data"] = json!({});
+                }
+                response["data"]["vncUrl"] = json!(format!(
+                    "http://127.0.0.1:{port}/vnc.html?autoconnect=1&quality=9&compression=0"
+                ));
+            }
+        }
+        response
     }).await;
     match outcome {
         Ok(response) => response,
@@ -2599,20 +2640,41 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     let cmd_start = std::time::Instant::now();
     let requested_engine = cmd.get("engine").and_then(Value::as_str);
-    let use_camoufox = state.camoufox.is_some()
-        || requested_engine.unwrap_or(&state.engine) == "camoufox";
-    if use_camoufox && !matches!(action, "close" | "confirm" | "deny" | INTERNAL_DAEMON_SHUTDOWN_ACTION) {
-        if state.browser.is_some() || state.webdriver_backend.is_some() || state.active_provider_connection
-            || requested_engine.is_some_and(|engine| engine != "camoufox") {
-            return super::camoufox::failure(&id, "camoufox_unsupported", "Close the current session before changing browser engines", false);
+    let use_camoufox =
+        state.camoufox.is_some() || requested_engine.unwrap_or(&state.engine) == "camoufox";
+    if use_camoufox
+        && !matches!(
+            action,
+            "close" | "confirm" | "deny" | INTERNAL_DAEMON_SHUTDOWN_ACTION
+        )
+    {
+        if state.browser.is_some()
+            || state.webdriver_backend.is_some()
+            || state.active_provider_connection
+            || requested_engine.is_some_and(|engine| engine != "camoufox")
+        {
+            return super::camoufox::failure(
+                &id,
+                "camoufox_unsupported",
+                "Close the current session before changing browser engines",
+                false,
+            );
         }
         let validation = super::camoufox::validate_environment()
             .and_then(|_| super::camoufox::normalize_command(cmd).map(|_| ()));
         if let Err(error) = validation {
             return super::camoufox::failure(&id, "camoufox_unsupported", &error, false);
         }
-        if state.domain_filter.read().await.is_some() || state.session_name.is_some() || state.pin_tab {
-            return super::camoufox::failure(&id, "camoufox_unsupported", "Camoufox V1 cannot enforce domain containment, restore, or pin-tab settings", false);
+        if state.domain_filter.read().await.is_some()
+            || state.session_name.is_some()
+            || state.pin_tab
+        {
+            return super::camoufox::failure(
+                &id,
+                "camoufox_unsupported",
+                "Camoufox V1 cannot enforce domain containment, restore, or pin-tab settings",
+                false,
+            );
         }
         if action == "gesture" && (state.policy.is_some() || state.confirm_actions.is_some()) {
             return super::camoufox::failure(&id, "camoufox_unsupported", "Generic gestures are disabled when action policies or confirm-actions are active; use typed actions", false);
@@ -2741,7 +2803,10 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         if restore_key_change_needs_launch {
             true
         } else if use_camoufox {
-            state.camoufox.as_ref().is_none_or(|backend| !backend.launched)
+            state
+                .camoufox
+                .as_ref()
+                .is_none_or(|backend| !backend.launched)
         } else if let Some(ref mut mgr) = state.browser {
             mgr.has_process_exited() || !mgr.is_connection_alive().await
         } else {

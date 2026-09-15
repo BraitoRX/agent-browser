@@ -58,16 +58,17 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         await keyboard_press(ctx, "ControlOrMeta+A")
         await keyboard_press(ctx, "Backspace")
     ctx.set_stage("type")
+    dispatch = ctx.input_dispatch()
     for character in text:
         ctx.journal.begin_key_down(character)
         ctx.note_input_dispatched()
         try:
-            await bounded(ctx, ctx.page.keyboard.type(character, delay=delay_ms), "keyboard type")
+            await bounded(ctx, dispatch.type(character, delay=delay_ms), "keyboard type")
             ctx.journal.finish_key_up(character)
         finally:
             if ctx.journal.keys.get(character):
                 try:
-                    await asyncio.wait_for(ctx.page.keyboard.up(character), timeout=0.5)
+                    await asyncio.wait_for(dispatch.key_up(character), timeout=0.5)
                     ctx.journal.finish_key_up(character)
                 except Exception:
                     pass

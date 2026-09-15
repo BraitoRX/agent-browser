@@ -12,7 +12,7 @@ from input_context import (
     require_int,
 )
 
-from gestures._common import bounded, locator_for
+from gestures._common import box_center, bounded, locator_for, require_in_viewport
 
 NAME = "scroll"
 DESCRIPTION = "Scroll with native mouse wheel input, optionally centred on a selector."
@@ -52,12 +52,19 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         spec = parse_selector(selector, "selector")
         _scope, locator = await locator_for(ctx, spec)
         ctx.set_stage("hover")
-        ctx.note_input_dispatched()
-        await bounded(ctx, locator.hover(timeout=10_000), "hover scroll target")
+        dispatch = ctx.input_dispatch()
+        if getattr(dispatch, "osnative", False):
+            box = await require_in_viewport(ctx, locator, "scroll target")
+            ctx.note_input_dispatched()
+            await bounded(ctx, dispatch.move(*box_center(box)), "hover scroll target")
+        else:
+            ctx.note_input_dispatched()
+            await bounded(ctx, locator.hover(timeout=10_000), "hover scroll target")
 
     vertical = direction in ("up", "down")
     sign = 1 if direction in ("down", "right") else -1
     ctx.set_stage("wheel")
+    dispatch = ctx.input_dispatch()
     remaining = amount
     while remaining > 0:
         ctx.check_deadline()
@@ -66,7 +73,7 @@ async def run(ctx: Any, params: Dict[str, Any]) -> Dict[str, Any]:
         ctx.note_input_dispatched()
         await bounded(
             ctx,
-            ctx.page.mouse.wheel(0 if vertical else step, step if vertical else 0),
+            dispatch.wheel(0 if vertical else step, step if vertical else 0),
             "mouse wheel",
         )
         remaining -= step_count

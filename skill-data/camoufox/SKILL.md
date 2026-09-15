@@ -25,6 +25,20 @@ V1 targets macOS/Linux and requires Python 3.10+ with `venv` and Firefox OS libr
 
 For MCP, use a separate entry pointing to the absolute fork binary with arguments `--engine camoufox --session camoufox-task mcp --tools core,gestures`. A Camoufox-started MCP server advertises only its supported tools and options, including in `all`, and fixes per-call `engine` to `camoufox`. Call `agent_browser_tools_profiles` to inspect the active profile names, exact tool counts, and composition syntax rather than assuming a static catalog. Use a separate MCP server for another engine. Retrieve this skill with `agent_browser_skills_get` (`names: ["camoufox"]`). Do not turn on every MCP profile just to use gestures. `V1` is the private backend protocol/runtime namespace, not a choice between old and new browser tools or OpenCode API versions.
 
+## Container bubble input (`--input-backend os-native`)
+
+The default `juggler` backend dispatches input through Playwright to Juggler, the browser's automation bridge. `--input-backend os-native` (or `AGENT_BROWSER_INPUT_BACKEND=os-native`) instead runs the browser inside a per-session container with one private Xvfb display and injects mouse/keyboard through X11 XTEST: the same input queue a physical mouse on that display uses, with no browser automation API involved in dispatch. Element resolution, snapshots, screenshots, and evaluation stay Playwright in both backends. Sessions, cookies, and website storage persist exactly as with juggler; a host profile directory is mounted into the container, so close/reopen keeps logins.
+
+It is opt-in at startup, not per action. On macOS it requires Docker or OrbStack running and a one-time image build from the repository root: `camoufox-backend/bubble/build.sh`. For MCP, start the server itself with `--input-backend os-native` so every tool call inherits the same backend; per-call switching is not supported because the daemon fingerprint includes the input backend, and a mismatched call would restart the daemon and kill the container. An active session reports `runtime.inputBackend` and, when os-native is active, `runtime.vncUrl` through `session info` (`agent_browser_session_info`); `vncUrl` is the live noVNC view of the container desktop. Share that URL with the user when they want to watch the browser work.
+
+The launch response (CLI `--json`) also carries `vncUrl` and `nativeVnc`. Closing the session or stopping the daemon removes the container. Screenshots in os-native sessions are written inside the container; the CLI/MCP response still returns capture metadata and `data.path`, but the file lives in the container filesystem, so retrieve it with `docker cp <container>:<path> <host-path>` when a local artifact is needed. Scope is architectural, not a stealth claim: XTEST is window-system-level input, not a host HID device, and `isTrusted=true` does not establish undetectability. A profile that generated its identity with a different browser executable (host Camoufox vs container browser) is refused rather than rotated; use a fresh profile directory when moving a session between backends.
+
+```bash
+camoufox-backend/bubble/build.sh
+agent-browser --engine camoufox --input-backend os-native --session os-native-task open https://example.com
+agent-browser --engine camoufox --input-backend os-native --session os-native-task --profile /abs/path mcp --tools core,gestures
+```
+
 ## Persistent accounts
 
 Start with a new or empty profile directory. Missing identity alongside existing profile data is an error, not permission to regenerate identity. A crashed browser retains its profile lock until explicit session close; close only the owning session before reopening the same profile.
