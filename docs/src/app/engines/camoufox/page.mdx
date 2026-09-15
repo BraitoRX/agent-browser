@@ -83,6 +83,14 @@ agent-browser get html "html"
 agent-browser get html @d12
 ```
 
+Hover-revealed UI that auto-hides can be pinned open with an ambient hover hold while you observe it, and coordinate gestures work directly from the screenshot taken during the hold. The hold auto-stops before the drag dispatches, so no explicit stop is needed before acting; use `hover-hold stop` when leaving the revealed area without acting, which reports how long the hold ran:
+
+```bash
+agent-browser hover-hold "#player .mute-button" --max-ms 60000
+agent-browser screenshot player.png
+agent-browser gesture drag --params '{"source":{"coordinates":{"x":300,"y":80,"captureId":"<id-from-player.png>"}},"target":{"coordinates":{"x":420,"y":80,"captureId":"<id-from-player.png>"}}}' --observe screenshot --json
+```
+
 The tabs profile exposes `frame_switch`/`frame_main`. Frame trees in tab lists and snapshots provide tab-local `frame-N` IDs, parent IDs, selected state and `framesOmitted` (256-entry cap; names/URLs clipped to 4096 characters). Select an observed ID, unique iframe CSS selector relative to current scope, or current iframe ref to inspect nested/cross-origin DOM. DOM/CSS, read/eval/snapshots and text/function waits follow the selected frame. Navigation/history/title/URL/load waits, network/state and screenshots remain top-level/context operations. Switching clears refs/captures; detached scope fails until explicit recovery, never silently falls back. Advanced drag/hold/path require main-frame scope.
 
 ```bash
@@ -193,6 +201,7 @@ The local source exposes the following surfaces through canonical CLI and MCP co
 <thead><tr><th>Surface</th><th>Commands</th><th>Important limit</th></tr></thead>
 <tbody>
 <tr><td>Semantic locators</td><td><code>find</code> CLI command, <code>agent_browser_find</code> MCP tool in <code>core</code></td><td><code>text</code> subaction returns a reusable unique CSS selector; zero matches always fail and ambiguous matches fail for acting subactions before input; default subaction is <code>click</code></td></tr>
+<tr><td>Ambient hover hold</td><td><code>hover-hold &lt;selector&gt; [--max-ms N]</code> CLI command, <code>agent_browser_hover_hold</code> MCP tool in <code>core</code>, <code>hover-hold stop</code> to stop</td><td>Keeps native mouse micro-movement on one selector so hover-revealed UI stays visible (<code>maxMs</code> 1000–120000, default 30000); screenshots, snapshots, reads, and waits continue during the hold; it auto-stops before any input or lifecycle action, and an explicit stop returns the held duration</td></tr>
 <tr><td>Page structure</td><td><code>page-outline</code>, <code>page-links</code>, <code>dom-chunk</code> (CLI/daemon only; not MCP tools on any profile)</td><td>Outline caps headings/landmarks; link pages return at most 200 records; DOM pages return at most 500 of 50000 addressable elements and report omissions</td></tr>
 <tr><td>Requests and responses</td><td><code>network requests</code>, <code>network request &lt;nN&gt;</code></td><td>Context-wide metadata since launch; sensitive headers/POST data and bodies on demand; bounded, not a request replay</td></tr>
 <tr><td>Console and errors</td><td><code>console</code>, <code>errors</code></td><td>Page events, not Firefox process/DevTools logs</td></tr>
