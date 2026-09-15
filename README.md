@@ -33,6 +33,16 @@ export AGENT_BROWSER_MOTION=human-fast
 
 Installation provisions a managed venv with `camoufox==0.5.6` and `playwright==1.61.0`, fetches `official/stable` once per explicit install, and records the resolved executable and available browser metadata in `runtime.json`. It is not a full browser or transitive dependency lock. Normal startup uses the recorded executable and disables default addon downloads; it never installs or updates packages or browsers. HOME, caches, and default temporary browser profiles are private to the managed runtime, not the user's existing Camoufox installation. An explicit persistent profile uses the selected directory instead. Shipped Python code is unpacked into a content-addressed directory. Keep the binary in its package or repository layout so the versioned skills remain discoverable.
 
+### Optional ad blocking
+
+`--adblock` (or `AGENT_BROWSER_ADBLOCK`, config `"adblock": true`, or the MCP `adblock` argument) loads the uBlock Origin addon that `--engine camoufox install` already downloaded and extracted into the managed runtime. Off by default, matching the stock Camoufox exclusion of default addons; no new download or network access happens at launch. uBlock Origin can have false positives that hide legitimate site content, so it is opt-in per session: inspect `session info --json` for `adblock`, and close the session before changing the setting.
+
+```bash
+"$AB" --engine camoufox --adblock --session adblock-demo open https://example.com
+```
+
+Ephemeral sessions re-download uBlock Origin's filter lists on first navigation; persistent profiles cache them across launches. Close the session if a site reports missing content and reopen without `--adblock` before assuming a page defect.
+
 ### Keep your accounts signed in
 
 Start with a new or empty directory. A nonempty profile without its saved Camoufox identity is refused rather than assigned a new device identity. This is not an import of an existing everyday browser profile.
@@ -44,7 +54,7 @@ export AGENT_BROWSER_PROFILE="$HOME/.agent-browser/profiles/camoufox-personal"
 "$AB" --engine camoufox --session camoufox-personal --headed --idle-timeout 0 open about:blank
 ```
 
-Sign in manually in the visible browser, including two-factor authentication and any CAPTCHA. Reuse the same profile for subsequent commands and restarts. Persistent cookies and website storage remain on disk when the browser closes; `close` never deletes the profile. Without a profile, storage remains ephemeral. A session name alone does not retain accounts across browser restarts. `--idle-timeout 0` disables automatic idle shutdown, not site-side login expiry.
+Complete sign-in in the visible browser, including two-factor authentication and any CAPTCHA. Reuse the same profile for subsequent commands and restarts. Persistent cookies and website storage remain on disk when the browser closes; `close` never deletes the profile. Without a profile, storage remains ephemeral. A session name alone does not retain accounts across browser restarts. `--idle-timeout 0` disables automatic idle shutdown, not site-side login expiry.
 
 New profile directories are private (0700), and identity/lock files use 0600. Existing directories must already be owned by the current user and private; symlink profile roots are refused. Only one browser may own a profile at a time. The backend retains its generated device configuration for the same installed browser rather than rotating it on each launch. Corrupt identity files or a different recorded browser executable fail explicitly instead of silently replacing the identity or deleting account data. Browser upgrades therefore require a deliberate profile compatibility decision. Profile files contain credentials and are not application-encrypted; keep them outside Git and protect the device/disk. No inherited environment credentials are included in the identity file.
 
@@ -61,11 +71,14 @@ Headed macOS launches set the Python worker's AppKit activation policy to access
 <tr><td><code>AGENT_BROWSER_PYTHON</code></td><td>Python executable used for explicit installation, default <code>python3</code>. Commands subsequently use the managed venv.</td></tr>
 <tr><td><code>AGENT_BROWSER_MOTION</code></td><td>Session-launch profile: <code>human-fast</code> (default), <code>fast</code>, or <code>precision</code>. Close the daemon session before changing it.</td></tr>
 <tr><td><code>AGENT_BROWSER_GESTURES_DIR</code></td><td>Explicit trusted module directories separated by the OS path separator. No implicit CWD scan. Restart the session to reload modules.</td></tr>
+<tr><td><code>AGENT_BROWSER_ADBLOCK</code></td><td>Load the managed runtime's bundled uBlock Origin addon at Camoufox launch. Off by default; close the session before changing it.</td></tr>
 <tr><td><code>AGENT_BROWSER_ACTION_DEADLINE_MS</code></td><td>Worker action deadline, default 22000 ms, clamped to 1000 to 25000 ms. The daemon has a 28-second hard limit including implicit startup and observation.</td></tr>
 </tbody>
 </table>
 
 `human-fast` sets Camoufox launch-time `humanize=0.25`. This is a motion tuning value, not a measured latency SLA. `fast` and `precision` disable native humanization. No second randomized trajectory is layered on top. These are browser-native events, not control of the physical OS pointer.
+
+Camoufox launches pin a host-coherent fingerprint policy: `os` matches the host platform, the window is fixed at 1920x1080, WebRTC is blocked, and `geoip` aligns timezone, locale, and geolocation with the public IP when the geoip extra and GeoIP database are installed in the managed runtime. A failed IP or GeoIP lookup retries the launch once without geoip. Persistent profile identities are never rewritten: a saved fingerprint wins over these generated values, so only profiles created after this change present the host-matched fingerprint. Geoip requires an authorized runtime reinstall; until then the rest of the policy is active.
 
 ## Gestures and observations
 
@@ -153,7 +166,7 @@ Download waiting and saving is scoped to the active tab. Switch explicitly to a 
 
 For a recoverable timeout, MCP says: "The browser is still available. Inspect the current page before continuing; do not automatically replay input." Agents should inspect and continue from fresh evidence, not restart the browser or abandon the task merely because a wait expired. User-facing explanations use plain language such as "the session needs a reset".
 
-V1 covers launch/close, navigation/history, rendered text, evaluation, native AI snapshots, viewport PNG screenshots, ordinary click/fill/type/press/hover/focus/check/select/drag/scroll actions, bounded waits, basic element queries, stable tabs, and gesture discovery/execution. Tabs have never-reused `tN` identifiers; popups do not steal focus, and closing the active tab requires an explicit tab switch or new tab.
+V1 covers launch/close, navigation/history, rendered text, evaluation, native AI snapshots, viewport PNG screenshots, ordinary click/fill/type/press/hover/focus/check/select/drag/scroll actions, bounded waits, basic element queries, stable tabs, and gesture discovery/execution. Tabs have never-reused `tN` identifiers; popups do not steal focus, and closing the active tab requires an explicit tab switch or new tab. On Camoufox, `tab new` opens the new tab inside the active browser window when a live active page exists, falling back to a separate window with no usable active page.
 
 Camoufox session diagnostics distinguish daemon activity from browser liveness: `launched`, `browserConnected`, `recoveryRequired`, and `closeReason` reflect browser/context closure, while `tab list` reconciles closed pages. `camoufox_no_active_tab` requires an explicit switch to a live tab or a new tab. `camoufox_session_closed` requires explicit `close` followed by `open` for the affected session; repeated `open` calls do not silently replace a dead browser. Closed targets invalidate their refs and captures. Reset only a task-owned session, re-observe after recovery, and never replay ambiguous input. See the [bounded recovery workflow](skill-data/camoufox/SKILL.md#closed-targets-and-recovery). Rebuilding the fork and starting a fresh daemon is necessary to activate backend source changes; no reinstall is needed.
 

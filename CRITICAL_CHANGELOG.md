@@ -2,6 +2,31 @@
 
 Changes recorded here can break the locally configured Camoufox browser at runtime and are not captured by any published release. If the browser starts hanging clicks, hits the 22s worker deadline, and reports `camoufox_session_reset_required`, read this file first.
 
+## 2026-09-15 - Host-coherent launch fingerprint policy (NBF routine recipe)
+
+- What: Camoufox launches now pass `os` matching the host (`macos` on Darwin, `windows` on Windows, otherwise `linux`), a fixed `window` of 1920x1080, `block_webrtc=True`, and `geoip=True` when the geoip extra and a local GeoIP database are present in the managed runtime. A failed public-IP or GeoIP lookup retries the launch once without geoip with a stderr warning instead of failing every launch. `humanize` still comes from the motion profile.
+- Why: this mirrors the NewBuildersFinder routine recipe (`scraper_engine_sdk.browser.build_browser_kwargs`). Previously no `os`, `window`, `block_webrtc`, or `geoip` were passed, so fresh launches generated a random-OS fingerprint (the configured `personal` profile identity is Windows on a macOS host) with no IP-based timezone, locale, or geolocation coherence, which bot managers flag.
+- Risk: WebRTC is now disabled in all sessions (`media.peerconnection.enabled=false`), which breaks sites that require WebRTC. Fresh profiles and ephemeral sessions present a host-matched fingerprint instead of a random-OS one. Camoufox config merges are no-clobber, so a persistent profile's saved identity keeps its fingerprint and gains only the WebRTC pref and, when available, IP-coherent values it never saved. The geoip part stays inactive until an authorized runtime reinstall installs `camoufox[geoip]` and pre-downloads the GeoIP database via `bootstrap.py`; that reinstall also re-resolves the official browser and requires re-applying `scripts/camoufox-guard-patch.py`.
+- Activation: source-only until the configured Rust binary is rebuilt and a fresh daemon loads its embedded Python. The `os`/`window`/`block_webrtc` parts need no runtime reinstall; geoip requires the reinstall above.
+
+## 2026-09-14 - Rejected macOS compositor workaround
+
+- A local headed-launch experiment forced `gfx.webrender.compositor=false` to investigate visible stuttering. The user initially reported partial improvement, then freezing and a native `EXC_BAD_ACCESS` crash on the Renderer thread with Camoufox 152.0.4-beta.30. The exact crashing engine function and causality were not established; the workaround was rejected, not accepted as a performance fix.
+- The source override was removed. It also persisted into the personal profile's `prefs.js`; with the owning daemon stopped, only that experimental preference was removed to restore default compositor selection. Removing the source override alone would have left the profile setting behind.
+- Do not reapply this workaround as routine performance tuning. No fixed-60-FPS setting was applied. Browser assets, identity, cookies, and website storage were not deleted or replaced. Activating the source rollback requires rebuilding the configured binary and starting a fresh daemon; the original low-FPS issue remains unresolved.
+
+## 2026-09-14 - Same-window tab creation for `tab new`
+
+- What: `tab new`/`agent_browser_tab_new` now creates the new page with `window.open(url, '_blank')` from the live active page, so Firefox hosts it as a tab of the existing browser window. With no usable active page (fresh launch, closed active tab) or a blocked popup, it falls back to `context.new_page()`, which Camoufox's Juggler hosts as a separate window as before. Tab registration, refs, snapshots, and switching are unchanged; the returned tab works identically either way.
+- Risk: pages that aggressively block scripted popups could make the first creation attempt fail before fallback; the fallback preserves the previous behavior in that case. Sites could theoretically observe a `window.open` call on the active page (Camoufox evaluation runs in an isolated world, and the call matches ordinary popup traffic). Tab-ordering inside the window's tab strip now depends on Firefox's own placement instead of always appending a new window.
+- Activation: source-only until the configured Rust binary is rebuilt and a fresh named daemon loads its embedded Python. Older daemons keep opening separate windows. No managed runtime assets, browser profiles, or installed browser files were edited.
+
+## 2026-09-14 - Opt-in uBlock Origin adblock for Camoufox launches
+
+- What: `--adblock`, `AGENT_BROWSER_ADBLOCK`, config `adblock`, and the MCP `open` `adblock` argument load the uBlock Origin addon that the explicit runtime install already downloaded into the managed cache (`<runtime>/home/.cache/camoufox/addons/UBO`). Off by default; launch never downloads or updates addons. A live session refuses a changed adblock setting (`Close the session before changing the adblock setting`); the stored profile identity no longer persists the `addons` config key, so the setting stays per-session even on persistent profiles. `session info` reports `adblock`.
+- Risk: uBlock Origin's filters can have false positives that hide or break legitimate site content (for example a reviews tab that only loads with the addon disabled). Ephemeral sessions fetch uBlock Origin's filter lists on first navigation, which adds latency and network traffic to the first page load; persistent profiles cache them. Filtering changes request metadata, so `network requests` output differs between adblock and non-adblock sessions.
+- Activation: source-only until the configured Rust binary is rebuilt and a fresh named daemon loads its embedded Python. Older daemons keep the previous behavior. No runtime reinstall is needed; the addon is only read, never modified.
+
 ## 2026-09-14 - Diagnostic rename: reset-required state and `inputAmbiguous` flag
 
 - What: the failure code `camoufox_poisoned` is renamed to `camoufox_session_reset_required`, and the JSON flag carrying the old term is renamed to `inputAmbiguous` in CLI/worker responses and `session_info`. Tool descriptions, help text, docs, and test fixtures now say "the session needs a reset" or "input outcome may be ambiguous; do not replay". The safety mechanism is unchanged: the same ambiguous input states are detected, the same refusal gate applies, and explicit close remains the only recovery.
@@ -12,7 +37,7 @@ Changes recorded here can break the locally configured Camoufox browser at runti
 
 - What: `--profile`, `AGENT_BROWSER_PROFILE`, config `profile`, and MCP `profile` select a dedicated private profile. Browser close retains persistent cookies/site storage and the generated device identity. Unconfigured sessions remain ephemeral. A profile lock prevents concurrent workers, and switching profiles in a live session is refused.
 - Risk: logged-in profiles grant the assistant access to those accounts. Profile files are private but not application-encrypted. Corrupt identity data or a changed recorded browser executable fails closed instead of replacing identity or removing login data. Session-only state, indefinite login validity, crash durability, and CAPTCHA elimination are not guaranteed.
-- Activation: rebuild the configured Rust binary, close only the authorized named browser, and reconnect its MCP entry following `docs/fork-maintenance.md`. This section describes the source change, not proof of activation. No runtime reinstall or browser-engine patch is needed. Let the user sign in manually after activation; do not export existing credentials or copy their everyday browser profile.
+- Activation: rebuild the configured Rust binary, close only the authorized named browser, and reconnect its MCP entry following `docs/fork-maintenance.md`. This section describes the source change, not proof of activation. No runtime reinstall or browser-engine patch is needed. Do not export existing credentials or copy their everyday browser profile.
 
 ## 2026-09-14 - Locator failure-path deadlines in the embedded backend
 

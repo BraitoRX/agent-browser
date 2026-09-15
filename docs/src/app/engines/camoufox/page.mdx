@@ -29,10 +29,21 @@ These are setup instructions, not evidence that a build or browser run was perfo
 <tr><td><code>AGENT_BROWSER_CAMOUFOX_RUNTIME</code></td><td>Absolute runtime root; defaults to the OS local data directory under <code>agent-browser/camoufox-v1</code>.</td></tr>
 <tr><td><code>AGENT_BROWSER_PYTHON</code></td><td>Install-time interpreter, default <code>python3</code>. Worker commands use the managed venv.</td></tr>
 <tr><td><code>AGENT_BROWSER_MOTION</code></td><td><code>human-fast</code> (default), <code>fast</code>, or <code>precision</code>. Set before starting a fresh daemon session.</td></tr>
+<tr><td><code>AGENT_BROWSER_ADBLOCK</code></td><td>Load the managed runtime's bundled uBlock Origin addon at launch. Off by default; also selectable with <code>--adblock</code>, config <code>adblock</code>, or the MCP <code>adblock</code> argument.</td></tr>
 <tr><td><code>AGENT_BROWSER_GESTURES_DIR</code></td><td>Explicit trusted module directories separated by the OS path separator. No implicit CWD scan.</td></tr>
 <tr><td><code>AGENT_BROWSER_ACTION_DEADLINE_MS</code></td><td>Default 22000 ms, clamped to 1000–25000 ms. Rust imposes a 28-second command limit including implicit launch and observation.</td></tr>
 </tbody>
 </table>
+
+## Optional ad blocking
+
+`--adblock` loads the uBlock Origin addon that `--engine camoufox install` already downloaded and extracted into the managed runtime. It is off by default to match the stock backend's exclusion of default addons, and launch performs no downloads. uBlock Origin can have false positives that hide legitimate site content, so it is opt-in per session and a live session refuses a changed setting; close and reopen to switch.
+
+```bash
+agent-browser --engine camoufox --adblock --session adblock-demo open https://example.com
+```
+
+`session info --json` reports `adblock`. Ephemeral sessions fetch uBlock Origin's filter lists on first navigation; persistent profiles cache them across launches. If a site reports missing content, close the session and reopen without `--adblock` before assuming a page defect.
 
 ## Persistent accounts
 
@@ -45,7 +56,7 @@ export AGENT_BROWSER_PROFILE="$HOME/.agent-browser/profiles/camoufox-personal"
 agent-browser --engine camoufox --session camoufox-personal --headed --idle-timeout 0 open about:blank
 ```
 
-Sign in manually in the visible browser, including two-factor authentication and CAPTCHA. Never put passwords in prompts or MCP configuration. Reuse the same profile on every subsequent launch. `close` stops the browser and daemon without deleting the profile. `--idle-timeout 0`, or config `"idleTimeout": "0"`, disables idle shutdown. Leave a user's persistent browser open at task completion unless closure or explicit recovery is requested.
+Complete sign-in in the visible browser, including two-factor authentication and CAPTCHA. Reuse the same profile on every subsequent launch. `close` stops the browser and daemon without deleting the profile. `--idle-timeout 0`, or config `"idleTimeout": "0"`, disables idle shutdown. Leave a user's persistent browser open at task completion unless closure or explicit recovery is requested.
 
 New profile directories use 0700 permissions and identity/lock files use 0600. Existing directories must already be user-owned and private; symlink roots are refused. Only one browser may use a profile at a time, and a live session cannot silently switch profiles. `session info --json` reports `persistentProfile` and `profilePath` without exporting authentication tokens.
 
@@ -101,7 +112,7 @@ A target is exactly a selector object or a screenshot-coordinate object:
 
 Coordinates refer to pixels in the returned PNG. Captures expire after 120 seconds and are invalidated by input, evaluation, navigation, or a new screenshot. URL, active tab, scroll, and viewport identity must still match. Coordinate drags require two coordinates from one capture and no reveal steps. Selector endpoints resolve to bounding-box centers, not semantic slider values; both must be in the viewport before pressing. Advanced hold/drag/path gestures reject iframe refs; ordinary locator actions can route them natively.
 
-Tabs use stable, never-reused `tN` IDs. Popups do not steal the active tab. Closing the active tab leaves no active tab until an explicit switch or new tab.
+Tabs use stable, never-reused `tN` IDs. Popups do not steal the active tab. Closing the active tab leaves no active tab until an explicit switch or new tab. `tab new`/`agent_browser_tab_new` opens the new tab inside the active browser window when a live active page exists, matching Firefox's normal tab behavior; with no usable active page it falls back to a separate Playwright page, which Camoufox hosts as its own window.
 
 ## Closed targets and recovery
 
@@ -138,6 +149,8 @@ A single expired wait is not a reason to restart the browser or abandon the task
 ## Motion, extensions, and trust
 
 `human-fast` selects Camoufox launch-time `humanize=0.25`. This is tuning, not a measured latency guarantee. `fast` and `precision` disable native humanization. No second randomized trajectory is layered over native movement. These events act inside the browser, not through the physical OS pointer.
+
+Camoufox launches apply a host-coherent fingerprint policy: `os` matches the host platform, the window is fixed at 1920x1080, WebRTC is blocked, and `geoip` aligns timezone, locale, and geolocation with the public IP when the geoip extra and GeoIP database are installed in the managed runtime. A failed IP or GeoIP lookup retries the launch once without geoip. A persistent profile's saved identity is never rewritten; only identities generated after this change present the host-matched fingerprint. This reduces fingerprint incoherence; it is not an anti-bot guarantee.
 
 Trusted Python gesture modules own `NAME`, `DESCRIPTION`, strict `SCHEMA`, `EXAMPLES`, and `async run(ctx, params)`. Add a module to `AGENT_BROWSER_GESTURES_DIR` and restart the session; there is no Rust transport or MCP tool-registration edit. The packaged example is `camoufox-backend/examples/custom_gesture_example.py`. Registration rejects duplicate names, built-in shadowing, and unsupported JSON Schema keywords. Parameter validation is a bounded subset, not a sandbox. Modules can access the filesystem, network, and browser with worker privileges.
 

@@ -52,7 +52,7 @@ class RefFallbackFrame(FakeFrame):
     def locator(self, selector):
         return self.page.locator_for_selector(selector)
 
-    async def evaluate(self, script):
+    async def evaluate(self, script, arg=None):
         return 42
 
 
@@ -63,13 +63,26 @@ class RefFallbackPage(FakePage):
         self.aria_locator = None
         self.role_locator = None
         self.role_queries = []
+        self.snapshot_text = None
+        self.snapshot_ref = None
+        self.snapshot_calls = 0
+        self.remap_locator = None
         self.main_frame = RefFallbackFrame(self)
         self.frames = [self.main_frame]
         self.mouse = SimpleNamespace(up=AsyncMock())
 
     def locator_for_selector(self, selector):
         self.selectors.append(selector)
+        if self.snapshot_ref is not None and selector == f"aria-ref={self.snapshot_ref}":
+            self.remap_locator = RefFallbackLocator(matches=1)
+            return self.remap_locator
         return self.aria_locator
+
+    async def aria_snapshot(self, **kwargs):
+        self.snapshot_calls += 1
+        if self.snapshot_text is None:
+            return ""
+        return self.snapshot_text
 
     def locator(self, selector):
         return self.main_frame.locator(selector)
@@ -163,6 +176,49 @@ class RefFallbackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([], self.page.role_queries)
         self.assertIn("count", self.page.aria_locator.calls)
         self.assertIn("click", self.page.aria_locator.calls)
+
+    async def test_remap_after_re_render_succeeds_and_rewrites_the_ref(self):
+        self.page.aria_locator = RefFallbackLocator(matches=0)
+        self.page.role_locator = RefFallbackLocator(matches=0)
+        self.page.snapshot_text = '- button "Continue" [ref=e7]\n'
+        self.page.snapshot_ref = "e7"
+        self.expose_main_ref("e5", role="button", name="Continue")
+        response = await self.request("click", selector="@e5")
+        self.assertTrue(response["success"], response)
+        self.assertIs(True, response["data"].get("remapped"))
+        self.assertEqual("@e7", response["data"].get("newRef"))
+        self.assertIn("aria-ref=e7", self.page.selectors)
+        self.assertIsNotNone(self.page.remap_locator)
+        self.assertIn("click", self.page.remap_locator.calls)
+        self.assertNotIn("click", self.page.aria_locator.calls)
+        self.assertNotIn("e5", self.tab.refs)
+        self.assertIn("e7", self.tab.refs)
+        self.assertEqual("button", self.tab.refs_meta["e7"]["role"])
+        self.assertIsNone(self.tab.last_ref_remap)
+
+    async def test_remap_with_ambiguous_snapshot_keeps_stale_ref(self):
+        self.page.aria_locator = RefFallbackLocator(matches=0)
+        self.page.role_locator = RefFallbackLocator(matches=0)
+        self.page.snapshot_text = (
+            '- button "Continue" [ref=e7]\n- button "Continue" [ref=e8]\n'
+        )
+        self.expose_main_ref("e5", role="button", name="Continue")
+        response = await self.request("click", selector="@e5")
+        self.assertEqual("camoufox_stale_ref", response["code"])
+        self.assertIn("role/name fallback found 0 candidates", response["error"])
+        self.assertIn("take a fresh snapshot", response["error"])
+        self.assertEqual(0, self.runtime._input_attempts)
+        self.assertFalse(self.instance.poisoned)
+        self.assertNotIn("remapped", response.get("data", {}))
+
+    async def test_remap_frame_prefixed_never_remapped(self):
+        self.page.aria_locator = RefFallbackLocator(matches=0)
+        self.expose_main_ref("f1e2", role="button", name="Nested")
+        self.tab.refs_meta["f1e2"]["framePrefix"] = "f1"
+        response = await self.request("click", selector="@f1e2")
+        self.assertFalse(response["success"])
+        self.assertEqual(0, self.page.snapshot_calls)
+        self.assertEqual(["aria-ref=f1e2"], self.page.selectors)
 
 
 if __name__ == "__main__":

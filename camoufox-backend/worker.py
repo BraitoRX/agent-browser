@@ -92,7 +92,7 @@ UNSUPPORTED_LAUNCH_OPTIONS = {
     "autoConnect": "auto-connect is not supported",
 }
 KNOWN_LAUNCH_OPTIONS = {
-    "headless", "engine", "webmcp", "noXvfb", "metadata", "profile",
+    "headless", "engine", "webmcp", "noXvfb", "metadata", "profile", "adblock",
 }
 
 
@@ -125,6 +125,9 @@ def check_launch_options(payload: Dict[str, Any]) -> None:
     profile = payload.get("profile")
     if profile is not None and (not isinstance(profile, str) or not profile.strip() or not Path(profile).is_absolute()):
         raise BackendError(CODE_INVALID, "'profile' must be a non-empty absolute directory path")
+    adblock = payload.get("adblock")
+    if adblock is not None and not isinstance(adblock, bool):
+        raise BackendError(CODE_INVALID, "'adblock' must be a boolean")
     no_xvfb = payload.get("noXvfb")
     if no_xvfb is not None and no_xvfb is not False:
         raise BackendError(CODE_UNSUPPORTED, "'noXvfb' true is not supported")
@@ -167,7 +170,7 @@ ACTION_FIELDS = {
     "evaluate": {"script"},
     "frame": {"selector"},
     "mainframe": set(),
-    "snapshot": {"selector", "maxDepth", "interactive", "compact", "urls", "cursor"},
+    "snapshot": {"selector", "maxDepth", "interactive", "compact", "urls", "cursor", "quiet"},
     "screenshot": {"path", "screenshotDir", "selector", "fullPage", "annotate", "format", "quality"},
     "click": {"selector", "target", "button", "count", "newTab"},
     "dblclick": {"selector", "button"},
@@ -431,6 +434,12 @@ class Worker:
                 }
             )
             return None
+        if isinstance(data, dict) and self.runtime is not None and action in MUTATING_ACTIONS:
+            tab = self.runtime.tabs.get(self.runtime.active_id) if self.runtime.active_id else None
+            if tab is not None and not tab.closed and tab.last_ref_remap:
+                data.setdefault("remapped", True)
+                data.setdefault("newRef", "@" + tab.last_ref_remap["to"])
+                tab.last_ref_remap = None
         response = {"id": request_id, "success": True, "data": ic.json_safe(data)}
         if self.poisoned:
             response["inputAmbiguous"] = True
@@ -772,12 +781,15 @@ class Worker:
     async def do_snapshot(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
         selector = optional_str(payload.get("selector"), "selector")
         max_depth = optional_int(payload.get("maxDepth"), "maxDepth", 0, 100)
+        quiet = optional_bool(payload.get("quiet"), "quiet", False)
         if optional_bool(payload.get("interactive"), "interactive", False):
             raise BackendError(CODE_UNSUPPORTED, "interactive filtering is not supported by the native AI snapshot")
         if optional_bool(payload.get("compact"), "compact", False):
             raise BackendError(CODE_UNSUPPORTED, "compact filtering is not supported by the native AI snapshot")
         optional_bool(payload.get("urls"), "urls", False)
         optional_bool(payload.get("cursor"), "cursor", False)
+        if quiet:
+            await runtime.wait_for_page_quiet(quiet_ms=250, max_ms=3000)
         return await runtime.snapshot(selector=selector, max_depth=max_depth)
 
     async def do_screenshot(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -910,7 +922,9 @@ class Worker:
             self.policy_active = isinstance(metadata, dict) and metadata.get("policyActive") is True
             headless = optional_bool(payload.get("headless"), "headless", True)
             assert headless is not None
-            data = await runtime.launch(headless, profile=payload.get("profile"))
+            adblock = optional_bool(payload.get("adblock"), "adblock", False)
+            assert adblock is not None
+            data = await runtime.launch(headless, profile=payload.get("profile"), adblock=adblock)
             data["startedAt"] = ic.iso_now()
             return data
         if action == "tab_list":

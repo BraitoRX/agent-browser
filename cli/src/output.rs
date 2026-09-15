@@ -2275,6 +2275,7 @@ Options:
   -c, --compact        Remove empty structural elements
   -d, --depth <n>      Limit tree depth
   -s, --selector <sel> Scope snapshot to CSS selector
+  --snapshot-quiet     Wait for a mutation-silent window before capturing (Camoufox)
 
 Global Options:
   --json               Output as JSON
@@ -2286,6 +2287,7 @@ Examples:
   agent-browser snapshot -i --urls
   agent-browser snapshot --compact --depth 5
   agent-browser snapshot -s "#main-content"
+  agent-browser snapshot --snapshot-quiet
 "##
         }
 
@@ -4123,6 +4125,8 @@ Options:
   --screenshot-format <fmt>  Screenshot format: png, jpeg (or AGENT_BROWSER_SCREENSHOT_FORMAT)
   --headed                   Show browser window (not headless) (or AGENT_BROWSER_HEADED env)
   --webgpu                   Enable WebGPU; uses SwiftShader software Vulkan on Linux, no GPU required (or AGENT_BROWSER_WEBGPU env)
+  --adblock                  Camoufox only: load the runtime's bundled uBlock Origin addon at launch
+                             (or AGENT_BROWSER_ADBLOCK env)
   --no-webmcp                Disable default experimental WebMCP support for locally launched Chrome
                              (or AGENT_BROWSER_NO_WEBMCP env)
   --cdp <port|url>           Connect via CDP; root WebSocket query slash is optional
@@ -4164,6 +4168,7 @@ Configuration:
     --headed           (same as --headed true)
     --headed false     (disables "headed": true from config)
     --hide-scrollbars false (keeps native scrollbars visible in headless Chromium screenshots)
+    --adblock false    (disables "adblock": true from config or AGENT_BROWSER_ADBLOCK)
 
   Extensions from user and project configs are merged (not replaced).
 
@@ -4197,6 +4202,7 @@ Environment:
   AGENT_BROWSER_HEADED           Show browser window (not headless)
   AGENT_BROWSER_NO_XVFB          Disable automatic Xvfb for headed mode on displayless Linux hosts
   AGENT_BROWSER_WEBGPU           Enable WebGPU (SwiftShader software Vulkan on Linux)
+  AGENT_BROWSER_ADBLOCK         Camoufox only: load the runtime's bundled uBlock Origin addon at launch
   AGENT_BROWSER_JSON             JSON output
   AGENT_BROWSER_ANNOTATE         Annotated screenshot with numbered labels and legend
   AGENT_BROWSER_DEBUG            Debug output
@@ -4269,7 +4275,8 @@ Camoufox V1 (macOS/Linux only):
   network requests/request exposes metadata and on-demand headers/bodies.
   network websockets/workers adds bounded event and worker visibility.
   --profile /absolute/path retains persistent cookies/site storage and device identity.
-  Sign in manually; close preserves the profile. Login expiry/CAPTCHAs can still occur.
+  Sign in; close preserves the profile. Login expiry/CAPTCHAs can still occur.
+  --adblock loads the managed runtime's bundled uBlock Origin addon for the session.
   One browser per profile; close before switching. No Chrome import or state/auth restore.
   No CDP, domain containment, launch plugins, or mobile.
   Generic gestures cannot run under action policies/confirm-actions.

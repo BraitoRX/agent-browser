@@ -175,13 +175,13 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
     }
     let action = command.get("action").and_then(Value::as_str).unwrap_or("");
     let fields: &[&str] = match action {
-        "launch" => &["headless", "engine", "webmcp", "noXvfb", "profile"],
+        "launch" => &["headless", "engine", "webmcp", "noXvfb", "profile", "adblock"],
         "navigate" => &["url", "waitUntil"],
         "back" | "forward" | "reload" | "url" | "title" | "content" | "read"
         | "tab_list" | "session_info" | "close" | "mainframe" => &[],
         "frame" => &["selector"],
         "evaluate" => &["script"],
-        "snapshot" => &["selector", "maxDepth", "interactive", "compact", "urls", "cursor"],
+        "snapshot" => &["selector", "maxDepth", "interactive", "compact", "urls", "cursor", "quiet"],
         "screenshot" => &["path", "screenshotDir", "selector", "fullPage", "annotate", "format", "quality"],
         "click" => &["selector", "target", "button", "count", "newTab"],
         "dblclick" => &["selector", "button"],
@@ -242,6 +242,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         object.remove("engine");
         object.remove("headless");
         object.remove("profile");
+        object.remove("adblock");
     }
     for field in object.keys() {
         if field != "id" && field != "action" && !fields.contains(&field.as_str()) {
@@ -290,6 +291,7 @@ pub struct CamoufoxBackend {
     pub launched: bool,
     pub headed: bool,
     pub profile: Option<String>,
+    pub adblock: bool,
 }
 
 impl CamoufoxBackend {
@@ -326,7 +328,7 @@ impl CamoufoxBackend {
         let process_group = child.id();
         let stdin = child.stdin.take().ok_or("Camoufox stdin was not piped")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("Camoufox stdout was not piped")?);
-        Ok(Self { child, stdin, stdout, process_group, failure: None, launched: false, headed: false, profile: None })
+        Ok(Self { child, stdin, stdout, process_group, failure: None, launched: false, headed: false, profile: None, adblock: false })
     }
 
     async fn exchange(&mut self, command: &Value) -> Result<Value, String> {
@@ -372,6 +374,7 @@ impl CamoufoxBackend {
                     self.launched = true;
                     self.headed = response["data"]["headless"].as_bool() == Some(false);
                     self.profile = response["data"]["profilePath"].as_str().map(str::to_string);
+                    self.adblock = response["data"]["adblock"].as_bool().unwrap_or(false);
                 }
                 response
             }
@@ -436,6 +439,10 @@ mod tests {
         let navigation = json!({"id":"2", "action":"navigate", "url":"about:blank", "profile":path});
         assert!(normalize_command(&navigation).unwrap().get("profile").is_none());
         assert!(normalize_command(&json!({"id":"3", "action":"launch", "profile":path, "storageState":"state.json"})).is_err());
+        let adblock_launch = json!({"id":"4", "action":"launch", "adblock":true});
+        assert_eq!(normalize_command(&adblock_launch).unwrap(), adblock_launch);
+        assert!(normalize_command(&json!({"id":"5", "action":"navigate", "url":"about:blank", "adblock":true})).unwrap().get("adblock").is_none());
+        assert!(normalize_command(&json!({"id":"6", "action":"launch", "adblock":true, "storageState":"state.json"})).is_err());
     }
 
     #[test]

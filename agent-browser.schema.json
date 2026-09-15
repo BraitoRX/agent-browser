@@ -116,6 +116,10 @@
       "type": "boolean",
       "description": "Enable WebGPU (SwiftShader software Vulkan on Linux; no GPU required). Defaults to false."
     },
+    "adblock": {
+      "type": "boolean",
+      "description": "Camoufox only: load the managed runtime's bundled uBlock Origin addon at launch. Defaults to false."
+    },
     "noWebmcp": {
       "type": "boolean",
       "description": "Disable experimental WebMCP support, which is enabled by default for locally launched Chrome. Can also be set with AGENT_BROWSER_NO_WEBMCP."

@@ -232,6 +232,26 @@ def main(argv=None) -> int:
         if code != 0:
             raise BootstrapError(f"browser fetch failed with exit code {code}")
 
+        # Pre-download the GeoIP database so launch-time geoip lookups stay inside the
+        # worker deadline. Best-effort: a failed download leaves geoip disabled at
+        # launch instead of failing the whole install.
+        code = run_streaming(
+            [
+                str(venv_python), "-c",
+                "from camoufox.geolocation import download_mmdb; download_mmdb()",
+            ],
+            env,
+            SCRIPT_DIR,
+            FETCH_TIMEOUT_SECONDS,
+            "geoip database download",
+        )
+        if code != 0:
+            print(
+                "agent-browser: geoip database download failed; "
+                "launches run without IP-based geo coherence until the next install",
+                file=sys.stderr,
+            )
+
         metadata = probe_metadata(venv_python, env)
         executable = installed_executable(venv_python, env, runtime_dir)
         record = {

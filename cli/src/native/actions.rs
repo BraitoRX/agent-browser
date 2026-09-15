@@ -2547,13 +2547,23 @@ async fn execute_camoufox_command(cmd: &Value, state: &mut DaemonState) -> Value
             !env::var("AGENT_BROWSER_HEADED").is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
         }
     });
+    let requested_adblock = cmd.get("adblock").and_then(Value::as_bool);
+    if backend.launched && requested_adblock.is_some_and(|adblock| adblock != backend.adblock) {
+        return failure(id, "camoufox_unsupported", "Close the session before changing the adblock setting", false);
+    }
+    let adblock = requested_adblock.unwrap_or_else(|| {
+        if backend.launched { backend.adblock } else {
+            env::var("AGENT_BROWSER_ADBLOCK").is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes"))
+        }
+    });
     if action == "launch" {
         command["headless"] = json!(headless);
         command["profile"] = json!(profile);
+        command["adblock"] = json!(adblock);
     }
     let outcome = tokio::time::timeout(HARD_DEADLINE, async {
         if !backend.launched && !matches!(action, "launch" | "session_info" | "gestures" | "tab_list" | "read") {
-            let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless, "profile": profile})).await;
+            let mut launched = backend.execute(&json!({"id": format!("{id}:launch"), "action": "launch", "engine": "camoufox", "headless": headless, "profile": profile, "adblock": adblock})).await;
             if launched.get("success").and_then(Value::as_bool) != Some(true) {
                 launched["id"] = json!(id);
                 return launched;

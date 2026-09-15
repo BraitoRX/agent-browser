@@ -79,6 +79,7 @@ pub struct Config {
     pub device: Option<String>,
     pub hide_scrollbars: Option<bool>,
     pub webgpu: Option<bool>,
+    pub adblock: Option<bool>,
     pub no_webmcp: Option<bool>,
     pub ignore_https_errors: Option<bool>,
     pub ca_cert: Option<String>,
@@ -162,6 +163,7 @@ impl Config {
             device: other.device.or(self.device),
             hide_scrollbars: other.hide_scrollbars.or(self.hide_scrollbars),
             webgpu: other.webgpu.or(self.webgpu),
+            adblock: other.adblock.or(self.adblock),
             no_webmcp: other.no_webmcp.or(self.no_webmcp),
             ignore_https_errors: other.ignore_https_errors.or(self.ignore_https_errors),
             ca_cert,
@@ -391,6 +393,8 @@ pub struct Flags {
     pub allow_file_access: bool,
     pub hide_scrollbars: bool,
     pub webgpu: bool,
+    /// Camoufox-only: load the runtime's bundled uBlock Origin addon at launch.
+    pub adblock: bool,
     pub no_webmcp: bool,
     /// Env-only (AGENT_BROWSER_NO_XVFB): disable automatic Xvfb for headed
     /// launches on displayless Linux hosts.
@@ -439,6 +443,7 @@ pub struct Flags {
     pub cli_download_path: bool,
     pub cli_headed: bool,
     pub cli_webgpu: bool,
+    pub cli_adblock: bool,
     pub cli_no_webmcp: bool,
     pub cli_restore: bool,
     /// True when --pin-tab / --no-pin-tab was passed on the command line, so
@@ -589,6 +594,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
             .or(config.hide_scrollbars)
             .unwrap_or(true),
         webgpu: env_var_is_truthy("AGENT_BROWSER_WEBGPU") || config.webgpu.unwrap_or(false),
+        adblock: env_var_is_truthy("AGENT_BROWSER_ADBLOCK") || config.adblock.unwrap_or(false),
         no_webmcp: env_var_is_truthy("AGENT_BROWSER_NO_WEBMCP")
             || config.no_webmcp.unwrap_or(false),
         no_xvfb: env_var_is_truthy("AGENT_BROWSER_NO_XVFB"),
@@ -672,6 +678,7 @@ pub fn parse_flags(args: &[String]) -> Flags {
         cli_download_path: false,
         cli_headed: false,
         cli_webgpu: false,
+        cli_adblock: false,
         cli_no_webmcp: false,
         cli_restore: false,
         cli_pin_tab: false,
@@ -714,6 +721,14 @@ pub fn parse_flags(args: &[String]) -> Flags {
                 let (val, consumed) = parse_bool_arg(args, i);
                 flags.webgpu = val;
                 flags.cli_webgpu = true;
+                if consumed {
+                    i += 1;
+                }
+            }
+            "--adblock" => {
+                let (val, consumed) = parse_bool_arg(args, i);
+                flags.adblock = val;
+                flags.cli_adblock = true;
                 if consumed {
                     i += 1;
                 }
@@ -1122,6 +1137,7 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--json",
         "--headed",
         "--webgpu",
+        "--adblock",
         "--no-webmcp",
         "--debug",
         "--ignore-https-errors",

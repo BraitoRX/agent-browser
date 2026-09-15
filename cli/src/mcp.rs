@@ -363,7 +363,7 @@ impl McpConfig {
             return profile.description();
         }
         match profile {
-            ToolProfile::Core => "Everyday Camoufox automation with navigation, native AI snapshots, structured page outline/link/DOM pagination, DOM reads and common interaction, waits, viewport PNG screenshots, tab basics, isolated-world JavaScript eval, close, and profile discovery.",
+            ToolProfile::Core => "Everyday Camoufox automation with navigation, native AI snapshots, semantic locators (find), DOM reads and interaction, full-page HTML reads, waits, viewport PNG screenshots, tab basics, isolated-world JavaScript eval, close, and profile discovery.",
             ToolProfile::Network => "Camoufox network interception, request inspection, HAR capture, headers, credentials, and offline mode.",
             ToolProfile::State => "Camoufox cookies, storage, session diagnostics, and bundled skills.",
             ToolProfile::Debug => "Camoufox download handling, console and error reads, batched commands, runtime installation, and pending-action confirm/deny.",
@@ -596,9 +596,7 @@ const MOBILE_PROFILE_TOOLS: &[&str] = &[
 ];
 
 const CAMOUFOX_CORE_TOOLS: &[&str] = &[
-    TOOL_PAGE_OUTLINE,
-    TOOL_PAGE_LINKS,
-    TOOL_DOM_CHUNK,
+    TOOL_FIND,
     TOOL_GET_HTML,
     TOOL_SCROLL_INTO_VIEW,
     TOOL_GET_ATTR,
@@ -946,15 +944,14 @@ fn camoufox_tool(mut tool: Value) -> Value {
             props.get_mut("depth").unwrap()["description"] = json!("Native tree depth limit, 0–100. Zero or omission means unlimited.");
             props.insert("selector".into(), selector_schema());
         }
-        TOOL_SCREENSHOT => props.get_mut("format").unwrap()["enum"] = json!(["png"]),
         TOOL_SELECT => props.get_mut("values").unwrap()["description"] = json!("Exact option values to select, not labels."),
         _ => {}
     }
     let description = match name.as_str() {
-        TOOL_OPEN => Some("Launch Camoufox and optionally navigate. A configured profile retains persistent login storage across restarts. Let the user sign in manually; never request passwords in chat. After session loss, explicitly close/open with the same profile. Never replay ambiguous input."),
+        TOOL_OPEN => Some("Launch Camoufox and optionally navigate. A configured profile retains persistent login storage across restarts. After session loss, explicitly close/open with the same profile. Never replay ambiguous input."),
         TOOL_CLOSE => Some("Close the named browser session without deleting its persistent profile. Tabs and transient state end; persistent cookies and site storage remain. Leave a user's persistent browser open unless closure or recovery is requested."),
         TOOL_READ => Some("Read rendered body text from the selected frame, not a URL fetch or markdown extractor. Use scoped DOM queries or eval when accessibility snapshots omit content. Returns frameId/frameUrl."),
-        TOOL_SNAPSHOT => Some("Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options. Every snapshot, including a scoped one, replaces exposed refs; navigation, frame detachment and scope changes clear them. DOM-only changes can still cause native locator failures. Use DOM queries for content absent from this accessibility view."),
+        TOOL_SNAPSHOT => Some("Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options. Every snapshot, including a scoped one, replaces exposed refs; navigation, frame detachment and scope changes clear them. DOM-only changes can still cause native locator failures. Use DOM queries for content absent from this accessibility view. Pass quiet:true on volatile pages to wait up to 3s for a 250ms mutation-silent window before capturing."),
         TOOL_SCREENSHOT => Some("Capture the top-level viewport as PNG, returning its path and captureId for coordinate gestures. Element crops, full-page capture, annotation and JPEG are not supported."),
         TOOL_EVAL => Some("Evaluate JavaScript in the selected frame's isolated world using stdin. DOM access is available; page-script globals are not guaranteed. Scripts may mutate the page and invalidate coordinate captures. Traverse open shadowRoot explicitly in JavaScript; closed shadow roots are not exposed. Returns frameId/frameUrl."),
         TOOL_FRAME_SWITCH => Some("Select an observation/CSS frame using a tab-local frame-N ID from tab_list/snapshot, a unique iframe CSS selector relative to the selected frame, or an exposed iframe @ref. Supports nested/cross-origin frames. Clears refs/captures. A detached selected frame fails rather than falling back. Navigation, URL/title/load waits and screenshots remain top-level."),
@@ -1100,6 +1097,7 @@ fn tools() -> Vec<Value> {
             json!({
                 "url": { "type": "string", "description": "URL to open. Omit to launch about:blank." },
                 "headed": { "type": "boolean", "description": "Show the browser window. Explicit true/false overrides AGENT_BROWSER_HEADED and config; omit to use those defaults. On macOS, headed Camoufox sets its Python helper to an accessory application before display detection to keep the helper out of the Dock; the browser remains headed." },
+                "adblock": { "type": "boolean", "description": "Camoufox only: load the managed runtime's bundled uBlock Origin addon for this session. Explicit true/false overrides AGENT_BROWSER_ADBLOCK and config; omit to use those defaults. Close the session before changing it." },
                 "webgpu": { "type": "boolean", "description": "Enable WebGPU (SwiftShader software Vulkan on Linux; no GPU required). Explicit true/false overrides AGENT_BROWSER_WEBGPU and config; omit to use those defaults." }
                 ,"webmcp": { "type": "boolean", "description": "Enable experimental WebMCP support. Defaults to true for locally launched Chrome; set false to pass --no-webmcp." }
             }),
@@ -1168,7 +1166,8 @@ fn tools() -> Vec<Value> {
                 "compact": { "type": "boolean", "default": false, "description": "Remove empty structural elements." },
                 "depth": { "type": "integer", "minimum": 0, "description": "Limit tree depth." },
                 "selector": { "type": "string", "description": "Scope the snapshot with an observed @ref, CSS selector, or xpath= selector." },
-                "includeUrls": { "type": "boolean", "default": false, "description": "Include href URLs on links." }
+                "includeUrls": { "type": "boolean", "default": false, "description": "Include href URLs on links." },
+                "quiet": { "type": "boolean", "default": false, "description": "Camoufox only: wait up to 3s for a 250ms mutation-silent window before capturing. Reduces race windows on volatile pages; not a stability guarantee." }
             }),
             &[],
         ),
@@ -1459,7 +1458,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_FIND,
             "Find element",
-            "Find an element with semantic locators and optionally act on it.",
+            "Find an element with semantic locators and optionally act on it. On match, the \"text\" subaction is read-only and returns the located element's text and a unique CSS selector.",
             json!({
                 "locator": { "type": "string", "enum": ["role", "text", "label", "placeholder", "alt", "title", "testid", "first", "last", "nth"] },
                 "value": { "type": "string", "description": "Role, text, label, selector, or test id." },
@@ -2945,6 +2944,10 @@ fn open_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
         args.push("--headed".to_string());
         args.push(headed.to_string());
     }
+    if let Some(adblock) = optional_bool(arguments, "adblock")? {
+        args.push("--adblock".to_string());
+        args.push(adblock.to_string());
+    }
     if let Some(webgpu) = optional_bool(arguments, "webgpu")? {
         args.push("--webgpu".to_string());
         args.push(webgpu.to_string());
@@ -3060,6 +3063,9 @@ fn call_snapshot(arguments: &Value) -> Result<Value, ProtocolError> {
     if let Some(selector) = optional_string(arguments, "selector")? {
         args.push("-s".to_string());
         args.push(selector);
+    }
+    if optional_bool(arguments, "quiet")?.unwrap_or(false) {
+        args.push("--snapshot-quiet".to_string());
     }
 
     call_cli_tool(arguments, args, None)
@@ -4578,6 +4584,10 @@ mod tests {
         assert!(names.contains(&TOOL_PAGE_OUTLINE));
         assert!(names.contains(&TOOL_PAGE_LINKS));
         assert!(names.contains(&TOOL_DOM_CHUNK));
+        assert!(!CAMOUFOX_CORE_TOOLS.contains(&TOOL_PAGE_OUTLINE));
+        assert!(!CAMOUFOX_CORE_TOOLS.contains(&TOOL_PAGE_LINKS));
+        assert!(!CAMOUFOX_CORE_TOOLS.contains(&TOOL_DOM_CHUNK));
+        assert!(CAMOUFOX_CORE_TOOLS.contains(&TOOL_FIND));
         assert!(names.contains(&TOOL_CLICK));
         assert!(names.contains(&TOOL_SCREENSHOT));
         assert!(names.contains(&TOOL_GET_CDP_URL));
@@ -5506,9 +5516,10 @@ mod tests {
     #[test]
     fn camoufox_dom_contract_core_additions_and_unsupported_rejection() {
         let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
-        assert!(config.allows(TOOL_PAGE_OUTLINE));
-        assert!(config.allows(TOOL_PAGE_LINKS));
-        assert!(config.allows(TOOL_DOM_CHUNK));
+        assert!(config.allows(TOOL_FIND));
+        assert!(!config.allows(TOOL_PAGE_OUTLINE));
+        assert!(!config.allows(TOOL_PAGE_LINKS));
+        assert!(!config.allows(TOOL_DOM_CHUNK));
         assert!(config.allows(TOOL_GET_ATTR));
         assert!(config.allows(TOOL_GET_VALUE));
         assert!(config.allows(TOOL_GET_COUNT));
@@ -5541,20 +5552,28 @@ mod tests {
     fn camoufox_page_tools_expose_schemas_and_cli_parity() {
         let config = McpConfig::from_profiles_for_engine(vec![ToolProfile::Core], true);
         let available = tools_for_config(&config);
+        let exposed: Vec<&str> = available
+            .iter()
+            .filter_map(|tool| tool["name"].as_str())
+            .collect();
+        assert!(!exposed.contains(&TOOL_PAGE_OUTLINE));
+        assert!(!exposed.contains(&TOOL_PAGE_LINKS));
+        assert!(!exposed.contains(&TOOL_DOM_CHUNK));
+        let catalog = tools();
         for name in [TOOL_PAGE_OUTLINE, TOOL_PAGE_LINKS, TOOL_DOM_CHUNK] {
-            let tool = available
+            let tool = catalog
                 .iter()
                 .find(|tool| tool["name"].as_str() == Some(name))
                 .unwrap();
             assert_eq!(tool["annotations"]["readOnlyHint"], true);
             assert_eq!(tool["annotations"]["openWorldHint"], true);
         }
-        let links = available
+        let links = catalog
             .iter()
             .find(|tool| tool["name"].as_str() == Some(TOOL_PAGE_LINKS))
             .unwrap();
         assert_eq!(links["inputSchema"]["properties"]["limit"]["maximum"], 200);
-        let dom = available
+        let dom = catalog
             .iter()
             .find(|tool| tool["name"].as_str() == Some(TOOL_DOM_CHUNK))
             .unwrap();
@@ -5736,6 +5755,40 @@ mod tests {
             assert_eq!(tool["inputSchema"]["properties"]["profile"]["type"], "string");
         }
         assert!(camoufox_arguments(TOOL_OPEN, &json!({"profile":profile, "restore":true})).is_err());
+    }
+
+    #[test]
+    fn camoufox_adblock_mcp_cli_parity() {
+        let _guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_ADBLOCK", "AGENT_BROWSER_ENGINE"]);
+
+        let arguments = camoufox_arguments(TOOL_OPEN, &json!({"adblock": true})).unwrap();
+        assert_eq!(arguments["engine"], "camoufox");
+        let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
+        assert!(args.contains(&"--adblock".to_string()) && args.contains(&"true".to_string()));
+        let flags = crate::flags::parse_flags(&args);
+        assert!(flags.adblock && flags.cli_adblock);
+        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert_eq!(command["adblock"], true);
+        assert_eq!(command["engine"], "camoufox");
+        assert!(crate::native::camoufox::normalize_command(&command).is_ok());
+
+        let arguments = camoufox_arguments(TOOL_OPEN, &json!({"adblock": false})).unwrap();
+        let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
+        assert!(args.contains(&"--adblock".to_string()) && args.contains(&"false".to_string()));
+        let flags = crate::flags::parse_flags(&args);
+        assert!(!flags.adblock && flags.cli_adblock);
+        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert_eq!(command["adblock"], false);
+
+        let arguments = camoufox_arguments(TOOL_OPEN, &json!({})).unwrap();
+        let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
+        let flags = crate::flags::parse_flags(&args);
+        assert!(!flags.adblock && !flags.cli_adblock);
+        let command = crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert!(command.get("adblock").is_none());
+
+        let arguments = camoufox_arguments(TOOL_OPEN, &json!({"adblock": "yes"})).unwrap();
+        assert!(open_args(&arguments).is_err());
     }
 
     #[test]

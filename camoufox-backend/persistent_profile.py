@@ -87,6 +87,7 @@ class PersistentProfile:
             raise PersistentProfileError("identity contains unsupported Firefox preferences")
         if "humanize" in config or "humanize:maxTime" in config:
             raise PersistentProfileError("identity must not override the session motion setting")
+        config.pop("addons", None)
         return {
             "config": config,
             "firefox_user_prefs": prefs,
@@ -385,6 +386,7 @@ class PersistentProfile:
             )
         config.pop("humanize", None)
         config.pop("humanize:maxTime", None)
+        config.pop("addons", None)
         return config
 
     @staticmethod

@@ -242,6 +242,15 @@ def parse_selector(value: Any, field_name: str = "selector") -> TargetSpec:
             frame_prefix=match.group(1),
             dom_ref=name.startswith("d"),
         )
+    match = REF_NAME_RE.match(raw)
+    if match:
+        return TargetSpec(
+            kind="selector",
+            selector=raw,
+            ref=raw,
+            frame_prefix=match.group(1),
+            dom_ref=raw.startswith("d"),
+        )
     if "aria-ref=" in raw or "internal:" in raw or ">>" in raw:
         raise BackendError(
             CODE_UNSUPPORTED,

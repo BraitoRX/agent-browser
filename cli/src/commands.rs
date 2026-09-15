@@ -347,6 +347,12 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         }
     }
     attach_ca_cert_to_launch_command(&mut result, flags);
+    if flags.adblock && flags.engine.as_deref() != Some("camoufox") {
+        return Err(ParseError::InvalidValue {
+            message: "--adblock is supported only by the Camoufox engine".to_string(),
+            usage: "--engine camoufox --adblock <command>",
+        });
+    }
     if flags.engine.as_deref() == Some("camoufox") {
         let action = result.get("action").and_then(Value::as_str).unwrap_or("").to_string();
         if !matches!(action.as_str(), "close" | "confirm" | "deny") {
@@ -362,6 +368,11 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
             result["headless"] = json!(!flags.headed);
         } else if action == "launch" {
             result.as_object_mut().expect("parsed command is an object").remove("headless");
+        }
+        if flags.adblock || flags.cli_adblock {
+            result["adblock"] = json!(flags.adblock);
+        } else if action == "launch" {
+            result.as_object_mut().expect("parsed command is an object").remove("adblock");
         }
         if !matches!(action.as_str(), "batch" | "confirm" | "deny") {
             crate::native::camoufox::normalize_command(&result).map_err(|message| ParseError::InvalidValue {
@@ -955,6 +966,9 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                             obj.insert("selector".to_string(), json!(s));
                             i += 1;
                         }
+                    }
+                    "--snapshot-quiet" => {
+                        obj.insert("quiet".to_string(), json!(true));
                     }
                     _ => {}
                 }
@@ -3698,6 +3712,7 @@ mod tests {
             allow_file_access: false,
             hide_scrollbars: true,
             webgpu: false,
+            adblock: false,
             no_webmcp: false,
             no_xvfb: false,
             device: None,
@@ -3728,6 +3743,7 @@ mod tests {
             cli_download_path: false,
             cli_headed: false,
             cli_webgpu: false,
+            cli_adblock: false,
             cli_no_webmcp: false,
             cli_restore: false,
             cli_pin_tab: false,

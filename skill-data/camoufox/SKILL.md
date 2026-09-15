@@ -31,9 +31,13 @@ Start with a new or empty profile directory. Missing identity alongside existing
 
 Use a dedicated private profile via `--profile /absolute/path`, `AGENT_BROWSER_PROFILE`, config `profile`, or MCP `profile`. Omission in MCP uses configured defaults. Keep the same profile for all subsequent actions and restarts; switching a live session's profile is refused. New directories use 0700, identity/lock files use 0600, and existing directories must be private and owned by the user. Only one browser can hold the profile lock. Do not copy the user's everyday browser profile, change its permissions, delete profile files, or create a replacement to work around a lock/corruption error.
 
-Launch headed and let the user sign in directly, including passwords, two-factor authentication, and CAPTCHA. Do not request credentials in chat or read/export cookies just to verify a login. `session info --json` reports `persistentProfile` and `profilePath` without exposing account tokens. Persistent cookies and website storage remain on disk across close/open; tabs, sessionStorage, and session-only cookies are not guaranteed. A session name alone is not persistence. Device configuration is retained for the same recorded browser executable; an incompatible or corrupt identity fails rather than rotating silently. A browser update needs a deliberate compatibility decision, not deletion of the user's identity or profile.
+Launch headed and complete sign-in, two-factor authentication, and CAPTCHA in the visible browser. Do not read/export cookies just to verify a login. `session info --json` reports `persistentProfile` and `profilePath` without exposing account tokens. Persistent cookies and website storage remain on disk across close/open; tabs, sessionStorage, and session-only cookies are not guaranteed. A session name alone is not persistence. Device configuration is retained for the same recorded browser executable; an incompatible or corrupt identity fails rather than rotating silently. A browser update needs a deliberate compatibility decision, not deletion of the user's identity or profile.
 
 Use `--idle-timeout 0` or config `"idleTimeout": "0"` when the user wants the browser left available. Leave a user's persistent browser open after completing a task unless closure was requested or explicit-close recovery is needed. A website may still expire authentication or require verification. Profiles are credential-bearing local files, not an encrypted password vault; keep them outside Git and do not claim CAPTCHA elimination.
+
+## Optional ad blocking
+
+Load the managed runtime's bundled uBlock Origin addon with `--adblock`, `AGENT_BROWSER_ADBLOCK`, config `adblock`, or the MCP `open` `adblock` argument. It is off by default and never downloads anything at launch. uBlock Origin filters can have false positives that hide legitimate page content; when a site reports missing elements, close the session and reopen without adblock before assuming a page defect. `session info` reports `adblock`, and a live session refuses a different setting. Prefer a persistent profile when adblock sessions repeat often: ephemeral sessions re-fetch uBlock Origin's filter lists on first navigation, while persistent profiles cache them.
 
 ## Observe, act, verify
 
@@ -84,7 +88,7 @@ Take a fresh viewport screenshot and use its `visualCapture.captureId` with pixe
 
 Never guess coordinates or reuse an old capture after input, evaluation, navigation, scrolling, a new screenshot, or a viewport change. Captures expire after 120 seconds and are checked against URL, tab, scroll, and viewport identity. Coordinate drags require two coordinates from the same capture, without reveal steps. Selector drags may use up to four CSS-selector hover steps in `reveal` to expose hidden controls before resolving endpoints. Both endpoints must remain inside the viewport. A selector resolves to its box center, not a slider percentage or an inferred drop zone.
 
-Tabs use stable `tN` IDs, not indexes. A popup is listed but does not become active. Closing the active tab leaves no active tab until an explicit `tab <id>` or `tab new`. Advanced hold/drag/path gestures support main-frame targets only; ordinary locator actions can route native iframe refs.
+Tabs use stable `tN` IDs, not indexes. A popup is listed but does not become active. Closing the active tab leaves no active tab until an explicit `tab <id>` or `tab new`. `tab new`/`agent_browser_tab_new` opens the new tab inside the active browser window when a live active page exists; with no usable active page it falls back to a separate Camoufox window. Advanced hold/drag/path gestures support main-frame targets only; ordinary locator actions can route native iframe refs.
 
 ## Closed targets and recovery
 
@@ -103,9 +107,24 @@ Treat a single operation timeout as a failed step, not a failed task. When the r
 
 - `human-fast` is the default: Camoufox launch-time `humanize=0.25`. It is a tuning value, not a wall-time guarantee. Do not add a second randomized path on top.
 - `fast` and `precision` disable native humanization. The bounded element-relative `path` gesture requires one of these profiles. Change `AGENT_BROWSER_MOTION` before starting a new daemon session, not during a gesture.
+- Launches apply a host-coherent fingerprint policy: `os` matches the host platform, the window is fixed at 1920x1080, WebRTC is blocked, and `geoip` aligns timezone, locale, and geolocation with the public IP when the geoip runtime is installed. A persistent profile's saved identity is never rewritten; profiles created after this change present the host-matched fingerprint. This reduces fingerprint incoherence; it is not an anti-bot guarantee.
 - The worker action deadline defaults to 22 seconds and is capped at 25 seconds; Rust enforces 28 seconds including implicit launch and observation. Hold duration is capped at 20 seconds and must leave time for release. Camoufox MCP calls require `timeoutMs >= 30000`.
 - Distinguish operation timeouts from worker failures. A completed Playwright `TimeoutError` returns `camoufox_timeout` with `data.timeoutKind: "operation"` and keeps the session usable when input cleanup succeeds. Keep the session and inspect the page; **do not automatically replay input**. A worker deadline returns `data.timeoutKind: "deadline"`; it requires a reset only when input was attempted during the action, journaled input could not be released, or a launch/close was cancelled. A cancelled read-only action (a locator read, snapshot, or wait that dispatched no input) leaves the session usable, so inspect and continue instead of closing. Unreleased input, non-timeout failures after attempted input, and ambiguous transport errors retain explicit-close recovery. Release attempts and dispatch counters are not evidence that the application operation did or did not happen.
 - Playwright errors include the action, exception class, and a bounded browser reason with literal submitted input/code redacted. MCP text includes `camoufox_` codes and reset-required warnings. Use the actual reason, not the class name alone: multiple matches require a unique observed target; a missing snapshot scope calls for a fresh unscoped observation, not guessed selectors or unrelated navigation. Only correct targets in a usable session when input was not possibly dispatched. See the [error-detail reference](../core/references/camoufox.md#browser-error-details).
+
+## Host VPN control (Namecheap FastVPN)
+
+This Mac runs Namecheap FastVPN as a system VPN service named "FastVPN WireGuard". Its tunnel provider system extension is x86_64 only and executes under Rosetta 2, which was installed on 2026-09-15 for exactly that reason; without Rosetta the service cannot connect at all. The toggle is macOS session control, not the app UI:
+
+```bash
+scutil --nc start "FastVPN WireGuard"    # connect, settles in a few seconds
+scutil --nc stop "FastVPN WireGuard"     # disconnect
+scutil --nc status "FastVPN WireGuard"   # first line: Connected or Disconnected
+```
+
+Confirm the toggle by exit address: `curl -s ipinfo.io/ip` returns a Namecheap server address when connected (for example 173.255.173.19, country CO) and the Telmex Colombia address (181.61.246.135) when disconnected. The FastVPN app does not need to be driven for this; the exit location follows the server selected in the app. A second VPN (ProtonVPN) is also installed; leave it untouched unless the task requires it.
+
+Toggle the VPN only when the task justifies it. A VPN change while a Camoufox session is open leaves that session fingerprint-incoherent: launch aligned timezone, locale, and geolocation with the then-current public IP, and the tunnel change moves the public IP underneath it. After an intentional VPN switch, restart the affected Camoufox session instead of browsing through the mismatch.
 
 ## Extensions and exclusions
 

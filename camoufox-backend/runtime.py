@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import platform
 import re
 import struct
 import sys
@@ -358,6 +359,7 @@ class Tab:
         self.next_frame_id = 1
         self.closed = False
         self.inventory_caches: Dict[str, Dict[str, Any]] = {}
+        self.last_ref_remap: Optional[Dict[str, str]] = None
 
 
 class GestureContext:
@@ -427,6 +429,29 @@ class GestureContext:
         return await self.runtime.resolve_capture_point(spec, capture_id_used)
 
 
+_HOST_OS_MAP = {"Darwin": "macos", "Windows": "windows"}
+LAUNCH_WINDOW = (1920, 1080)
+
+
+def _resolve_host_os() -> str:
+    """Camoufox OS string matching the host so generated fingerprints stay coherent."""
+    return _HOST_OS_MAP.get(platform.system(), "linux")
+
+
+def _geoip_launch_value() -> Optional[bool]:
+    """Enable IP-based geo coherence only when the geoip extra and database exist."""
+    try:
+        from camoufox.geolocation import ALLOW_GEOIP, MMDB_DIR
+    except Exception:
+        return None
+    if not ALLOW_GEOIP:
+        return None
+    try:
+        return True if any(MMDB_DIR.glob("*.mmdb")) else None
+    except OSError:
+        return None
+
+
 class CamoufoxRuntime:
     engine = "camoufox"
     GestureContextClass = GestureContext
@@ -447,6 +472,7 @@ class CamoufoxRuntime:
         self.context: Any = None
         self._profile: Optional[PersistentProfile] = None
         self.profile_path: Optional[str] = None
+        self.adblock = False
         self.tabs: Dict[str, Tab] = {}
         self._page_to_tab: Dict[int, str] = {}
         self._tab_counter = 0
@@ -457,7 +483,7 @@ class CamoufoxRuntime:
         self._input_attempts = 0
         self._close_reason: Optional[str] = None
 
-    async def launch(self, headless: bool, profile: Optional[str] = None) -> Dict[str, Any]:
+    async def launch(self, headless: bool, profile: Optional[str] = None, adblock: bool = False) -> Dict[str, Any]:
         """Reuse a private on-disk context only when explicitly selected; never switch a live profile."""
         error = self.sync_session_state()
         if error is not None:
@@ -474,6 +500,11 @@ class CamoufoxRuntime:
                 raise BackendError(
                     CODE_ERROR,
                     "browser is already running with a different headless setting; close the session first",
+                )
+            if self.adblock != adblock:
+                raise BackendError(
+                    CODE_ERROR,
+                    "browser is already running with a different adblock setting; close the session first",
                 )
             return self.launch_info()
         try:
@@ -497,7 +528,7 @@ class CamoufoxRuntime:
             if version("camoufox") != "0.5.6" or version("playwright") != "1.61.0":
                 raise ValueError("runtime package pins do not match")
             from camoufox.async_api import AsyncCamoufox
-            from camoufox.addons import DefaultAddons
+            from camoufox.addons import DefaultAddons, get_addon_path
             from camoufox.utils import launch_options
         except Exception as exc:
             raise BackendError(
@@ -516,18 +547,48 @@ class CamoufoxRuntime:
                     profile_kwargs = persistent.launch_kwargs(str(executable))
                 except (OSError, ValueError) as exc:
                     raise BackendError(CODE_INVALID, f"cannot use Camoufox profile: {exc}") from exc
+            addon_paths: Optional[List[str]] = None
+            if adblock:
+                addon_path = get_addon_path(DefaultAddons.UBO.name)
+                if not (Path(addon_path) / "manifest.json").is_file():
+                    raise BackendError(
+                        CODE_NOT_LAUNCHED,
+                        "the uBlock Origin addon is missing from the managed runtime; "
+                        "run agent-browser --engine camoufox install",
+                    )
+                addon_paths = [addon_path]
             # Set AppKit policy on the main thread before launch_options probes displays in a thread.
             configure_macos_headed_worker(headless)
             # Camoufox 0.5.6 resolves assets beside executable_path. macOS stores them in Resources.
-            options = await asyncio.to_thread(
-                launch_options,
-                headless=headless,
-                humanize=self.humanize,
-                enable_cache=True,
-                executable_path=str(asset_anchor),
-                exclude_addons=list(DefaultAddons),
-                **profile_kwargs,
-            )
+            # Fingerprint policy mirrors the NBF routine recipe: host-matched OS, fixed window,
+            # blocked WebRTC, and IP-based geo coherence when the geoip runtime is available.
+            # Camoufox config merges are no-clobber, so a persistent profile's saved identity
+            # keeps its fingerprint; only absent values (timezone, locale, geolocation) are filled.
+            geoip_value = _geoip_launch_value()
+            launch_build: Dict[str, Any] = {
+                "headless": headless,
+                "humanize": self.humanize,
+                "enable_cache": True,
+                "executable_path": str(asset_anchor),
+                "exclude_addons": list(DefaultAddons),
+                "addons": addon_paths,
+                "os": _resolve_host_os(),
+                "window": LAUNCH_WINDOW,
+                "block_webrtc": True,
+                "geoip": geoip_value,
+            }
+            try:
+                options = await asyncio.to_thread(launch_options, **launch_build, **profile_kwargs)
+            except Exception:
+                if geoip_value is None:
+                    raise
+                # A failed public-IP or GeoIP lookup must not make every launch unusable.
+                print(
+                    "agent-browser: geoip lookup failed at launch; retrying without geoip",
+                    file=sys.stderr,
+                )
+                launch_build["geoip"] = None
+                options = await asyncio.to_thread(launch_options, **launch_build, **profile_kwargs)
             options["executable_path"] = str(executable)
             if persistent is not None:
                 if not profile_kwargs:
@@ -556,6 +617,7 @@ class CamoufoxRuntime:
             self.context.on("page", self._on_context_page)
             self.launched = True
             self.headless = headless
+            self.adblock = adblock
             pages = list(self.context.pages)
             if not pages:
                 pages = [await self.context.new_page()]
@@ -666,6 +728,7 @@ class CamoufoxRuntime:
             "closeReason": self._close_reason,
             "engine": self.engine,
             "headless": self.headless,
+            "adblock": self.adblock,
             "motion": self.motion,
             "humanize": self.humanize,
             "runtimeDir": str(self.runtime_dir),
@@ -713,6 +776,7 @@ class CamoufoxRuntime:
         if profile is not None:
             profile.release()
         self.profile_path = None
+        self.adblock = False
         self.launched = False
         self.active_id = None
         self.tabs.clear()
@@ -974,7 +1038,7 @@ class CamoufoxRuntime:
             raise BackendError(CODE_NOT_LAUNCHED, "browser is not launched; send a launch command first")
         if label is not None and self.find_tab(label) is not None:
             raise BackendError(CODE_INVALID, "tab label is already in use")
-        page = await self.context.new_page()
+        page = await self._open_tab_page()
         tab = self._register_tab(page, label=label)
         self.active_id = tab.tab_id
         if url is not None:
@@ -986,6 +1050,33 @@ class CamoufoxRuntime:
             "active": True,
             "tabs": self.list_tabs(),
         }
+
+    async def _open_tab_page(self) -> Any:
+        """Prefer a same-window Firefox tab over a new chrome window.
+
+        Camoufox's Juggler implements context.new_page() with
+        Services.ww.openWindow, so every Playwright page is a separate browser
+        window. Window.open from a live active page instead lets Firefox apply
+        its normal tab-opening behavior and Juggler registers the tab through
+        its TabOpen listener. Fall back to new_page() when there is no usable
+        active page (fresh launch, closed tab) or the popup is blocked.
+        """
+        page = self._active_page_or_none()
+        if page is None:
+            return await self.context.new_page()
+        before = {id(candidate) for candidate in self.context.pages}
+        try:
+            await asyncio.wait_for(page.evaluate("(url) => window.open(url, '_blank')", "about:blank"), timeout=5)
+        except Exception:
+            return await self.context.new_page()
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            for candidate in self.context.pages:
+                if id(candidate) not in before and id(candidate) != id(page):
+                    return candidate
+            if self._active_page_or_none() is None:
+                break
+        return await self.context.new_page()
 
     def switch_tab(self, ident: Optional[str]) -> Dict[str, Any]:
         self.require_open_session()
@@ -1153,6 +1244,46 @@ class CamoufoxRuntime:
             return None
         heading = heading_stack[-1][1]
         return {"level": heading["level"], "text": heading["text"], "ref": heading["ref"]}
+
+    async def wait_for_page_quiet(self, *, quiet_ms: int, max_ms: int) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        frame = self.active_scope()
+        started = time.monotonic()
+        try:
+            await asyncio.wait_for(
+                frame.evaluate(
+                    """
+                    async ([quietMs, maxMs]) => {
+                      const deadline = performance.now() + maxMs;
+                      const quietFor = () => new Promise((resolve) => {
+                        let pending = 0;
+                        const done = () => { if (pending === 0) resolve(); };
+                        const observer = new MutationObserver((records) => {
+                          pending -= records.length;
+                          if (pending <= 0) { observer.disconnect(); done(); }
+                        });
+                        observer.observe(document.documentElement, {
+                          childList: true, subtree: true, attributes: true, characterData: true,
+                        });
+                        setTimeout(() => { observer.disconnect(); done(); }, quietMs);
+                      });
+                      for (;;) {
+                        await quietFor();
+                        if (performance.now() >= deadline) return false;
+                        return true;
+                      }
+                    }
+                    """,
+                    [quiet_ms, max_ms],
+                ),
+                timeout=(max_ms + 2000) / 1000.0,
+            )
+        except asyncio.TimeoutError:
+            pass
+        except Exception as exc:
+            raise BackendError(CODE_INVALID, f"quiet wait failed: {type(exc).__name__}") from exc
+        elapsed = int((time.monotonic() - started) * 1000)
+        return {"quiet": True, "quietMs": quiet_ms, "maxMs": max_ms, "elapsedMs": elapsed}
 
     async def snapshot(
         self,
@@ -1686,13 +1817,62 @@ class CamoufoxRuntime:
                 deadline_exceeded=True,
             ) from None
         if count != 1:
+            return await self._remap_stale_ref(page, tab, spec, meta, role, name, count)
+        return page, candidate
+
+    async def _remap_stale_ref(
+        self, page: Any, tab: Tab, spec: Any, meta: Dict[str, Any], role: str, name: Optional[str], fallback_count: int
+    ) -> Tuple[Any, Any]:
+        original_meta = {
+            key: meta[key] for key in ("role", "name", "url", "section") if key in meta
+        }
+        try:
+            await self.snapshot(selector=None, max_depth=None)
+        except asyncio.TimeoutError:
+            raise BackendError(
+                ic.CODE_TIMEOUT, "remapping ref '@{}' exceeded its snapshot deadline".format(spec.ref),
+                deadline_exceeded=True,
+            ) from None
+        except BackendError:
+            raise
+        except Exception as exc:
             raise BackendError(
                 CODE_STALE_REF,
-                f"ref '@{spec.ref}' no longer resolves to a page element (it was exposed by the latest snapshot "
-                f"but the element was re-rendered; role/name fallback found {count} candidates); "
+                f"ref '@{spec.ref}' could not be remapped (fresh snapshot failed: {type(exc).__name__}); "
                 "take a fresh snapshot",
-            )
-        return page, candidate
+            ) from exc
+        stale_ref_error = BackendError(
+            CODE_STALE_REF,
+            f"ref '@{spec.ref}' no longer resolves to a page element (it was exposed by the latest snapshot "
+            f"but the element was re-rendered; role/name fallback found {fallback_count} candidates); "
+            "take a fresh snapshot",
+        )
+        matches = [
+            new_ref for new_ref, new_meta in tab.refs_meta.items()
+            if new_ref != spec.ref and new_meta.get("role") == role and new_meta.get("name") == name
+        ]
+        if len(matches) != 1:
+            raise stale_ref_error
+        new_ref = matches[0]
+        new_locator = page.locator(f"aria-ref={new_ref}")
+        try:
+            new_count = await asyncio.wait_for(new_locator.count(), timeout=2)
+        except asyncio.TimeoutError:
+            raise BackendError(
+                ic.CODE_TIMEOUT, f"resolving ref '@{spec.ref}' exceeded its 2000ms watchdog",
+                deadline_exceeded=True,
+            ) from None
+        if new_count != 1:
+            raise stale_ref_error
+        tab.refs.discard(spec.ref)
+        tab.refs.add(new_ref)
+        tab.refs_meta.pop(spec.ref, None)
+        fresh_meta = tab.refs_meta[new_ref]
+        for key in ("url", "section"):
+            if key in original_meta and key not in fresh_meta:
+                fresh_meta[key] = original_meta[key]
+        tab.last_ref_remap = {"from": spec.ref, "to": new_ref}
+        return page, new_locator
 
     def require_exposed_ref(self, ref: str) -> None:
         _page, tab = self.require_active()
@@ -1859,6 +2039,7 @@ class CamoufoxRuntime:
             "recoveryRequired": self.recovery_required(),
             "closeReason": self._close_reason,
             "headless": self.headless,
+            "adblock": self.adblock,
             "motion": self.motion,
             "humanize": self.humanize,
             "activeTab": self.active_id,
