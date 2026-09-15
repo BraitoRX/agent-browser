@@ -65,6 +65,26 @@ class FakeOsnativeDispatch:
         pass
 
 
+class RefusingGuardOsnativeDispatch(FakeOsnativeDispatch):
+    """Simulates the geometry guard refusal: multiple Camoufox windows mapped
+    on the X display. The guard fires before any XTEST event is dispatched."""
+
+    def __init__(self):
+        super().__init__("Bogot")
+        self.guard_calls = 0
+
+    async def _guard(self):
+        self.guard_calls += 1
+        raise BackendError(
+            CODE_INVALID,
+            "os-native input refused: 2 Camoufox windows are mapped on the X display; "
+            "input would be ambiguous; close the extra windows and reobserve",
+        )
+
+    async def move(self, x, y, steps=None):
+        await self._guard()
+
+
 class FakeJournal:
     def __init__(self):
         self.keys = {}
@@ -158,6 +178,89 @@ async def _run_type_gesture_with_fakes(context, params):
         finally:
             if context.journal.keys.get(character):
                 context.journal.keys.pop(character, None)
+
+
+async def _run_click_gesture_with_refusing_guard(context, params):
+    from gestures._common import bounded
+
+    button = params.get("button", "left")
+    count = params.get("count", 1)
+    dispatch = context.input_dispatch()
+    journal = context.journal
+    context.set_stage("move")
+    context.note_input_dispatched()
+    await bounded(context, dispatch.move(100.0, 100.0), "mouse move")
+
+
+class GeometryGuardRefusalRegression(unittest.TestCase):
+    """A pre-dispatch geometry-guard refusal must not poison the session.
+
+    The os-native guard detects unsafe X display state (for example, multiple
+    Camoufox windows mapped after a window.open popup) and refuses input
+    before any XTEST event is dispatched. With the old CODE_ERROR
+    classification, that deterministic refusal poisoned the session as
+    ambiguous input and forced a full reset even though the safe recovery is
+    exactly what the message instructs: close the extra windows, reobserve,
+    and retry. The refusal must use CODE_INVALID, which _poison_failed_input
+    exempts, leaving the session usable.
+    """
+
+    def test_guard_refusal_is_clean_and_session_survives(self):
+        async def scenario():
+            runtime = make_runtime()[0]
+            runtime._input_attempts = 0
+            dispatch = RefusingGuardOsnativeDispatch()
+            journal = FakeJournal()
+            runtime.journal = journal
+            runtime.GestureContextClass = lambda _runtime, remaining_ms: SimpleNamespace(
+                input_dispatch=lambda: dispatch,
+                journal=journal,
+                set_stage=lambda _stage: None,
+                note_input_dispatched=lambda: setattr(
+                    runtime, "_input_attempts", getattr(runtime, "_input_attempts", 0) + 1
+                ),
+                diagnostics=lambda: {},
+                remaining_ms=lambda: 20000,
+                remaining_seconds=lambda: 20.0,
+                check_deadline=lambda: None,
+            )
+            runtime.release_inputs = AsyncMock(
+                return_value={"released": True, "buttons": [], "keys": []}
+            )
+            backend = worker.Worker.__new__(worker.Worker)
+            backend.poisoned = False
+            backend.poison = lambda message: setattr(backend, "poisoned", True)
+            backend.deadline_ms = 20000
+            backend._input_attempted_since = lambda _runtime, before: getattr(
+                runtime, "_input_attempts", 0
+            ) > before
+
+            spec = worker.GestureSpec(
+                name="click",
+                description="test",
+                schema={},
+                examples=[],
+                run=_run_click_gesture_with_refusing_guard,
+                module="<test>",
+                source="<test>",
+            )
+            with self.assertRaises(BackendError) as caught:
+                await backend._execute_gesture(
+                    runtime,
+                    spec,
+                    {"target": {"selector": "#player"}},
+                )
+            self.assertEqual(caught.exception.code, CODE_INVALID)
+            self.assertIn("2 Camoufox windows are mapped", caught.exception.message)
+            self.assertFalse(
+                backend.poisoned,
+                "a pre-dispatch guard refusal must not poison the session",
+            )
+            self.assertEqual(journal.pending_keys(), [])
+            self.assertEqual(journal.pending_buttons(), [])
+            self.assertEqual(dispatch.dispatched, [])
+
+        asyncio.run(scenario())
 
 
 class LatinKeymapContract(unittest.TestCase):

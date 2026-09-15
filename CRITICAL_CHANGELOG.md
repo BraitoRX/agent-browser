@@ -2,6 +2,13 @@
 
 Changes recorded here can break the locally configured Camoufox browser at runtime and are not captured by any published release. If the browser starts hanging clicks, hits the 22s worker deadline, and reports `camoufox_session_reset_required`, read this file first.
 
+## 2026-09-15 - Geometry guard refusals no longer poison the session
+
+- What: the os-native geometry guard's deterministic pre-dispatch refusals now raise `camoufox_invalid_params` instead of the generic `camoufox_error` (`camoufox-backend/osnative_input.py`: `_guard` window-mismatch refusals and `_screen_point` scale/out-of-window refusals). `_poison_failed_input` in `worker.py` exempts `camoufox_invalid_params`, so these refusals leave the session usable.
+- Why: with two Camoufox windows mapped on the X display (for example after a page `window.open` popup), the guard correctly refused to dispatch input ("input would be ambiguous; close the extra windows and reobserve") but its `camoufox_error` classification poisoned the session as ambiguous input, forcing a full close/reopen reset. The refusal is sent before any XTEST event, so the recovery is exactly what the message instructs: clean up the extra window, reobserve, retry. A real YouTube session hit this: a `tab_close` cleanup then also failed against the poisoned state, and the whole session had to be reset just to stop a video.
+- Risk: the exemption only covers the guard's refusal paths, which never dispatch XTEST events; post-dispatch ambiguity semantics are unchanged. Runtime/ambient failures (keymap remap at startup, viewport metrics read) keep `camoufox_error` and their conservative classification. A caller can no longer distinguish the guard refusal from an invalid-parameters failure by code alone; the message text still identifies the X display state. `tests/test_osnative_validation.py::GeometryGuardRefusalRegression` fails if the refusal code regresses to a poisoning classification.
+- Activation: source committed; requires the Rust binary rebuild (Python is embedded), an MCP reconnect, and a fresh daemon/container.
+
 ## 2026-09-15 - x11vnc DAMAGE tracking enabled (removes -noxdamage)
 
 - What: the bubble's x11vnc now runs with `-xdamage` instead of `-noxdamage` (`camoufox-backend/bubble.py`). The X DAMAGE extension lets Xvfb tell x11vnc exactly which screen regions changed; previously x11vnc polled the full 1920x1080 framebuffer for differences, re-reading and comparing roughly 8 MB by CPU on every pass, and a connected noVNC viewer made that continuous.

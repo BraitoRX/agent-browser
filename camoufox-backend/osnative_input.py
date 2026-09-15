@@ -303,7 +303,10 @@ class OsnativeInputDispatch:
     async def _guard(self) -> None:
         reason = await asyncio.to_thread(self.geometry.mismatch_reason, self.pointer)
         if reason is not None:
-            raise BackendError(CODE_ERROR, f"os-native input refused: {reason}")
+            raise BackendError(
+                CODE_INVALID,
+                f"os-native input refused: {reason}",
+            )
 
     async def _focus(self) -> None:
         await asyncio.to_thread(self.pointer.focus_window, self.geometry.window["focusId"])
@@ -328,7 +331,7 @@ class OsnativeInputDispatch:
         scale = window["width"] / inner_width
         if not SCALE_MIN <= scale <= SCALE_MAX:
             raise BackendError(
-                CODE_ERROR,
+                CODE_INVALID,
                 f"os-native input refused: window/viewport scale {scale:.3f} is outside the "
                 f"supported {SCALE_MIN}..{SCALE_MAX} range",
             )
@@ -339,7 +342,7 @@ class OsnativeInputDispatch:
         if not (window["x"] <= screen_x < window["x"] + window["width"]
                 and window["y"] <= screen_y < window["y"] + window["height"]):
             raise BackendError(
-                CODE_ERROR,
+                CODE_INVALID,
                 f"os-native input refused: target ({css_x:.1f}, {css_y:.1f}) maps outside "
                 "the browser window; input was not dispatched; reobserve before continuing",
             )
