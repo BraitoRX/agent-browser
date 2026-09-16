@@ -39,20 +39,21 @@ The browser's dominant CPU cost is video decode (YouTube H.264/VP9), not composi
 
 ## PoC result and implications
 
-The libkrun path works on this Mac end to end for Vulkan forwarding: the VM boots (Podman 6.1.1 machine with provider `libkrun`, krunkit 1.3.2), `/dev/dri/renderD128` exists in the guest, devices pass into containers, and `vulkaninfo --summary` inside a container reports `Virtio-GPU Venus (Apple M4)` as an integrated physical device through Mesa 25.3.6 Venus. The forwarding chain container, Venus, virtio-gpu, libkrun, MoltenVK, Metal is live.
+The libkrun path works on this Mac end to end for Vulkan forwarding: the VM boots (Podman 6.1.1 machine with provider `libkrun`, krunkit 1.3.2), `/dev/dri/renderD128` exists in the guest, devices pass into containers, and `vulkaninfo --summary` inside a container reports `Virtio-GPU Venus (Apple M4)` as an integrated physical device through Mesa 25.3.6 Venus. The forwarding chain container, Venus, virtio-gpu, libkrun, MoltenVK, Metal is live. llama.cpp inside a container detects the device (`ggml_vulkan: 0 = Virtio-GPU Venus (Apple M4) | uma: 1 | fp16: 1`).
+
+The browser goal, however, is blocked, and the experiment located the exact blockers:
+
+- **The libkrun virtio-gpu is render-only, with no KMS.** strace of Xorg in the container shows `DRM_IOCTL_MODE_GETRESOURCES` failing with `EOPNOTSUPP`: no connectors, no CRTC, no scanout. Xorg modesetting therefore reports `No devices detected` / `no screens found` on both `card0` and `renderD128`. Without KMS there is no accelerated X framebuffer for x11vnc/noVNC to serve, which is the bubble's entire display model.
+- **Xvfb stays llvmpipe by design** (`Accelerated: no` in glxinfo); it never consumes a GPU regardless of what the VM exposes.
+- **Firefox on the guest runs, but its WebGL renderer is `llvmpipe`** (captured from webglreport.com under Xvfb via xwd): Firefox aarch64 Linux does not consume Venus Vulkan for WebGL in this setup, and an ANGLE-on-Venus stack is not available in any known image.
+- Video decode remains unaccelerated regardless (see the VA-API section).
 
 Practical constraints confirmed during the run:
 
-- Stock Fedora 41 Mesa fails with `VK_ERROR_OUT_OF_HOST_MEMORY` in `vkCreateInstance` (krunkit #114); the RamaLama image (`quay.io/ramalama/ramalama`), which carries the patched Mesa, enumerates the GPU successfully.
-- The RamaLama image also attempts the Asahi native context path and fails on `card0` permissions; Venus still works because the container only needs `renderD128`. Granting `card0` access would be a further experiment, not a requirement for Vulkan compute.
+- Stock Fedora 41 Mesa fails with `VK_ERROR_OUT_OF_HOST_MEMORY` in `vkCreateInstance` (krunkit #114); the RamaLama image (`quay.io/ramalama/ramalama`) or the `copr:slp/mesa-libkrun-vulkan` package (Mesa 25.3.6) enumerates the GPU successfully.
+- Rootless device ownership blocks `card0` inside containers (`nobody 660`); the workaround is `chmod 666` on the VM's device nodes plus `--userns=host`, and even then only the render node is functionally useful.
 - Nested virtualization (`--nested`) is passed by Podman 6.1.1 on this M4 and works.
 - A long image pull through the nested container stack can stall the VM's network responsiveness; run image pulls before starting latency-sensitive work.
+- `podman run --rm` reinstalls packages every run; use a persistent container with `podman exec` for iterative experiments.
 
-Even with Vulkan forwarding confirmed, a browser-based bubble migration would additionally require:
-
-1. Replacing Xvfb with Xorg modesetting over the render node, since Xvfb never consumes a GPU regardless of host capabilities.
-2. A guest image with Mesa Venus patched for 16 KiB alignment (Fedora-based, or patched Debian).
-3. Daemon changes: `docker run` becomes `podman run` with `--device /dev/dri`, plus losing OrbStack container domains (`orb.local`) and the fixed noVNC domain built earlier.
-4. Accepting that video decode stays on CPU unless the QEMU/virgl video flag work lands in libkrun.
-
-Decision rule adopted: keep the OrbStack bubble as the daily driver; revisit a libkrun migration when the QEMU video flag lands upstream or in a krunkit release. For video-heavy viewing on the same machine, run a second, native Camoufox session (GPU plus VideoToolbox decode, no input isolation) alongside the bubble.
+Conclusion: keep the OrbStack bubble as the daily driver. The libkrun GPU path is real and now proven end to end for Vulkan compute, but it cannot serve the bubble's X11 display model (no KMS, no ANGLE-for-Venus browser path, no video decode). Revisit when (a) the QEMU/virgl video flag lands upstream or in krunkit, and (b) libkrun exposes a KMS-capable virtio-gpu or a documented GLX path for browsers. For video-heavy viewing on the same machine, run a second, native Camoufox session (GPU plus VideoToolbox decode, no input isolation) alongside the bubble.
