@@ -4685,7 +4685,8 @@ mod tests {
             "extraArgs": ["--executable-path", "C:\\Chrome for Testing\\chrome.exe"]
         });
         let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
-        let flags = crate::flags::parse_flags(&args);
+        let mut flags = crate::flags::parse_flags(&args);
+        flags.engine = Some("chrome".to_string());
         assert!(!flags.headed);
         assert!(flags.cli_headed);
         assert_eq!(

@@ -346,13 +346,17 @@ pub fn parse_command(args: &[String], flags: &Flags) -> Result<Value, ParseError
         }
     }
     attach_ca_cert_to_launch_command(&mut result, flags);
-    if flags.adblock && flags.engine.as_deref() != Some("camoufox") {
+    let effective_engine = flags
+        .engine
+        .clone()
+        .unwrap_or_else(|| crate::resolve_default_engine());
+    if flags.adblock && effective_engine != "camoufox" {
         return Err(ParseError::InvalidValue {
             message: "--adblock is supported only by the Camoufox engine".to_string(),
             usage: "--engine camoufox --adblock <command>",
         });
     }
-    if flags.engine.as_deref() == Some("camoufox") {
+    if effective_engine == "camoufox" {
         let action = result
             .get("action")
             .and_then(Value::as_str)
@@ -2513,7 +2517,12 @@ fn parse_paginated_page_command(
 }
 
 fn parse_read(rest: &[&str], id: &str, flags: &Flags) -> Result<Value, ParseError> {
-    if flags.engine.as_deref() == Some("camoufox") {
+    if flags
+        .engine
+        .as_deref()
+        .unwrap_or(&crate::resolve_default_engine())
+        == "camoufox"
+    {
         if !rest.is_empty() {
             return Err(ParseError::InvalidValue {
                 message: "Camoufox V1 read returns rendered text of the current page only; navigate first and omit read options".to_string(), usage: "read",
@@ -3729,6 +3738,7 @@ mod tests {
 
     fn default_flags() -> Flags {
         Flags {
+            engine: Some("chrome".to_string()),
             session: "test".to_string(),
             json: false,
             headed: false,
@@ -3797,7 +3807,6 @@ mod tests {
             action_policy: None,
             confirm_actions: None,
             confirm_interactive: false,
-            engine: None,
             screenshot_dir: None,
             screenshot_quality: None,
             screenshot_format: None,

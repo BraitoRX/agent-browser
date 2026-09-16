@@ -4180,7 +4180,8 @@ Options:
   --action-policy <path>     Action policy JSON file (or AGENT_BROWSER_ACTION_POLICY)
   --confirm-actions <list>   Categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
   --confirm-interactive      Interactive confirmation prompts; auto-denies if stdin is not a TTY (or AGENT_BROWSER_CONFIRM_INTERACTIVE)
-  --engine <name>            Browser engine: chrome (default), camoufox
+  --engine <name>            Browser engine: camoufox (default when the runtime
+                           is installed), chrome
   --input-backend <name>     Camoufox only: input dispatch backend, juggler (default, browser-internal)
                              or os-native (XTEST against the browser's private X display, delivered
                              inside a container bubble). Requires Docker/OrbStack and the bubble image
@@ -4284,7 +4285,7 @@ Environment:
   AGENT_BROWSER_CONFIRM_ACTIONS  Action categories requiring confirmation
   AGENT_BROWSER_CONFIRM_INTERACTIVE Enable interactive confirmation prompts
   AGENT_BROWSER_NO_AUTO_DIALOG   Disable automatic dismissal of alert/beforeunload dialogs
-  AGENT_BROWSER_ENGINE           Browser engine: chrome (default), camoufox
+  AGENT_BROWSER_ENGINE           Browser engine: camoufox (default when the runtime is installed), chrome
   AGENT_BROWSER_CAMOUFOX_RUNTIME Absolute private Camoufox runtime root
   AGENT_BROWSER_PROFILE         Persistent profile directory; Camoufox requires an absolute private path
   AGENT_BROWSER_PYTHON           Install-time Python executable (default python3)

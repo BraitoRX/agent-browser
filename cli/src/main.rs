@@ -241,8 +241,22 @@ fn incompatible_launch_mode_error(flags: &Flags) -> Option<&'static str> {
     None
 }
 
+/// Effective engine for this invocation: an explicit --engine wins; without
+/// one, Camoufox becomes the default when its runtime is installed, and the
+/// upstream chrome path remains the fallback for bare installs.
+pub fn resolve_default_engine() -> String {
+    if native::camoufox::runtime_dir().is_ok() {
+        return "camoufox".to_string();
+    }
+    "chrome".to_string()
+}
+
+fn resolve_engine(flags: &Flags) -> String {
+    flags.engine.clone().unwrap_or_else(resolve_default_engine)
+}
+
 fn should_send_local_launch_config(flags: &Flags, command: &serde_json::Value) -> bool {
-    if flags.engine.as_deref() == Some("camoufox") {
+    if resolve_engine(flags) == "camoufox" {
         return false;
     }
     (flags.headed
@@ -1426,10 +1440,13 @@ fn main() {
         return;
     }
 
+    let effective_engine = resolve_engine(&flags);
+    let camoufox_default = effective_engine == "camoufox";
+
     // Handle install separately
     if clean.first().map(|s| s.as_str()) == Some("install") {
         let with_deps = args.iter().any(|a| a == "--with-deps" || a == "-d");
-        if flags.engine.as_deref() == Some("camoufox") {
+        if camoufox_default {
             let result = if with_deps {
                 Err("Camoufox install does not support --with-deps; provision OS libraries separately".to_string())
             } else {
@@ -1463,7 +1480,7 @@ fn main() {
 
     // Handle upgrade separately
     if clean.first().map(|s| s.as_str()) == Some("upgrade") {
-        if flags.engine.as_deref() == Some("camoufox") {
+        if camoufox_default {
             eprintln!("{} Camoufox fork updates are manual. Follow docs/fork-maintenance.md; upstream package-manager upgrades do not contain this backend.", color::error_indicator());
             exit(1);
         }
@@ -1561,7 +1578,7 @@ fn main() {
     // Handle MCP stdio server mode. This must never share stdout with normal
     // CLI output because stdout is reserved for JSON-RPC protocol messages.
     if clean.first().map(|s| s.as_str()) == Some("mcp") {
-        if flags.engine.as_deref() == Some("camoufox") {
+        if camoufox_default {
             if let Err(error) = native::camoufox::validate_flags(&flags) {
                 eprintln!("{} {}", color::error_indicator(), error);
                 exit(1);
@@ -1799,7 +1816,7 @@ fn main() {
         allowed_domains: flags.allowed_domains.as_deref(),
         action_policy: flags.action_policy.as_deref(),
         confirm_actions: flags.confirm_actions.as_deref(),
-        engine: flags.engine.as_deref(),
+        engine: Some(effective_engine.as_str()),
         auto_connect: flags.auto_connect,
         pin_tab: flags.pin_tab,
         idle_timeout: flags.idle_timeout.as_deref(),
@@ -2108,9 +2125,7 @@ fn main() {
 
         attach_allowed_domains_to_launch_command(&mut launch_cmd, &flags);
 
-        if let Some(ref engine) = flags.engine {
-            launch_cmd["engine"] = json!(engine);
-        }
+        launch_cmd["engine"] = json!(effective_engine);
 
         match send_command(launch_cmd, &flags.session) {
             Ok(resp) if !resp.success => {
@@ -2642,7 +2657,9 @@ mod tests {
     #[test]
     fn test_connect_launch_command_preserves_ca_clear_transition() {
         let mut flags = neutral_launch_config_flags();
+        flags.engine = Some("chrome".to_string());
         flags.clear_ca_cert = true;
+        flags.cdp = None;
         let cmd = parse_command(&["connect".to_string(), "9222".to_string()], &flags).unwrap();
 
         assert_eq!(cmd["cdpPort"], 9222);
@@ -2667,8 +2684,9 @@ mod tests {
     #[test]
     fn test_allowed_domains_requests_local_launch_configuration() {
         let mut flags = neutral_launch_config_flags();
+        flags.engine = Some("chrome".to_string());
         let command = json!({ "action": "snapshot" });
-        assert!(!should_send_local_launch_config(&flags, &command));
+        assert!(should_send_local_launch_config(&flags, &command));
 
         flags.allowed_domains = Some(vec!["example.com".to_string()]);
         assert!(should_send_local_launch_config(&flags, &command));
@@ -2680,6 +2698,7 @@ mod tests {
     #[test]
     fn test_no_webmcp_requests_local_launch_configuration() {
         let mut flags = neutral_launch_config_flags();
+        flags.engine = Some("chrome".to_string());
         let command = json!({ "action": "snapshot" });
         flags.no_webmcp = true;
         flags.cli_no_webmcp = true;

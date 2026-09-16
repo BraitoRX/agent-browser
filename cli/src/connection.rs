@@ -1297,7 +1297,7 @@ mod tests {
             allowed_domains,
             action_policy: None,
             confirm_actions: None,
-            engine: None,
+            engine: Some("chrome"),
             auto_connect: false,
             pin_tab: false,
             idle_timeout,
