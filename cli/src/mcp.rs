@@ -115,13 +115,9 @@ const TOOL_TRACE_START: &str = "agent_browser_trace_start";
 const TOOL_TRACE_STOP: &str = "agent_browser_trace_stop";
 const TOOL_PROFILER_START: &str = "agent_browser_profiler_start";
 const TOOL_PROFILER_STOP: &str = "agent_browser_profiler_stop";
-const TOOL_RECORD_START: &str = "agent_browser_record_start";
-const TOOL_RECORD_STOP: &str = "agent_browser_record_stop";
-const TOOL_RECORD_RESTART: &str = "agent_browser_record_restart";
 const TOOL_CONSOLE: &str = "agent_browser_console";
 const TOOL_ERRORS: &str = "agent_browser_errors";
 const TOOL_HIGHLIGHT: &str = "agent_browser_highlight";
-const TOOL_INSPECT: &str = "agent_browser_inspect";
 const TOOL_CLIPBOARD_READ: &str = "agent_browser_clipboard_read";
 const TOOL_CLIPBOARD_WRITE: &str = "agent_browser_clipboard_write";
 const TOOL_CLIPBOARD_COPY: &str = "agent_browser_clipboard_copy";
@@ -161,10 +157,6 @@ const TOOL_PROFILES: &str = "agent_browser_profiles";
 const TOOL_SKILLS_LIST: &str = "agent_browser_skills_list";
 const TOOL_SKILLS_GET: &str = "agent_browser_skills_get";
 const TOOL_SKILLS_PATH: &str = "agent_browser_skills_path";
-const TOOL_PLUGIN_ADD: &str = "agent_browser_plugin_add";
-const TOOL_PLUGIN_LIST: &str = "agent_browser_plugin_list";
-const TOOL_PLUGIN_SHOW: &str = "agent_browser_plugin_show";
-const TOOL_PLUGIN_RUN: &str = "agent_browser_plugin_run";
 const TOOL_DOCTOR: &str = "agent_browser_doctor";
 const TOOL_DASHBOARD_START: &str = "agent_browser_dashboard_start";
 const TOOL_DASHBOARD_STOP: &str = "agent_browser_dashboard_stop";
@@ -263,7 +255,7 @@ impl ToolProfile {
             Self::Core => "Everyday browser automation with navigation, snapshots, common interaction, waits, screenshots, basic reads, tab basics, JavaScript eval, close, and profile discovery.",
             Self::Network => "Network interception, request inspection, HAR capture, headers, credentials, and offline mode.",
             Self::State => "Cookies, storage, auth profiles, saved browser state, sessions, Chrome profiles, and bundled skills.",
-            Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, recording, clipboard, plugin registry and plugin command.run, doctor, dashboard, install, upgrade, and chat.",
+            Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, clipboard, doctor, dashboard, install, upgrade, and chat.",
             Self::Tabs => "Tab, window, frame, and JavaScript dialog management.",
             Self::Mobile => "Viewport/device/geolocation/media emulation plus touch, swipe, and lower-level mouse tools.",
             Self::Webmcp => "Experimental page-provided WebMCP discovery, invocation, detached results, and cancellation.",
@@ -499,9 +491,6 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
     TOOL_TRACE_STOP,
     TOOL_PROFILER_START,
     TOOL_PROFILER_STOP,
-    TOOL_RECORD_START,
-    TOOL_RECORD_STOP,
-    TOOL_RECORD_RESTART,
     TOOL_VITALS,
     TOOL_PUSHSTATE,
     TOOL_REMOVE_INIT_SCRIPT,
@@ -509,7 +498,6 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
     TOOL_CONSOLE,
     TOOL_ERRORS,
     TOOL_HIGHLIGHT,
-    TOOL_INSPECT,
     TOOL_CLIPBOARD_READ,
     TOOL_CLIPBOARD_WRITE,
     TOOL_CLIPBOARD_COPY,
@@ -523,10 +511,6 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
     TOOL_STREAM_ENABLE,
     TOOL_STREAM_DISABLE,
     TOOL_STREAM_STATUS,
-    TOOL_PLUGIN_ADD,
-    TOOL_PLUGIN_LIST,
-    TOOL_PLUGIN_SHOW,
-    TOOL_PLUGIN_RUN,
     TOOL_DOCTOR,
     TOOL_DASHBOARD_START,
     TOOL_DASHBOARD_STOP,
@@ -1791,51 +1775,6 @@ fn parity_tools() -> Vec<Value> {
             &[],
         ),
         tool(
-            TOOL_RECORD_START,
-            "Record start",
-            "Start video recording of the current active page. Captures 30 fps by default; pass fps up to 60 for motion-heavy takes. Pass url to navigate the active tab there first. Use agent_browser_tab_new beforehand to record in a separate tab.",
-            json!({
-                "path": {
-                    "type": "string",
-                    "description": "Output file; .webm (VP8) and .mp4 (H.264) are the supported formats, other extensions are handed to ffmpeg as-is with H.264 video. Must have an extension. Needs ffmpeg on PATH.",
-                },
-                "url": { "type": "string", "description": "Navigate the active tab to this URL before recording starts." },
-                "fps": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": crate::native::recording::MAX_FPS,
-                    "description": "Capture rate in frames per second (default 30, max 60).",
-                },
-            }),
-            &["path"],
-        ),
-        tool(
-            TOOL_RECORD_STOP,
-            "Record stop",
-            "Stop video recording.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            TOOL_RECORD_RESTART,
-            "Record restart",
-            "Restart video recording. Captures 30 fps by default; pass fps up to 60 for motion-heavy takes.",
-            json!({
-                "path": {
-                    "type": "string",
-                    "description": "Output file; .webm (VP8) and .mp4 (H.264) are the supported formats, other extensions are handed to ffmpeg as-is with H.264 video. Must have an extension. Needs ffmpeg on PATH.",
-                },
-                "url": { "type": "string" },
-                "fps": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": crate::native::recording::MAX_FPS,
-                    "description": "Capture rate in frames per second (default 30, max 60).",
-                },
-            }),
-            &["path"],
-        ),
-        tool(
             TOOL_CONSOLE,
             "Console logs",
             "Read console logs.",
@@ -1855,13 +1794,6 @@ fn parity_tools() -> Vec<Value> {
             "Highlight an element.",
             json!({ "selector": selector_schema() }),
             &["selector"],
-        ),
-        tool(
-            TOOL_INSPECT,
-            "Inspect",
-            "Open Chrome DevTools.",
-            json!({}),
-            &[],
         ),
         tool(
             TOOL_CLIPBOARD_READ,
@@ -2115,44 +2047,6 @@ fn parity_tools() -> Vec<Value> {
             "Print skill directory path.",
             json!({ "name": { "type": "string" } }),
             &[],
-        ),
-        tool(
-            TOOL_PLUGIN_ADD,
-            "Plugin add",
-            "Add a plugin from npm or GitHub to agent-browser config.",
-            json!({
-                "reference": { "type": "string", "description": "npm package, scoped package, or owner/repo GitHub reference." },
-                "name": { "type": "string", "description": "Override the configured plugin name." },
-                "capabilities": string_array_schema("Capabilities to declare when manifest discovery is skipped or unavailable."),
-                "global": { "type": "boolean", "default": false, "description": "Write ~/.agent-browser/config.json instead of ./agent-browser.json." },
-                "noManifest": { "type": "boolean", "default": false, "description": "Skip plugin.manifest discovery." }
-            }),
-            &["reference"],
-        ),
-        tool(
-            TOOL_PLUGIN_LIST,
-            "Plugin list",
-            "List configured plugins.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            TOOL_PLUGIN_SHOW,
-            "Plugin show",
-            "Show one configured plugin.",
-            json!({ "name": { "type": "string" } }),
-            &["name"],
-        ),
-        tool(
-            TOOL_PLUGIN_RUN,
-            "Plugin run",
-            "Run a command.run or custom plugin request.",
-            json!({
-                "name": { "type": "string", "description": "Configured plugin name." },
-                "requestType": { "type": "string", "description": "Namespaced request type to send to the plugin." },
-                "payload": { "type": "object", "additionalProperties": true, "description": "JSON object payload to send as the plugin request." }
-            }),
-            &["name", "requestType"],
         ),
         tool(
             TOOL_DOCTOR,
@@ -2450,8 +2344,6 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_SKILLS_LIST
             | TOOL_SKILLS_GET
             | TOOL_SKILLS_PATH
-            | TOOL_PLUGIN_LIST
-            | TOOL_PLUGIN_SHOW
     )
 }
 
@@ -2467,8 +2359,6 @@ fn is_open_world_tool(name: &str) -> bool {
             | TOOL_SKILLS_LIST
             | TOOL_SKILLS_GET
             | TOOL_SKILLS_PATH
-            | TOOL_PLUGIN_LIST
-            | TOOL_PLUGIN_SHOW
             | TOOL_DOCTOR
             | TOOL_DASHBOARD_START
             | TOOL_DASHBOARD_STOP
@@ -2661,13 +2551,9 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_TRACE_STOP => call_optional_one(arguments, &["trace", "stop"], "path"),
         TOOL_PROFILER_START => call_profiler_start(arguments),
         TOOL_PROFILER_STOP => call_optional_one(arguments, &["profiler", "stop"], "path"),
-        TOOL_RECORD_START => call_record_start(arguments, "start"),
-        TOOL_RECORD_STOP => call_literal(arguments, &["record", "stop"]),
-        TOOL_RECORD_RESTART => call_record_start(arguments, "restart"),
         TOOL_CONSOLE => call_clearable(arguments, "console"),
         TOOL_ERRORS => call_clearable(arguments, "errors"),
         TOOL_HIGHLIGHT => call_simple_selector(arguments, "highlight"),
-        TOOL_INSPECT => call_literal(arguments, &["inspect"]),
         TOOL_CLIPBOARD_READ => call_literal(arguments, &["clipboard", "read"]),
         TOOL_CLIPBOARD_WRITE => call_one_string(arguments, "clipboard write", "text"),
         TOOL_CLIPBOARD_COPY => call_literal(arguments, &["clipboard", "copy"]),
@@ -2707,10 +2593,6 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_SKILLS_LIST => call_literal(arguments, &["skills", "list"]),
         TOOL_SKILLS_GET => call_skills_get(arguments),
         TOOL_SKILLS_PATH => call_optional_one(arguments, &["skills", "path"], "name"),
-        TOOL_PLUGIN_ADD => call_plugin_add(arguments),
-        TOOL_PLUGIN_LIST => call_literal(arguments, &["plugin", "list"]),
-        TOOL_PLUGIN_SHOW => call_one_string(arguments, "plugin show", "name"),
-        TOOL_PLUGIN_RUN => call_plugin_run(arguments),
         TOOL_DOCTOR => call_doctor(arguments),
         TOOL_DASHBOARD_START => call_dashboard_start(arguments),
         TOOL_DASHBOARD_STOP => call_literal(arguments, &["dashboard", "stop"]),
@@ -3538,24 +3420,6 @@ fn call_profiler_start(arguments: &Value) -> Result<Value, ProtocolError> {
     call_cli_tool(arguments, args, None)
 }
 
-fn record_command_args(arguments: &Value, action: &str) -> Result<Vec<String>, ProtocolError> {
-    let path = required_string(arguments, "path")?;
-    let mut args = vec!["record".to_string(), action.to_string(), path];
-    if let Some(url) = optional_string(arguments, "url")? {
-        args.push(url);
-    }
-    if let Some(fps) = optional_u64(arguments, "fps")? {
-        args.push("--fps".to_string());
-        args.push(fps.to_string());
-    }
-    Ok(args)
-}
-
-fn call_record_start(arguments: &Value, action: &str) -> Result<Value, ProtocolError> {
-    let args = record_command_args(arguments, action)?;
-    call_cli_tool(arguments, args, None)
-}
-
 fn call_clearable(arguments: &Value, command: &str) -> Result<Value, ProtocolError> {
     let mut args = vec![command.to_string()];
     if optional_bool(arguments, "clear")?.unwrap_or(false) {
@@ -3792,49 +3656,6 @@ fn call_skills_get(arguments: &Value) -> Result<Value, ProtocolError> {
         args.push("--full".to_string());
     }
     call_cli_tool(arguments, args, None)
-}
-
-fn call_plugin_add(arguments: &Value) -> Result<Value, ProtocolError> {
-    call_cli_tool(arguments, plugin_add_args(arguments)?, None)
-}
-
-fn plugin_add_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
-    let reference = required_string(arguments, "reference")?;
-    let mut args = vec!["plugin".to_string(), "add".to_string(), reference];
-    if let Some(name) = optional_string(arguments, "name")? {
-        args.push("--name".to_string());
-        args.push(name);
-    }
-    if let Some(capabilities) = optional_string_array(arguments, "capabilities")? {
-        for capability in capabilities {
-            args.push("--capability".to_string());
-            args.push(capability);
-        }
-    }
-    if optional_bool(arguments, "global")?.unwrap_or(false) {
-        args.push("--global".to_string());
-    }
-    if optional_bool(arguments, "noManifest")?.unwrap_or(false) {
-        args.push("--no-manifest".to_string());
-    }
-    Ok(args)
-}
-
-fn call_plugin_run(arguments: &Value) -> Result<Value, ProtocolError> {
-    call_cli_tool(arguments, plugin_run_args(arguments)?, None)
-}
-
-fn plugin_run_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
-    let name = required_string(arguments, "name")?;
-    let request_type = required_string(arguments, "requestType")?;
-    let mut args = vec!["plugin".to_string(), "run".to_string(), name, request_type];
-    if let Some(payload) = optional_value(arguments, "payload")? {
-        let payload = serde_json::to_string(payload)
-            .map_err(|e| ProtocolError::invalid_params(format!("payload encode error: {}", e)))?;
-        args.push("--payload".to_string());
-        args.push(payload);
-    }
-    Ok(args)
 }
 
 /// Build the CLI args for the doctor tool. offline/quick/fix are parsed by
@@ -4487,10 +4308,6 @@ mod tests {
         assert!(names.contains(&TOOL_GET_CDP_URL));
         assert!(names.contains(&TOOL_NETWORK_HAR_START));
         assert!(names.contains(&TOOL_SKILLS_GET));
-        assert!(names.contains(&TOOL_PLUGIN_ADD));
-        assert!(names.contains(&TOOL_PLUGIN_LIST));
-        assert!(names.contains(&TOOL_PLUGIN_SHOW));
-        assert!(names.contains(&TOOL_PLUGIN_RUN));
         assert!(names.contains(&TOOL_SESSION_ID));
         assert!(names.contains(&TOOL_SESSION_INFO));
         assert!(!names.contains(&"agent_browser_frame_list"));
@@ -4705,7 +4522,6 @@ mod tests {
         assert!(names.contains(&TOOL_CLICK));
         assert!(names.contains(&TOOL_SCREENSHOT));
         assert!(!names.contains(&TOOL_NETWORK_HAR_START));
-        assert!(!names.contains(&TOOL_PLUGIN_LIST));
         assert!(result.get("nextCursor").is_none());
     }
 
@@ -4858,54 +4674,6 @@ mod tests {
     }
 
     #[test]
-    fn plugin_add_args_include_registry_options() {
-        let args = plugin_add_args(&json!({
-            "reference": "@company/agent-browser-plugin-vault",
-            "name": "vault",
-            "capabilities": ["credential.read", "command.run"],
-            "global": true,
-            "noManifest": true,
-        }))
-        .unwrap();
-
-        assert_eq!(
-            args,
-            vec![
-                "plugin",
-                "add",
-                "@company/agent-browser-plugin-vault",
-                "--name",
-                "vault",
-                "--capability",
-                "credential.read",
-                "--capability",
-                "command.run",
-                "--global",
-                "--no-manifest",
-            ]
-        );
-    }
-
-    #[test]
-    fn plugin_run_args_encode_payload() {
-        let args = plugin_run_args(&json!({
-            "name": "captcha",
-            "requestType": "captcha.solve",
-            "payload": {
-                "siteKey": "abc",
-                "url": "https://example.com"
-            },
-        }))
-        .unwrap();
-
-        assert_eq!(args[0..4], ["plugin", "run", "captcha", "captcha.solve"]);
-        assert_eq!(args[4], "--payload");
-        let payload: Value = serde_json::from_str(&args[5]).unwrap();
-        assert_eq!(payload["siteKey"], "abc");
-        assert_eq!(payload["url"], "https://example.com");
-    }
-
-    #[test]
     fn common_global_args_use_equals_form_for_string_restore_key() {
         let mut args = Vec::new();
 
@@ -5037,61 +4805,6 @@ mod tests {
             .unwrap();
         // Must stay in sync with the CLI parser's accepted --content values.
         assert_eq!(modes, &vec![json!("all"), json!("text"), json!("none")]);
-    }
-
-    #[test]
-    fn record_schema_and_args_include_fps() {
-        for name in [TOOL_RECORD_START, TOOL_RECORD_RESTART] {
-            let tool = tools()
-                .into_iter()
-                .find(|tool| tool["name"].as_str() == Some(name))
-                .unwrap();
-            let fps = &tool["inputSchema"]["properties"]["fps"];
-            assert_eq!(fps["type"], "integer");
-            assert_eq!(fps["minimum"], json!(1));
-            // Must stay in sync with the CLI parser's --fps ceiling.
-            assert_eq!(fps["maximum"], json!(crate::native::recording::MAX_FPS));
-
-            // The parser requires an extension and the two tuned formats are
-            // the ones to steer callers toward.
-            let path_desc = tool["inputSchema"]["properties"]["path"]["description"]
-                .as_str()
-                .unwrap();
-            for needle in [".webm", ".mp4", "ffmpeg"] {
-                assert!(
-                    path_desc.contains(needle),
-                    "{} path description should mention {}: {}",
-                    name,
-                    needle,
-                    path_desc
-                );
-            }
-        }
-
-        assert_eq!(
-            record_command_args(&json!({ "path": "demo.webm", "fps": 60 }), "start").unwrap(),
-            vec!["record", "start", "demo.webm", "--fps", "60"]
-        );
-        assert_eq!(
-            record_command_args(
-                &json!({ "path": "take2.webm", "url": "https://example.com", "fps": 24 }),
-                "restart"
-            )
-            .unwrap(),
-            vec![
-                "record",
-                "restart",
-                "take2.webm",
-                "https://example.com",
-                "--fps",
-                "24"
-            ]
-        );
-        // Omitting fps leaves the default to the CLI parser and daemon.
-        assert_eq!(
-            record_command_args(&json!({ "path": "demo.webm" }), "start").unwrap(),
-            vec!["record", "start", "demo.webm"]
-        );
     }
 
     #[test]
@@ -5403,7 +5116,6 @@ mod tests {
         assert!(!config.allows(TOOL_UPLOAD));
         assert!(!config.allows(TOOL_A11Y));
         assert!(!config.allows(TOOL_WINDOW_NEW));
-        assert!(!config.allows(TOOL_PLUGIN_RUN));
         assert!(!config.allows(TOOL_CHAT));
 
         let available = tools_for_config(&config);
@@ -5620,7 +5332,6 @@ mod tests {
         assert!(config.allows(TOOL_COOKIES_CLEAR));
         assert!(!config.allows(TOOL_UPLOAD));
         assert!(!config.allows(TOOL_PROFILES));
-        assert!(!config.allows(TOOL_PLUGIN_RUN));
         assert!(!config.allows(TOOL_DOCTOR));
         assert!(!config.allows(TOOL_DASHBOARD_START));
         assert!(!config.allows(TOOL_CHAT));
@@ -5651,7 +5362,6 @@ mod tests {
         let debug = McpConfig::from_profiles_for_engine(vec![ToolProfile::Debug], false);
         assert!(debug.allows(TOOL_A11Y));
         assert!(debug.allows(TOOL_UPLOAD));
-        assert!(debug.allows(TOOL_PLUGIN_RUN));
 
         let all = McpConfig::from_profiles_for_engine(vec![ToolProfile::All], false);
         assert!(all.allows(TOOL_A11Y));

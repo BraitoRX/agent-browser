@@ -446,15 +446,6 @@ fn format_a11y_target(target: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Render a recording's capture rate as a trailing " (30 fps)", or nothing
-/// when the payload predates the field.
-fn recording_fps_suffix(data: &serde_json::Value) -> String {
-    data.get("fps")
-        .and_then(|v| v.as_u64())
-        .map(|fps| format!(" ({} fps)", fps))
-        .unwrap_or_default()
-}
-
 pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &OutputOptions) {
     if opts.json {
         if opts.content_boundaries {
@@ -591,23 +582,6 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                 println!("{}", output);
                 return;
             }
-        }
-        // Inspect response (check before generic URL handler since it also has a "url" field)
-        if action == Some("inspect") {
-            let opened = data
-                .get("opened")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            if opened {
-                if let Some(url) = data.get("url").and_then(|v| v.as_str()) {
-                    println!("{} Opened DevTools: {}", color::success_indicator(), url);
-                } else {
-                    println!("{} Opened DevTools", color::success_indicator());
-                }
-            } else if let Some(err) = data.get("error").and_then(|v| v.as_str()) {
-                eprintln!("Could not open DevTools: {}", err);
-            }
-            return;
         }
         if action == Some("read") {
             if let Some(content) = data.get("content").and_then(|v| v.as_str()) {
@@ -1067,7 +1041,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{} {}", color::success_indicator(), label);
             return;
         }
-        // Started actions (profiling, HAR, recording)
+        // Started actions (profiling, HAR)
         if let Some(started) = data.get("started").and_then(|v| v.as_bool()) {
             if started {
                 match action {
@@ -1077,70 +1051,10 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                     Some("har_start") => {
                         println!("{} HAR recording started", color::success_indicator());
                     }
-                    _ => {
-                        let rate = recording_fps_suffix(data);
-                        if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
-                            println!(
-                                "{} Recording started: {}{}",
-                                color::success_indicator(),
-                                path,
-                                rate
-                            );
-                        } else {
-                            println!("{} Recording started{}", color::success_indicator(), rate);
-                        }
-                    }
+                    _ => {}
                 }
                 return;
             }
-        }
-        // Recording restart (has "restarted" field - from recording_restart action)
-        if data.get("restarted").is_some() {
-            let path = data
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("unknown");
-            let rate = recording_fps_suffix(data);
-            if let Some(prev_path) = data.get("previousPath").and_then(|v| v.as_str()) {
-                println!(
-                    "{} Recording restarted: {}{} (previous saved to {})",
-                    color::success_indicator(),
-                    path,
-                    rate,
-                    prev_path
-                );
-            } else {
-                println!(
-                    "{} Recording started: {}{}",
-                    color::success_indicator(),
-                    path,
-                    rate
-                );
-            }
-            return;
-        }
-        // Recording stop (has "frames" field - from recording_stop action)
-        if data.get("frames").is_some() {
-            if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
-                if let Some(error) = data.get("error").and_then(|v| v.as_str()) {
-                    println!(
-                        "{} Recording saved to {} - {}",
-                        color::warning_indicator(),
-                        path,
-                        error
-                    );
-                } else {
-                    println!(
-                        "{} Recording saved to {}{}",
-                        color::success_indicator(),
-                        path,
-                        recording_fps_suffix(data)
-                    );
-                }
-            } else {
-                println!("{} Recording stopped", color::success_indicator());
-            }
-            return;
         }
         // Download response (has "suggestedFilename" or "filename" field)
         if data.get("suggestedFilename").is_some() || data.get("filename").is_some() {
@@ -1172,7 +1086,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{} Trace stopped", color::success_indicator());
             return;
         }
-        // Path-based operations (screenshot/pdf/trace/har/download/state/video)
+        // Path-based operations (screenshot/pdf/trace/har/download/state)
         if let Some(path) = data.get("path").and_then(|v| v.as_str()) {
             match action.unwrap_or("") {
                 "screenshot" => {
@@ -1235,11 +1149,6 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                     color::success_indicator(),
                     color::green(path)
                 ),
-                "video_stop" => println!(
-                    "{} Video saved to {}",
-                    color::success_indicator(),
-                    color::green(path)
-                ),
                 "state_save" => println!(
                     "{} State saved to {}",
                     color::success_indicator(),
@@ -1254,13 +1163,6 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                         color::success_indicator(),
                         color::green(path)
                     );
-                }
-                // video_start and other commands that provide a path with a note
-                "video_start" => {
-                    if let Some(note) = data.get("note").and_then(|v| v.as_str()) {
-                        println!("{}", note);
-                    }
-                    println!("Path: {}", path);
                 }
                 _ => println!(
                     "{} Saved to {}",
@@ -2392,25 +2294,6 @@ Examples:
 "##
         }
 
-        // === Inspect ===
-        "inspect" => {
-            r##"
-agent-browser inspect - Open Chrome DevTools for the active page
-
-Starts a local WebSocket proxy and opens Chrome's DevTools frontend in your
-default browser. The proxy routes DevTools traffic through the daemon's
-existing CDP connection, so both DevTools and agent-browser commands work
-simultaneously.
-
-Usage: agent-browser inspect
-
-Examples:
-  agent-browser open example.com
-  agent-browser inspect          # opens DevTools in your browser
-  agent-browser click "Submit"   # commands still work while DevTools is open
-"##
-        }
-
         // === Get ===
         "get" => {
             r##"
@@ -2855,7 +2738,6 @@ Save Options:
   --submit-selector <s>    Custom CSS selector for submit button
 
 Login Options:
-  --credential-provider <p> Resolve credentials from configured plugin <p>
   --item <ref>              Provider-specific vault item reference
   --url <url>               Login URL override
   --no-navigate             Use the active top-level page without initial navigation
@@ -2868,7 +2750,6 @@ Login behavior:
   --no-navigate preserves the active top-level page and checks its origin
   against the effective credential URL. Submit-triggered navigation is allowed.
   Selector wait timeout follows the default action timeout.
-  Plugin credentials are resolved just-in-time and are not saved locally.
 
 Global Options:
   --json                   Output as JSON
@@ -3000,69 +2881,6 @@ Examples:
 The output file can be viewed in:
   - Chrome DevTools: Performance panel > Load profile
   - Perfetto: https://ui.perfetto.dev/
-"##
-        }
-
-        // === Record (video) ===
-        "record" => {
-            r##"
-agent-browser record - Record browser session to video
-
-Usage: agent-browser record start <path.webm|path.mp4> [url] [--fps <n>]
-       agent-browser record stop
-       agent-browser record restart <path.webm|path.mp4> [url] [--fps <n>]
-
-Record the browser to a video file. Supported formats are .webm (VP8 via
-libvpx) and .mp4 (H.264 via libx264); any other extension is handed to
-ffmpeg as-is with H.264 video. A path with no extension is rejected.
-Records the current active page as-is: no new context, no new tab, and no
-navigation unless you pass a URL. Capture starts on the page you already
-have open, so hydration and initial animations are not re-run cold.
-If a URL is provided, the active tab navigates there first.
-To record in a separate tab, run `tab new [url]` before `record start`.
-
-Requires ffmpeg on PATH with the libvpx and libx264 encoders (brew install
-ffmpeg, or apt install ffmpeg). Run `agent-browser doctor` to check.
-
-Recording captures 30 fps, which keeps scrolls and CSS transitions smooth.
-Raise it to 60 for short, motion-heavy takes (drag interactions, animation
-work); lower it for long sessions where file size matters more than motion.
-
-Operations:
-  start <path> [url]     Start recording the active page (navigates first if url given)
-  stop                   Stop recording and save video
-  restart <path> [url]   Stop current recording (if any) and start a new one
-
-Options:
-  --fps <n>            Capture rate, 1-60 (default: 30)
-
-Global Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  # Record the page you are on (keeps login state and page state)
-  agent-browser open https://app.example.com/dashboard
-  agent-browser snapshot -i            # Explore and plan
-  agent-browser record start ./demo.webm
-  agent-browser click @e3              # Execute planned actions
-  agent-browser record stop
-
-  # Navigate the active tab, then record
-  agent-browser record start ./demo.webm https://example.com
-
-  # Record in a separate tab
-  agent-browser tab new https://example.com
-  agent-browser record start ./demo.webm
-
-  # 60 fps for a scroll or animation capture
-  agent-browser record start ./scroll.webm --fps 60
-
-  # 10 fps for a long session where size matters more than motion
-  agent-browser record start ./soak.webm --fps 10
-
-  # Restart recording with a new file (stops previous, starts new)
-  agent-browser record restart ./take2.webm
 "##
         }
 
@@ -3733,9 +3551,8 @@ Tool profiles:
              screenshots, JavaScript eval, close, tab basics, and profile discovery
   network    Network routes, request inspection, HAR, headers, credentials, offline
   state      Cookies, storage, auth, saved state, sessions, profiles, skills
-  debug      Console/errors, tracing, profiling, recording, accessibility audits,
-             clipboard, plugins, doctor, dashboard, install, upgrade, chat, diff,
-             batch, confirm/deny
+  debug      Console/errors, tracing, profiling, accessibility audits, clipboard,
+             doctor, dashboard, install, upgrade, chat, diff, batch, confirm/deny
   tabs       Back/forward/reload, tabs, windows, frames, dialogs
   mobile     Viewport/device/geolocation/media, touch, swipe, mouse, keyboard
   gestures   Camoufox gesture discovery/execution, install, session info, skills
@@ -3836,69 +3653,6 @@ Examples:
 
 Environment:
   AGENT_BROWSER_SKILLS_DIR   Override the skills directory path
-"##
-        }
-
-        "plugin" | "plugins" => {
-            r##"
-agent-browser plugin - Manage configured plugins
-
-Usage: agent-browser plugin [subcommand]
-
-Subcommands:
-  add <ref>                Add a plugin from npm or GitHub
-  list                     List configured plugins (default)
-  show <name>              Show one configured plugin
-  run <name> <type>        Run a command.run or custom plugin request
-
-Plugins are configured in agent-browser.json. A plugin entry declares a name,
-an executable command, optional args, and capabilities. Plugins run as
-external processes over the agent-browser.plugin.v1 stdio JSON protocol.
-
-Add sources:
-  <name>                   npm package, e.g. agent-browser-plugin-captcha
-  @<scope>/<name>          scoped npm package
-  <owner>/<repo>           GitHub repository
-
-Add options:
-  --name <name>            Override the configured plugin name
-  --capability <name>      Declare a capability if the plugin has no manifest
-  --global                 Write ~/.agent-browser/config.json instead of ./agent-browser.json
-  --no-manifest            Skip plugin.manifest discovery
-
-plugin add asks the package for plugin.manifest to discover name and
-capabilities. Use --capability when adding older plugins without a manifest.
-
-Capabilities:
-  credential.read          Resolve credentials for auth login
-  browser.provider         Launch/connect an external browser provider
-  launch.mutate            Append local launch args, extensions, or init scripts
-  command.run              Accept arbitrary namespaced plugin requests
-
-Core capabilities and protocol request types use dedicated command paths.
-Use auth login for credential.read, --provider for browser.provider, and
-a local launch for launch.mutate.
-
-Example config:
-  {{
-    "plugins": [
-      {{
-        "name": "vault",
-        "command": "agent-browser-plugin-vault",
-        "capabilities": ["credential.read"]
-      }}
-    ]
-  }}
-
-Examples:
-  agent-browser plugin add agent-browser-plugin-captcha
-  agent-browser plugin add org/agent-browser-plugin-cloud-browser
-  agent-browser plugin add @company/agent-browser-plugin-vault --name vault
-  agent-browser plugin list
-  agent-browser plugin show vault
-  agent-browser plugin run captcha captcha.solve --payload '{{"siteKey":"...","url":"https://example.com"}}'
-  agent-browser auth login my-app --credential-provider vault --item "My App"
-  agent-browser --provider cloud-browser open https://example.com
 "##
         }
 
@@ -4010,12 +3764,9 @@ Debug:
   trace start                Start Chrome DevTools trace
   trace stop [path]          Stop and save Chrome DevTools trace
   profiler start|stop [path] Record Chrome DevTools profile
-  record start <path> [url]  Start video recording (.webm/.mp4; --fps 1-60; needs ffmpeg)
-  record stop                Stop and save video
   console [--clear]          View console logs
   errors [--clear]           View page errors
   highlight <sel>            Highlight element
-  inspect                    Open Chrome DevTools for the active page
   clipboard <op> [text]      Read/write clipboard (read, write, copy, paste)
 
 Streaming:
@@ -4058,19 +3809,11 @@ Auth Vault:
   auth login <name>          Login using saved credentials (waits for form fields)
   auth login <name> --no-navigate
                              Use active page after verifying credential URL origin
-  auth login <name> --credential-provider <plugin> [--item <ref>] [--url <url>]
-                             Resolve credentials from a configured plugin
   auth login <name> --username-selector <s> --password-selector <s>
                              Override selectors for one login
   auth list                  List saved auth profiles
   auth show <name>           Show auth profile metadata
   auth delete <name>         Delete auth profile
-
-Plugins:
-  plugin add <ref>           Add a plugin from npm or GitHub
-  plugin [list]              List configured plugins
-  plugin show <name>         Show one configured plugin
-  plugin run <name> <type>   Run a command.run or custom plugin request
 
 Confirmation:
   confirm <id>               Approve a pending action
@@ -4153,7 +3896,7 @@ Options:
   --allow-file-access        Allow file:// URLs to access local files (Chromium only)
   --hide-scrollbars <bool>   Hide native scrollbars in headless Chromium screenshots (default: true)
                              Use --hide-scrollbars false to keep scrollbars visible
-  -p, --provider <name>      Browser provider: ios, browserbase, kernel, browseruse, browserless, agentcore, or plugin name
+  -p, --provider <name>      Browser provider: ios, browserbase, kernel, browseruse, browserless, or agentcore
   --device <name>            iOS device name (e.g., "iPhone 15 Pro")
   --json                     JSON output
   --annotate                 Annotated screenshot with numbered labels and legend
@@ -4226,8 +3969,6 @@ Configuration:
   Example agent-browser.json:
     {{"headed": true, "hideScrollbars": false, "proxy": "http://localhost:8080"}}
 
-  Plugin example:
-    {{"plugins":[{{"name":"vault","command":"agent-browser-plugin-vault","capabilities":["credential.read"]}},{{"name":"stealth","command":"agent-browser-plugin-stealth","capabilities":["launch.mutate"]}}]}}
 
 Environment:
   AGENT_BROWSER_CONFIG           Path to config file (or use --config)
@@ -4256,7 +3997,7 @@ Environment:
   AGENT_BROWSER_IGNORE_HTTPS_ERRORS Ignore HTTPS certificate errors
   AGENT_BROWSER_CA_CERT          Path to CA certificate to trust (HTTPS interception proxies)
   AGENT_BROWSER_CLEAR_CA_CERT    Clear CA trust retained by the running browser session
-  AGENT_BROWSER_PROVIDER         Browser provider (ios, browserbase, kernel, browseruse, browserless, agentcore, or plugin name)
+  AGENT_BROWSER_PROVIDER         Browser provider (ios, browserbase, kernel, browseruse, browserless, or agentcore)
   AGENT_BROWSER_AUTO_CONNECT     Auto-discover and connect to running Chrome
   AGENT_BROWSER_PIN_TAB          Pin the session to its bound tab (strict tab binding)
   AGENT_BROWSER_ALLOW_FILE_ACCESS Allow file:// URLs to access local files
@@ -4280,7 +4021,7 @@ Environment:
   AGENT_BROWSER_IOS_UDID         Default iOS device UDID
   AGENT_BROWSER_CONTENT_BOUNDARIES Wrap page output in boundary markers
   AGENT_BROWSER_MAX_OUTPUT       Max characters for page output
-  AGENT_BROWSER_ALLOWED_DOMAINS  Comma-separated allowed domain patterns; requires a fresh controllable browser context without profile/session startup args, restore/state replay, or direct-page provider plugins
+  AGENT_BROWSER_ALLOWED_DOMAINS  Comma-separated allowed domain patterns; requires a fresh controllable browser context without profile/session startup args or restore/state replay
   AGENT_BROWSER_ACTION_POLICY    Path to action policy JSON file
   AGENT_BROWSER_CONFIRM_ACTIONS  Action categories requiring confirmation
   AGENT_BROWSER_CONFIRM_INTERACTIVE Enable interactive confirmation prompts
@@ -4296,7 +4037,6 @@ Environment:
                                  Xvfb/x11vnc stack inside the bubble container. Do not set manually
   AGENT_BROWSER_GESTURES_DIR     Explicit trusted gesture directories (OS path separator)
   AGENT_BROWSER_ACTION_DEADLINE_MS Camoufox deadline: default 22000, clamp 1000-25000; Rust hard cap 28s
-  AGENT_BROWSER_PLUGINS          JSON plugin registry override
   HTTP_PROXY / HTTPS_PROXY       Standard proxy env vars (fallback if AGENT_BROWSER_PROXY not set)
   ALL_PROXY                      SOCKS proxy (fallback for proxy)
   NO_PROXY                       Bypass proxy for hosts (fallback for proxy-bypass)
@@ -4329,7 +4069,7 @@ Camoufox V1 (macOS/Linux only):
   Sign in; close preserves the profile. Login expiry/CAPTCHAs can still occur.
   --adblock loads the managed runtime's bundled uBlock Origin addon for the session.
   One browser per profile; close before switching. No Chrome import or state/auth restore.
-  No CDP, domain containment, launch plugins, or mobile.
+  No CDP, domain containment, or mobile.
   Generic gestures cannot run under action policies/confirm-actions.
   session info --json reports browserConnected, recoveryRequired, and closeReason.
   A closed active tab needs tab <id> or tab new, not a browser restart.

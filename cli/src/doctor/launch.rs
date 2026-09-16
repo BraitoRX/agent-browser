@@ -86,7 +86,6 @@ pub(super) fn check(checks: &mut Vec<Check>, opts: &DoctorOptions) {
         default_timeout: None,
         cdp: None,
         no_auto_dialog: false,
-        plugins: None,
     };
 
     let started = Instant::now();

@@ -16,7 +16,6 @@ pub mod diff;
 #[allow(dead_code)]
 pub mod element;
 #[allow(dead_code)]
-pub mod inspect_server;
 #[allow(dead_code)]
 pub mod interaction;
 #[allow(dead_code)]
@@ -24,7 +23,6 @@ pub mod network;
 #[allow(dead_code)]
 pub mod policy;
 #[allow(dead_code)]
-pub mod recording;
 #[allow(dead_code)]
 pub mod screenshot;
 #[allow(dead_code)]

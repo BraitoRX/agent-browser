@@ -9,8 +9,6 @@ mod install;
 mod mcp;
 mod native;
 mod output;
-#[allow(dead_code)]
-mod plugins;
 mod read;
 mod skills;
 #[cfg(test)]
@@ -113,10 +111,6 @@ fn attach_pin_tab_to_command(cmd: &mut serde_json::Value, flags: &Flags) {
     } else if flags.cli_pin_tab {
         cmd["pinTab"] = json!(false);
     }
-}
-
-fn attach_plugins_to_command(cmd: &mut serde_json::Value, plugins: &[plugins::PluginConfig]) {
-    cmd["plugins"] = json!(plugins);
 }
 
 fn command_is_external_launch(cmd: &serde_json::Value) -> bool {
@@ -1521,15 +1515,6 @@ fn main() {
         return;
     }
 
-    // Handle plugin registry commands (doesn't need daemon)
-    if matches!(
-        clean.first().map(|s| s.as_str()),
-        Some("plugin") | Some("plugins")
-    ) {
-        plugins::run_plugin_command(&clean, &flags.plugins, flags.json);
-        return;
-    }
-
     // Handle MCP stdio server mode. This must never share stdout with normal
     // CLI output because stdout is reserved for JSON-RPC protocol messages.
     if clean.first().map(|s| s.as_str()) == Some("mcp") {
@@ -1640,11 +1625,6 @@ fn main() {
         }
     }
 
-    // Send plugin config with commands so an already-running daemon can use
-    // current config without a restart. The daemon strips this from stream
-    // broadcasts before observers see the command payload.
-    attach_plugins_to_command(&mut cmd, &flags.plugins);
-
     attach_pin_tab_to_command(&mut cmd, &flags);
     attach_restore_config_to_command(&mut cmd, &flags);
 
@@ -1738,8 +1718,6 @@ fn main() {
     } else {
         (None, None, None)
     };
-    let plugin_registry_json =
-        serde_json::to_string(&flags.plugins).unwrap_or_else(|_| "[]".to_string());
     let daemon_opts = DaemonOptions {
         headed: flags.headed,
         debug: flags.debug,
@@ -1776,7 +1754,6 @@ fn main() {
         default_timeout: flags.default_timeout,
         cdp: flags.cdp.as_deref(),
         no_auto_dialog: flags.no_auto_dialog,
-        plugins: Some(plugin_registry_json.as_str()),
     };
 
     let daemon_result = match ensure_daemon(&flags.session, &daemon_opts) {
@@ -1957,7 +1934,6 @@ fn main() {
         if flags.headed || flags.cli_headed {
             launch_cmd["headless"] = json!(!flags.headed);
         }
-        launch_cmd["plugins"] = json!(flags.plugins.clone());
         attach_restore_config_to_command(&mut launch_cmd, &flags);
 
         let cmd_obj = launch_cmd
@@ -2247,7 +2223,6 @@ fn run_batch(
             .get("action")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
-        attach_plugins_to_command(&mut parsed, &flags.plugins);
         attach_restore_config_to_command(&mut parsed, flags);
 
         attach_pin_tab_to_command(&mut parsed, flags);
@@ -2616,31 +2591,6 @@ mod tests {
     }
 
     #[test]
-    fn test_attach_plugins_to_command_adds_registry_payload() {
-        let plugins = vec![crate::plugins::PluginConfig {
-            name: "stealth".to_string(),
-            command: "agent-browser-plugin-stealth".to_string(),
-            capabilities: vec!["launch.mutate".to_string()],
-            ..crate::plugins::PluginConfig::default()
-        }];
-        let mut cmd = json!({ "action": "navigate", "url": "https://example.com" });
-
-        attach_plugins_to_command(&mut cmd, &plugins);
-
-        assert_eq!(cmd["plugins"][0]["name"], "stealth");
-        assert_eq!(cmd["plugins"][0]["capabilities"][0], "launch.mutate");
-    }
-
-    #[test]
-    fn test_attach_plugins_to_command_adds_empty_registry_payload() {
-        let mut cmd = json!({ "action": "navigate", "url": "https://example.com" });
-
-        attach_plugins_to_command(&mut cmd, &[]);
-
-        assert_eq!(cmd["plugins"], json!([]));
-    }
-
-    #[test]
     fn test_attach_restore_config_to_command_uses_session_for_bare_restore() {
         let args = vec![
             "--session".to_string(),
@@ -2839,7 +2789,7 @@ mod tests {
                     "data": {
                         "confirmation_required": true,
                         "confirmation_id": "original-command",
-                        "action": "plugin:stealth:launch.mutate"
+                        "action": "test:action:launch.mutate"
                     }
                 }
             })),
@@ -2849,8 +2799,8 @@ mod tests {
 
         let prompt = confirmation_prompt_from_response(&resp).unwrap();
 
-        assert_eq!(prompt.action, "plugin:stealth:launch.mutate");
-        assert_eq!(prompt.description, "plugin:stealth:launch.mutate");
+        assert_eq!(prompt.action, "test:action:launch.mutate");
+        assert_eq!(prompt.description, "test:action:launch.mutate");
         assert_eq!(prompt.confirmation_id, "original-command");
     }
 }

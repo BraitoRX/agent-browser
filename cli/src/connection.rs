@@ -467,7 +467,6 @@ pub struct DaemonOptions<'a> {
     pub default_timeout: Option<u64>,
     pub cdp: Option<&'a str>,
     pub no_auto_dialog: bool,
-    pub plugins: Option<&'a str>,
 }
 
 fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
@@ -579,9 +578,6 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     }
     if opts.no_auto_dialog {
         cmd.env("AGENT_BROWSER_NO_AUTO_DIALOG", "1");
-    }
-    if let Some(plugins) = opts.plugins {
-        cmd.env("AGENT_BROWSER_PLUGINS", plugins);
     }
 }
 
@@ -1294,7 +1290,6 @@ mod tests {
             default_timeout: None,
             cdp: None,
             no_auto_dialog,
-            plugins: None,
         }
     }
 

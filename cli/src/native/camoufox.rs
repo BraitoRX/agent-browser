@@ -326,7 +326,6 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
         || !flags.extensions.is_empty()
         || !flags.init_scripts.is_empty()
         || !flags.enable.is_empty()
-        || !flags.plugins.is_empty()
         || flags.ignore_https_errors
         || flags.ca_cert.is_some()
         || flags.clear_ca_cert

@@ -2,12 +2,10 @@ use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
-use tokio::sync::{broadcast, oneshot, RwLock};
+use tokio::sync::{broadcast, RwLock};
 
 use crate::connection::{get_socket_dir, INTERNAL_DAEMON_SHUTDOWN_ACTION};
 use crate::validation::{is_valid_session_name, session_name_error};
@@ -24,11 +22,9 @@ use super::cdp::types::{
 use super::cookies;
 use super::diff;
 use super::element::RefMap;
-use super::inspect_server::InspectServer;
 use super::interaction;
 use super::network::{self, DomainFilter, EventTracker};
 use super::policy::{ActionPolicy, ConfirmActions, PolicyResult};
-use super::recording::{self, RecordingState};
 use super::screenshot::{self, ScreenshotOptions};
 use super::snapshot::{self, SnapshotOptions};
 use super::state;
@@ -127,7 +123,7 @@ impl HarContentMode {
 /// Bodies larger than this are not embedded in the HAR (the entry keeps its
 /// size/MIME metadata either way).
 const HAR_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
-/// Total budget for embedded bodies across one recording session.
+/// Total budget for embedded bodies across HAR capture sessions.
 const HAR_MAX_TOTAL_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 pub struct RouteEntry {
@@ -255,7 +251,6 @@ fn active_frame_scope_may_have_changed(drained: &DrainedEvents) -> bool {
 fn launch_hash(
     opts: &LaunchOptions,
     allowed_domains: &[String],
-    plugin_init_scripts: &[String],
     enable_features: &[String],
     init_script_paths: &[String],
     engine: Option<&str>,
@@ -289,7 +284,6 @@ fn launch_hash(
     allowed_domains.hash(&mut h);
     enable_features.hash(&mut h);
     init_script_paths.hash(&mut h);
-    plugin_init_scripts.hash(&mut h);
     h.finish()
 }
 
@@ -440,7 +434,7 @@ pub struct SessionSetup {
     pub extra_headers: Option<HashMap<String, String>>,
     pub offline: Option<bool>,
     /// Init scripts registered with `Page.addScriptToEvaluateOnNewDocument`:
-    /// `--enable`, `--init-script`, plugin init scripts, and `addinitscript`.
+    /// `--enable`, `--init-script`, and `addinitscript`.
     pub init_scripts: Vec<InitScriptSetup>,
     /// Monotonic source for daemon-owned init-script handles. CDP identifiers
     /// cannot be used here because each target session allocates them
@@ -520,7 +514,6 @@ pub struct DaemonState {
     pub last_autosave_attempt: Option<std::time::Instant>,
     pub session_id: String,
     pub tracing_state: TracingState,
-    pub recording_state: RecordingState,
     event_rx: Option<broadcast::Receiver<CdpEvent>>,
     pub webmcp: webmcp::RuntimeState,
     /// Whether the active launch opted into Chrome's experimental WebMCP features.
@@ -531,11 +524,10 @@ pub struct DaemonState {
     pub har_recording: bool,
     pub har_entries: Vec<HarEntry>,
     pub har_content_mode: HarContentMode,
-    /// Bytes of response bodies embedded so far this recording; enforces
+    /// Bytes of response bodies embedded so far this HAR capture; enforces
     /// [`HAR_MAX_TOTAL_BODY_BYTES`].
     pub har_body_total_bytes: usize,
     pub confirm_actions: Option<ConfirmActions>,
-    pub inspect_server: Option<InspectServer>,
     pub routes: Arc<RwLock<Vec<RouteEntry>>>,
     pub tracked_requests: Vec<TrackedRequest>,
     pub request_tracking: bool,
@@ -590,18 +582,11 @@ pub struct DaemonState {
     /// Default timeout for wait operations, from AGENT_BROWSER_DEFAULT_TIMEOUT env var.
     pub default_timeout_ms: u64,
     /// Last viewport settings (width, height, deviceScaleFactor, mobile),
-    /// re-applied to new contexts (e.g., recording).
+    /// re-applied to new contexts.
     pub viewport: Option<(i32, i32, f64, bool)>,
     /// Session-scoped setup applied to the active page, re-applied to tabs the
     /// daemon creates. See [`SessionSetup`].
     pub session_setup: SessionSetup,
-    /// Init script sources returned by launch mutator plugins for this launch.
-    pub plugin_init_scripts: Vec<String>,
-    /// Provider cleanup metadata for the active external browser session.
-    /// True when the connected CDP browser is owned by a cloud provider.
-    ///
-    /// This is tracked separately from cleanup metadata because provider
-    /// plugins are allowed to omit a close-session payload.
     /// Actions already approved while replaying a confirmed command.
     confirmed_policy_actions: HashSet<String>,
     /// Strict session-to-tab binding (`--pin-tab` / AGENT_BROWSER_PIN_TAB).
@@ -663,7 +648,6 @@ impl DaemonState {
             last_autosave_attempt: None,
             session_id,
             tracing_state: TracingState::new(),
-            recording_state: RecordingState::new(),
             event_rx: None,
             webmcp: webmcp::RuntimeState::default(),
             webmcp_enabled: false,
@@ -675,7 +659,6 @@ impl DaemonState {
             har_content_mode: HarContentMode::default(),
             har_body_total_bytes: 0,
             confirm_actions: ConfirmActions::from_env(),
-            inspect_server: None,
             routes: Arc::new(RwLock::new(Vec::new())),
             tracked_requests: Vec::new(),
             request_tracking: false,
@@ -709,7 +692,6 @@ impl DaemonState {
                 .unwrap_or(25_000),
             viewport: None,
             session_setup: SessionSetup::default(),
-            plugin_init_scripts: Vec::new(),
             confirmed_policy_actions: HashSet::new(),
             pin_tab,
             last_persisted_binding: None,
@@ -786,7 +768,6 @@ impl DaemonState {
         let routes = self.routes.clone();
         let origin_headers = self.origin_headers.clone();
         let proxy_credentials = self.proxy_credentials.clone();
-        let capture_session = self.recording_state.capture_session.clone();
 
         self.fetch_handler_task = Some(tokio::spawn(async move {
             loop {
@@ -842,15 +823,6 @@ impl DaemonState {
                         let target_info = event.params.get("targetInfo").and_then(|value| {
                             serde_json::from_value::<TargetInfo>(value.clone()).ok()
                         });
-                        // The recorder's screencast session shares a target
-                        // with a page session that already carries the
-                        // controls.
-                        let is_recorder_session = target_info.as_ref().is_some_and(|target| {
-                            recording::owns_attachment(&capture_session, &target.target_id, &sid)
-                        });
-                        if is_recorder_session {
-                            continue;
-                        }
                         let target_needs_controls = target_info
                             .as_ref()
                             .is_some_and(target_supports_network_controls);
@@ -1044,73 +1016,6 @@ impl DaemonState {
                 .broadcast_status(connected, sc, vw, vh, &self.engine)
                 .await;
         }
-    }
-
-    /// Attach the recorder's own CDP session to the page behind `session_id`
-    /// and spawn the task that screencasts into ffmpeg. The caller verifies
-    /// ffmpeg before any navigation or restart teardown. Failures here roll the
-    /// recording state back so the next `record start` is not blocked.
-    async fn start_recording_task(
-        &mut self,
-        client: Arc<CdpClient>,
-        session_id: String,
-    ) -> Result<(), String> {
-        let capture_session = match recording::attach_capture_session(
-            &client,
-            &session_id,
-            &self.recording_state.capture_session,
-        )
-        .await
-        {
-            Ok(capture_session) => capture_session,
-            Err(e) => {
-                self.rollback_failed_recording_start().await;
-                return Err(e);
-            }
-        };
-        let ffmpeg = match recording::spawn_ffmpeg(
-            &self.recording_state.output_path,
-            self.recording_state.fps,
-        ) {
-            Ok(ffmpeg) => ffmpeg,
-            Err(e) => {
-                recording::detach_capture_session(&client, &capture_session).await;
-                if let Ok(mut guard) = self.recording_state.capture_session.lock() {
-                    *guard = None;
-                }
-                self.rollback_failed_recording_start().await;
-                return Err(e);
-            }
-        };
-        let shared_count = Arc::new(AtomicU64::new(0));
-        let shared_captured = Arc::new(AtomicU64::new(0));
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-        let handle = recording::spawn_recording_task(
-            client,
-            capture_session,
-            ffmpeg,
-            self.recording_state.fps,
-            shared_count.clone(),
-            shared_captured.clone(),
-            cancel_rx,
-        );
-        self.recording_state.capture_task = Some(handle);
-        self.recording_state.shared_frame_count = Some(shared_count);
-        self.recording_state.shared_captured_count = Some(shared_captured);
-        self.recording_state.cancel_tx = Some(cancel_tx);
-        Ok(())
-    }
-
-    /// Reconcile every externally visible recording flag after startup fails.
-    async fn rollback_failed_recording_start(&mut self) {
-        self.recording_state.active = false;
-        if let Some(ref server) = self.stream_server {
-            server.set_recording(false, &self.engine).await;
-        }
-    }
-
-    async fn stop_recording_task(&mut self) -> Result<(), String> {
-        recording::stop_recording_task(&mut self.recording_state).await
     }
 
     pub async fn drain_cdp_events_background(&mut self) -> Result<(), String> {
@@ -1600,15 +1505,6 @@ impl DaemonState {
                                 match serde_json::from_value::<TargetInfo>(
                                     target_info_value.clone(),
                                 ) {
-                                    // The recorder's screencast session is
-                                    // not a tab and must not have page
-                                    // domains enabled on it.
-                                    Ok(target_info)
-                                        if recording::owns_attachment(
-                                            &self.recording_state.capture_session,
-                                            &target_info.target_id,
-                                            sid,
-                                        ) => {}
                                     Ok(target_info) if target_info.target_type == "iframe" => {
                                         // For OOPIF targets, Chrome uses the frameId as
                                         // the targetId, so we can key iframe_sessions by it.
@@ -2085,57 +1981,6 @@ impl Drop for DaemonState {
     }
 }
 
-fn append_launch_mutator_policy_actions_for(
-    actions: &mut Vec<String>,
-    plugins: &[crate::plugins::PluginConfig],
-) {
-    for plugin in crate::plugins::resolved_plugins_with_capability(
-        plugins,
-        crate::plugins::CAPABILITY_LAUNCH_MUTATE,
-    ) {
-        actions.push(crate::plugins::plugin_policy_action(
-            &plugin.name,
-            crate::plugins::CAPABILITY_LAUNCH_MUTATE,
-        ));
-    }
-}
-
-fn append_browser_provider_policy_action_for(
-    actions: &mut Vec<String>,
-    provider: &str,
-    plugins: &[crate::plugins::PluginConfig],
-) {
-    if crate::plugins::find_plugin(plugins, provider).is_some_and(|plugin| {
-        crate::plugins::plugin_has_capability(plugin, crate::plugins::CAPABILITY_BROWSER_PROVIDER)
-    }) {
-        actions.push(crate::plugins::plugin_policy_action(
-            provider,
-            crate::plugins::CAPABILITY_BROWSER_PROVIDER,
-        ));
-    }
-}
-
-fn append_credential_policy_action_for(
-    actions: &mut Vec<String>,
-    provider: &str,
-    plugins: &[crate::plugins::PluginConfig],
-) {
-    if crate::plugins::find_plugin(plugins, provider).is_some_and(|plugin| {
-        crate::plugins::plugin_has_capability(plugin, crate::plugins::CAPABILITY_CREDENTIAL_READ)
-    }) {
-        actions.push(crate::plugins::plugin_policy_action(
-            provider,
-            crate::plugins::CAPABILITY_CREDENTIAL_READ,
-        ));
-    }
-}
-
-fn plugins_from_command_or_env(cmd: &Value) -> Vec<crate::plugins::PluginConfig> {
-    cmd.get("plugins")
-        .and_then(|v| serde_json::from_value::<Vec<crate::plugins::PluginConfig>>(v.clone()).ok())
-        .unwrap_or_else(crate::plugins::plugins_from_env)
-}
-
 fn reset_restore_runtime_state(state: &mut DaemonState) {
     state.restore_status = "pending".to_string();
     state.restore_status_detail = None;
@@ -2335,19 +2180,6 @@ async fn close_after_network_control_failure(
     })
 }
 
-fn provider_plugin_launch_options_from_command(cmd: &Value) -> Value {
-    let mut options = serde_json::Map::new();
-    if let Some(headless) = cmd.get("headless").and_then(|v| v.as_bool()) {
-        options.insert("headed".to_string(), json!(!headless));
-    }
-    for key in ["engine", "userAgent", "colorScheme"] {
-        if let Some(value) = cmd.get(key) {
-            options.insert(key.to_string(), value.clone());
-        }
-    }
-    Value::Object(options)
-}
-
 fn skip_launch_action(action: &str) -> bool {
     if action == INTERNAL_DAEMON_SHUTDOWN_ACTION {
         return true;
@@ -2382,32 +2214,13 @@ fn should_validate_restore_after_action(action: &str) -> bool {
     action != "launch"
 }
 
-fn policy_actions_for_command(
-    cmd: &Value,
-    action: &str,
-    needs_implicit_launch: bool,
-) -> Vec<String> {
+fn policy_actions_for_command(cmd: &Value, action: &str) -> Vec<String> {
     let mut actions = vec![action.to_string()];
     // `a11y <url>` performs a real browser navigation before the audit. Keep
     // navigation deny and confirmation policies effective for the compound
     // command instead of treating it as a read-only audit.
     if action == "a11y" && cmd.get("url").and_then(|v| v.as_str()).is_some() {
         actions.push("navigate".to_string());
-    }
-    if action == "launch" {
-        let plugins = plugins_from_command_or_env(cmd);
-        let local_launch = cmd.get("cdpUrl").is_none()
-            && cmd.get("cdpPort").is_none()
-            && !cmd
-                .get("autoConnect")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-        if local_launch {
-            append_launch_mutator_policy_actions_for(&mut actions, &plugins);
-        }
-    } else if !skip_launch_action(action) && needs_implicit_launch {
-        let plugins = plugins_from_command_or_env(cmd);
-        append_launch_mutator_policy_actions_for(&mut actions, &plugins);
     }
     actions
 }
@@ -2610,8 +2423,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
 
     if let Some(ref server) = state.stream_server {
         let mut broadcast_cmd;
-        let has_internal_fields = cmd.get("plugins").is_some()
-            || cmd.get("pinTab").is_some()
+        let has_internal_fields = cmd.get("pinTab").is_some()
             || cmd.get("restoreKey").is_some()
             || cmd.get("restoreSave").is_some()
             || cmd.get("restoreCheckUrl").is_some()
@@ -2620,7 +2432,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         let cmd_for_broadcast = if has_internal_fields {
             broadcast_cmd = cmd.clone();
             if let Some(obj) = broadcast_cmd.as_object_mut() {
-                obj.remove("plugins");
                 obj.remove("pinTab");
                 obj.remove("restoreKey");
                 obj.remove("restoreSave");
@@ -2699,8 +2510,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         && has_active_browser_session(state);
     let needs_launch = if !skip_launch {
         // Check if existing connection is stale and needs re-launch.
-        // This must happen before policy evaluation so plugin capability
-        // actions are gated when recovery relaunches would invoke plugins.
         if restore_key_change_needs_launch {
             true
         } else if use_camoufox {
@@ -2719,7 +2528,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
     let mut lifecycle_reused = false;
     let mut lifecycle_launched = false;
     let mut lifecycle_relaunched_browser = false;
-    let policy_actions = policy_actions_for_command(cmd, action, needs_launch);
+    let policy_actions = policy_actions_for_command(cmd, action);
 
     // Hot-reload and check action policy
     if let Some(ref mut policy) = state.policy {
@@ -2815,7 +2624,7 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
                 let _ = auto_save_restore_state(state).await;
                 let _ = close_current_browser(state).await;
             }
-            if let Err(e) = auto_launch(state, plugins_from_command_or_env(cmd)).await {
+            if let Err(e) = auto_launch(state).await {
                 let context = auto_launch_error_context(env::var("AGENT_BROWSER_CDP").is_ok());
                 return error_response(&id, &format!("{}: {}", context, e));
             }
@@ -2890,7 +2699,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "read" => handle_read(cmd, state).await,
         "url" => handle_url(state).await,
         "cdp_url" => handle_cdp_url(state),
-        "inspect" => handle_inspect(state).await,
         "title" => handle_title(state).await,
         "content" => handle_content(state).await,
         "evaluate" => handle_evaluate(cmd, state).await,
@@ -2938,9 +2746,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "trace_stop" => handle_trace_stop(cmd, state).await,
         "profiler_start" => handle_profiler_start(cmd, state).await,
         "profiler_stop" => handle_profiler_stop(cmd, state).await,
-        "recording_start" => handle_recording_start(cmd, state).await,
-        "recording_stop" => handle_recording_stop(state).await,
-        "recording_restart" => handle_recording_restart(cmd, state).await,
         "pdf" => handle_pdf(cmd, state).await,
         "tab_list" => handle_tab_list(state).await,
         "tab_new" => handle_tab_new(cmd, state).await,
@@ -3017,8 +2822,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "waitfordownload" => handle_waitfordownload(cmd, state).await,
         "window_new" => handle_window_new(cmd, state).await,
         "diff_screenshot" => handle_diff_screenshot(cmd, state).await,
-        "video_start" => handle_video_start(cmd, state).await,
-        "video_stop" => handle_video_stop(state).await,
         "har_start" => handle_har_start(cmd, state).await,
         "har_stop" => handle_har_stop(cmd, state).await,
         "route" => handle_route(cmd, state).await,
@@ -3849,12 +3652,10 @@ async fn apply_session_setup(state: &mut DaemonState, session_id: &str) -> Resul
 
 async fn auto_launch(
     state: &mut DaemonState,
-    plugins: Vec<crate::plugins::PluginConfig>,
 ) -> Result<(), String> {
     let mut options = launch_options_from_env();
     let effective_ca_cert = state.effective_ca_cert.clone();
     apply_effective_ca_cert(&mut options, &effective_ca_cert);
-    state.plugin_init_scripts.clear();
     state.session_setup = SessionSetup::default();
 
     // Use the stream server's viewport dimensions for --window-size so the
@@ -3908,7 +3709,6 @@ async fn auto_launch(
         let hash = launch_hash(
             &options,
             &allowed_domains,
-            &state.plugin_init_scripts,
             &enable_features,
             &init_script_paths,
             engine.as_deref(),
@@ -3944,7 +3744,6 @@ async fn auto_launch(
         let hash = launch_hash(
             &options,
             &allowed_domains,
-            &state.plugin_init_scripts,
             &enable_features,
             &init_script_paths,
             engine.as_deref(),
@@ -3982,7 +3781,6 @@ async fn auto_launch(
         storage_state,
     })?;
 
-    apply_launch_mutator_plugins(state, &mut options, plugins).await?;
     validate_ca_cert_launch_mode(&options, engine.as_deref(), false)?;
     ensure_allowed_domains_supported_for_launch(AllowedDomainsLaunchSupport {
         allowed_domains: &allowed_domains,
@@ -3998,7 +3796,6 @@ async fn auto_launch(
     let hash = launch_hash(
         &options,
         &allowed_domains,
-        &state.plugin_init_scripts,
         &enable_features,
         &init_script_paths,
         engine.as_deref(),
@@ -4099,8 +3896,6 @@ async fn apply_launch_init_scripts(
         }
     }
 
-    sources.extend(state.plugin_init_scripts.iter().cloned());
-
     let Some(mgr) = state.browser.as_ref() else {
         return;
     };
@@ -4121,50 +3916,6 @@ async fn apply_launch_init_scripts(
             .session_setup
             .register_init_script(source, session_id.clone(), session_identifier);
     }
-}
-
-async fn apply_launch_mutator_plugins(
-    state: &mut DaemonState,
-    options: &mut LaunchOptions,
-    plugins: Vec<crate::plugins::PluginConfig>,
-) -> Result<(), String> {
-    state.plugin_init_scripts.clear();
-    if plugins.is_empty() {
-        return Ok(());
-    }
-
-    let request = json!({
-        "session": state.session_id,
-        "launchOptions": {
-            "headless": options.headless,
-            "engine": env::var("AGENT_BROWSER_ENGINE").unwrap_or_else(|_| "chrome".to_string()),
-            "args": options.args.clone(),
-            "extensions": options.extensions.clone(),
-            "userAgent": options.user_agent.clone(),
-            "colorScheme": options.color_scheme.clone(),
-            "downloadPath": options.download_path.clone(),
-            "hideScrollbars": options.hide_scrollbars,
-            "allowFileAccess": options.allow_file_access,
-            "webgpu": options.webgpu,
-            "noXvfb": options.no_xvfb,
-        }
-    });
-
-    for mutation in crate::plugins::launch_mutations_from_plugins(&plugins, request).await? {
-        options.args.extend(mutation.args);
-        if !mutation.extensions.is_empty() {
-            options
-                .extensions
-                .get_or_insert_with(Vec::new)
-                .extend(mutation.extensions);
-        }
-        if let Some(user_agent) = mutation.user_agent {
-            options.user_agent = Some(user_agent);
-        }
-        state.plugin_init_scripts.extend(mutation.init_scripts);
-    }
-
-    Ok(())
 }
 
 fn launch_options_from_env() -> LaunchOptions {
@@ -4699,12 +4450,9 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         cdp_url.is_some() || cdp_port.is_some() || auto_connect || provider_name.is_some();
     validate_ca_cert_launch_mode(&launch_options, engine.as_deref(), external_launch)?;
 
-    state.plugin_init_scripts.clear();
     let local_launch =
         cdp_url.is_none() && cdp_port.is_none() && !auto_connect && provider_name.is_none();
     if local_launch {
-        apply_launch_mutator_plugins(state, &mut launch_options, plugins_from_command_or_env(cmd))
-            .await?;
         validate_ca_cert_launch_mode(&launch_options, engine.as_deref(), false)?;
     }
     ensure_allowed_domains_supported_for_launch(AllowedDomainsLaunchSupport {
@@ -4732,7 +4480,6 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     let new_hash = launch_hash(
         &launch_options,
         &allowed_domains,
-        &state.plugin_init_scripts,
         &enable_features,
         &init_script_paths,
         engine.as_deref(),
@@ -5050,45 +4797,6 @@ fn handle_cdp_url(state: &DaemonState) -> Result<Value, String> {
     Ok(json!({ "cdpUrl": mgr.get_cdp_url() }))
 }
 
-async fn handle_inspect(state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-
-    // Shut down any existing inspect server so we always target the current page
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
-    }
-
-    let target_id = mgr.active_target_id()?.to_string();
-    let chrome_hp = mgr.chrome_host_port().to_string();
-    let proxy_handle = mgr.client.inspect_handle();
-
-    let server = InspectServer::start(proxy_handle, target_id, chrome_hp).await?;
-    let url = format!("http://127.0.0.1:{}", server.port());
-    open_url_in_browser(&url);
-
-    state.inspect_server = Some(server);
-    Ok(json!({ "opened": true, "url": url }))
-}
-
-fn open_url_in_browser(url: &str) {
-    #[cfg(target_os = "macos")]
-    let result = std::process::Command::new("open").arg(url).spawn();
-    #[cfg(target_os = "linux")]
-    let result = std::process::Command::new("xdg-open").arg(url).spawn();
-    #[cfg(target_os = "windows")]
-    let result = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
-        .spawn();
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    let result: Result<std::process::Child, std::io::Error> = Err(std::io::Error::new(
-        std::io::ErrorKind::Unsupported,
-        "unsupported platform",
-    ));
-    if let Err(e) = result {
-        let _ = writeln!(std::io::stderr(), "[inspect] Failed to open browser: {}", e);
-    }
-}
-
 async fn handle_title(state: &DaemonState) -> Result<Value, String> {
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let title = mgr.get_title().await?;
@@ -5127,10 +4835,6 @@ async fn handle_close(state: &mut DaemonState) -> Result<Value, String> {
         map.clear();
     }
     state.session_setup = SessionSetup::default();
-
-    if let Some(server) = state.inspect_server.take() {
-        server.shutdown();
-    }
 
     state.ref_map.clear();
     match save_result {
@@ -6877,157 +6581,6 @@ async fn handle_profiler_stop(cmd: &Value, state: &mut DaemonState) -> Result<Va
     let session_id = mgr.active_session_id()?.to_string();
     let path = cmd.get("path").and_then(|v| v.as_str());
     native_tracing::profiler_stop(&mgr.client, &session_id, &mut state.tracing_state, path).await
-}
-
-/// Read an optional `fps` field from a recording command, rejecting rates the
-/// recorder cannot honor before any browser work happens.
-fn recording_fps_from_command(cmd: &Value) -> Result<Option<u32>, String> {
-    match cmd.get("fps") {
-        None | Some(Value::Null) => Ok(None),
-        Some(value) => {
-            let raw = value
-                .as_u64()
-                .filter(|v| *v <= u32::MAX as u64)
-                .ok_or_else(|| format!("Invalid fps: {} is not a positive integer", value))?;
-            recording::validate_fps(raw as u32).map(Some)
-        }
-    }
-}
-
-/// Start recording the current active page. The recorder attaches to the
-/// active session as-is: no new browser context, no new tab, and no
-/// navigation unless a URL is given (in which case the active tab navigates
-/// there first). Capture therefore starts on an already-hydrated page instead
-/// of at `load` on a cold navigation. Use `tab new` first to record in a
-/// separate tab.
-async fn handle_recording_start(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let path = cmd
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing 'path' parameter")?;
-
-    let recording_url = cmd
-        .get("url")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-
-    // Validate the rate and output path before any browser work so a bad value
-    // costs nothing.
-    let fps = recording_fps_from_command(cmd)?;
-    recording::validate_output_path(path)?;
-
-    {
-        let domain_filter = state.domain_filter.read().await;
-        if let Some(url) = recording_url {
-            check_url_allowed_by_filter(domain_filter.as_ref(), url)?;
-        }
-    }
-
-    if state.recording_state.active {
-        return Err("Recording already active".to_string());
-    }
-    if state.browser.is_none() {
-        return Err("Browser not launched".to_string());
-    }
-
-    // Check the external dependency before an optional navigation mutates the
-    // active page. State is still inactive, so a failure needs no rollback.
-    recording::check_ffmpeg_available().await?;
-
-    if let Some(url) = recording_url {
-        navigate_active_page(state, url, WaitUntil::Load).await?;
-    }
-    let (client, session_id) = {
-        let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-        (mgr.client.clone(), mgr.active_session_id()?.to_string())
-    };
-
-    let result = recording::recording_start(&mut state.recording_state, path, fps)?;
-    state.start_recording_task(client, session_id).await?;
-
-    if let Some(ref server) = state.stream_server {
-        server.set_recording(true, &state.engine).await;
-    }
-
-    Ok(result)
-}
-
-async fn handle_recording_stop(state: &mut DaemonState) -> Result<Value, String> {
-    // Clear the recording state even when the capture task failed, so a
-    // broken take does not block the next `record start`.
-    let task_result = state.stop_recording_task().await;
-    let result = recording::recording_stop(&mut state.recording_state);
-    task_result?;
-
-    if let Some(ref server) = state.stream_server {
-        server.set_recording(false, &state.engine).await;
-    }
-
-    result
-}
-
-async fn handle_recording_restart(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let path = cmd
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing 'path' parameter")?;
-    let recording_url = cmd
-        .get("url")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-
-    // Validate the path and rate before stopping the in-flight take.
-    recording::validate_output_path(path)?;
-    let fps = recording_fps_from_command(cmd)?;
-
-    {
-        let domain_filter = state.domain_filter.read().await;
-        if let Some(ref url) = recording_url {
-            check_url_allowed_by_filter(domain_filter.as_ref(), url)?;
-        }
-    }
-
-    // Preserve the in-flight take when the replacement cannot start. A
-    // restart without a browser keeps its existing state-only behavior.
-    if state.browser.is_some() {
-        recording::check_ffmpeg_available().await?;
-    }
-
-    let _ = state.stop_recording_task().await;
-    let previous_path = if state.recording_state.active {
-        recording::recording_stop(&mut state.recording_state)
-            .ok()
-            .and_then(|v| v.get("path").and_then(|p| p.as_str()).map(String::from))
-    } else {
-        None
-    };
-
-    let recording_target = if state.browser.is_some() {
-        if let Some(ref url) = recording_url {
-            navigate_active_page(state, url, WaitUntil::Load).await?;
-        }
-        let browser = state.browser.as_ref().ok_or("Browser not launched")?;
-        Some((
-            browser.client.clone(),
-            browser.active_session_id()?.to_string(),
-        ))
-    } else {
-        None
-    };
-
-    recording::recording_start(&mut state.recording_state, path, fps)?;
-
-    if let Some((client, session_id)) = recording_target {
-        state.start_recording_task(client, session_id).await?;
-    }
-
-    Ok(json!({
-        "restarted": true,
-        "previousPath": previous_path,
-        "path": path,
-        "fps": state.recording_state.fps,
-    }))
 }
 
 async fn handle_pdf(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
@@ -10020,47 +9573,6 @@ async fn handle_diff_screenshot(cmd: &Value, state: &DaemonState) -> Result<Valu
 // Video and HAR handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_video_start(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let path = cmd
-        .get("path")
-        .and_then(|v| v.as_str())
-        .ok_or("Missing 'path' parameter")?;
-
-    if state.recording_state.active {
-        return Err("A recording is already in progress".to_string());
-    }
-
-    let fps = recording_fps_from_command(cmd)?;
-    recording::validate_output_path(path)?;
-
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
-
-    recording::check_ffmpeg_available().await?;
-    recording::recording_start(&mut state.recording_state, path, fps)?;
-    state
-        .start_recording_task(mgr.client.clone(), session_id)
-        .await?;
-
-    Ok(json!({
-        "started": true,
-        "fps": state.recording_state.fps,
-        "note": "Video recording started. Use video_stop to save the recording."
-    }))
-}
-
-async fn handle_video_stop(state: &mut DaemonState) -> Result<Value, String> {
-    if !state.recording_state.active {
-        return Ok(json!({
-            "stopped": false,
-            "note": "No video recording was started. Use recording_stop if you used recording_start."
-        }));
-    }
-
-    state.stop_recording_task().await?;
-    recording::recording_stop(&mut state.recording_state)
-}
-
 /// Begin capturing network traffic for a later HAR export.
 async fn handle_har_start(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     let content_mode = match cmd.get("content").and_then(|v| v.as_str()) {
@@ -11819,7 +11331,7 @@ mod tests {
         assert!(skip_launch_action("hover_hold_stop"));
         let command = json!({"id": "stop", "action": "hover_hold_stop"});
         assert_eq!(
-            policy_actions_for_command(&command, "hover_hold_stop", true),
+            policy_actions_for_command(&command, "hover_hold_stop"),
             vec!["hover_hold_stop".to_string()],
         );
     }

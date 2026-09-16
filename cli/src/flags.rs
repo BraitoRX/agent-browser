@@ -1,5 +1,4 @@
 use crate::color;
-use crate::plugins::PluginConfig;
 use serde::Deserialize;
 use std::env;
 use std::fs;
@@ -103,7 +102,6 @@ pub struct Config {
     pub idle_timeout: Option<String>,
     pub no_auto_dialog: Option<bool>,
     pub model: Option<String>,
-    pub plugins: Option<Vec<PluginConfig>>,
 }
 
 impl Config {
@@ -185,13 +183,6 @@ impl Config {
             idle_timeout: other.idle_timeout.or(self.idle_timeout),
             no_auto_dialog: other.no_auto_dialog.or(self.no_auto_dialog),
             model: other.model.or(self.model),
-            plugins: match (self.plugins, other.plugins) {
-                (Some(mut a), Some(b)) => {
-                    a.extend(b);
-                    Some(a)
-                }
-                (a, b) => b.or(a),
-            },
         }
     }
 }
@@ -413,7 +404,6 @@ pub struct Flags {
     pub default_timeout: Option<u64>, // AGENT_BROWSER_DEFAULT_TIMEOUT in ms
     pub no_auto_dialog: bool,
     pub model: Option<String>,
-    pub plugins: Vec<PluginConfig>,
     pub verbose: bool,
     pub quiet: bool,
 
@@ -498,23 +488,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
     } else {
         config.enable.unwrap_or_default()
     };
-
-    let plugins = env::var("AGENT_BROWSER_PLUGINS")
-        .ok()
-        .and_then(
-            |raw| match serde_json::from_str::<Vec<PluginConfig>>(&raw) {
-                Ok(plugins) => Some(plugins),
-                Err(e) => {
-                    eprintln!(
-                        "{} invalid AGENT_BROWSER_PLUGINS value: {}",
-                        color::warning_indicator(),
-                        e
-                    );
-                    None
-                }
-            },
-        )
-        .unwrap_or_else(|| config.plugins.unwrap_or_default());
 
     let (ca_cert, clear_ca_cert) = resolve_ca_cert(
         config.ca_cert,
@@ -650,7 +623,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
         no_auto_dialog: env_var_is_truthy("AGENT_BROWSER_NO_AUTO_DIALOG")
             || config.no_auto_dialog.unwrap_or(false),
         model: env::var("AI_GATEWAY_MODEL").ok().or(config.model),
-        plugins,
         verbose: false,
         quiet: false,
         cli_executable_path: false,
@@ -1587,15 +1559,7 @@ mod tests {
             "allowFileAccess": true,
             "cdp": "9222",
             "autoConnect": true,
-            "headers": "{\"Auth\":\"token\"}",
-            "plugins": [
-                {
-                    "name": "onepassword",
-                    "command": "agent-browser-plugin-1password",
-                    "args": ["--account", "team"],
-                    "capabilities": ["credential.read"]
-                }
-            ]
+            "headers": "{\"Auth\":\"token\"}"
         }"#;
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.headed, Some(true));
@@ -1620,14 +1584,6 @@ mod tests {
         assert_eq!(config.cdp.as_deref(), Some("9222"));
         assert_eq!(config.auto_connect, Some(true));
         assert_eq!(config.headers.as_deref(), Some("{\"Auth\":\"token\"}"));
-        let plugin = &config.plugins.as_ref().unwrap()[0];
-        assert_eq!(plugin.name, "onepassword");
-        assert_eq!(plugin.command, "agent-browser-plugin-1password");
-        assert_eq!(
-            plugin.args,
-            vec!["--account".to_string(), "team".to_string()]
-        );
-        assert_eq!(plugin.capabilities, vec!["credential.read".to_string()]);
     }
 
     #[test]
