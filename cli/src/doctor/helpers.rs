@@ -58,33 +58,7 @@ pub(super) fn disk_free_bytes(_path: &Path) -> Option<u64> {
     None
 }
 
-pub(super) fn which_exists(name: &str) -> bool {
-    which_path(name).is_some()
-}
 
-/// Resolve `name` on PATH via `which` / `where`, returning the first match.
-pub(super) fn which_path(name: &str) -> Option<std::path::PathBuf> {
-    let probe = if cfg!(target_os = "windows") {
-        "where"
-    } else {
-        "which"
-    };
-    let output = std::process::Command::new(probe)
-        .arg(name)
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    stdout
-        .lines()
-        .map(str::trim)
-        .find(|line| !line.is_empty())
-        .map(std::path::PathBuf::from)
-}
 
 pub(super) fn parse_json_file(path: &Path) -> Result<(), String> {
     let content = fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
@@ -143,32 +117,7 @@ mod tests {
         assert!(!is_writable_dir(&missing));
     }
 
-    #[test]
-    fn test_which_exists_matches_common_binaries() {
-        // `sh` exists on every unix; `cmd` exists on windows.
-        let probe = if cfg!(target_os = "windows") {
-            "cmd"
-        } else {
-            "sh"
-        };
-        assert!(which_exists(probe));
-        assert!(!which_exists(
-            "agent-browser-this-does-not-exist-please-dont-install-it"
-        ));
-    }
 
-    #[test]
-    fn test_which_path_returns_an_existing_binary() {
-        let probe = if cfg!(target_os = "windows") {
-            "cmd"
-        } else {
-            "sh"
-        };
-        let path = which_path(probe).expect("probe binary should resolve");
-        assert!(path.is_absolute(), "got {}", path.display());
-        assert!(path.exists(), "got {}", path.display());
-        assert!(which_path("agent-browser-this-does-not-exist-please-dont-install-it").is_none());
-    }
 
     #[test]
     fn test_parse_json_file_valid_and_invalid() {
