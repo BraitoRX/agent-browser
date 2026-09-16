@@ -1,41 +1,6 @@
-#[allow(dead_code)]
-pub mod a11y;
-#[allow(dead_code)]
 pub mod actions;
-#[allow(dead_code)]
-pub mod browser;
 pub mod camoufox;
-#[allow(dead_code)]
-pub mod cdp;
-#[allow(dead_code)]
-pub mod cookies;
-#[allow(dead_code)]
 pub mod daemon;
-#[allow(dead_code)]
-pub mod diff;
-#[allow(dead_code)]
-#[allow(dead_code)]
-pub mod element;
 pub mod idle;
-#[allow(dead_code)]
-#[allow(dead_code)]
-pub mod interaction;
-#[allow(dead_code)]
-pub mod network;
-#[allow(dead_code)]
 pub mod policy;
-#[allow(dead_code)]
-#[allow(dead_code)]
-pub mod screenshot;
-#[allow(dead_code)]
-pub mod snapshot;
-#[allow(dead_code)]
 pub mod state;
-#[allow(dead_code)]
-pub mod storage;
-#[allow(dead_code)]
-pub mod tab_binding;
-#[allow(dead_code)]
-pub mod tracing;
-#[allow(dead_code)]
-pub mod webmcp;

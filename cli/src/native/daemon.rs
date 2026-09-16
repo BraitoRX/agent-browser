@@ -11,10 +11,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::signal;
 use tokio::sync::Notify;
 
-use super::actions::{
-    auto_save_restore_state, close_all_browser_backends, close_current_browser, execute_command,
-    maybe_autosave_restore_state, DaemonState,
-};
+use super::actions::{close_all_browser_backends, execute_command, DaemonState};
 use super::idle::IdleActivity;
 use super::state;
 use crate::connection::INTERNAL_DAEMON_SHUTDOWN_ACTION;
@@ -104,16 +101,7 @@ pub async fn run_daemon(session: &str) {
     // shutdown entirely.
     let idle_timeout = resolve_idle_timeout(env::var("AGENT_BROWSER_IDLE_TIMEOUT_MS").ok());
 
-    let autosave_interval_ms = autosave_interval_ms_from_env();
-
-    let result = run_socket_server(
-        &socket_path,
-        session,
-        idle_activity,
-        idle_timeout,
-        autosave_interval_ms,
-    )
-    .await;
+    let result = run_socket_server(&socket_path, session, idle_activity, idle_timeout).await;
 
     #[cfg(unix)]
     {
@@ -179,22 +167,12 @@ fn remaining_idle_timeout(activity: &IdleActivity, timeout_ms: u64) -> Option<Du
     Duration::from_millis(timeout_ms).checked_sub(activity.elapsed())
 }
 
-/// Minimum ms between periodic session autosaves while the browser is open.
-/// Defaults to 30s; 0 disables periodic autosave (save-on-close still runs).
-fn autosave_interval_ms_from_env() -> u64 {
-    env::var("AGENT_BROWSER_AUTOSAVE_INTERVAL_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(30_000)
-}
-
 #[cfg(unix)]
 async fn run_socket_server(
     socket_path: &PathBuf,
     _session: &str,
     idle_activity: Arc<IdleActivity>,
     idle_timeout: Option<IdleTimeout>,
-    autosave_interval_ms: u64,
 ) -> Result<(), String> {
     use tokio::net::UnixListener;
 
@@ -237,25 +215,7 @@ async fn run_socket_server(
                 }
             }
             _ = drain_interval.tick() => {
-                let mut s = state.lock().await;
-                let process_exited = s
-                    .browser
-                    .as_mut()
-                    .map(|mgr| mgr.has_process_exited())
-                    .unwrap_or(false);
-                if process_exited {
-                    let _ = close_current_browser(&mut s).await;
-                } else if s.browser.is_some() {
-                    if let Err(error) = s.drain_cdp_events_background().await {
-                        let _ = writeln!(
-                            std::io::stderr(),
-                            "Failed to apply browser network controls: {}",
-                            error
-                        );
-                    } else {
-                        maybe_autosave_restore_state(&mut s, autosave_interval_ms).await;
-                    }
-                }
+                let _ = state.lock().await;
             }
             _ = async {
                 match idle_sleep_pin {
@@ -290,7 +250,6 @@ async fn run_socket_server(
                         DEFAULT_IDLE_TIMEOUT_MS / 60_000
                     );
                 }
-                let _ = auto_save_restore_state(&mut s).await;
                 let _ = close_all_browser_backends(&mut s).await;
                 break;
             }
@@ -307,7 +266,6 @@ async fn run_socket_server(
             }
             _ = shutdown_signal() => {
                 let mut s = state.lock().await;
-                let _ = auto_save_restore_state(&mut s).await;
                 let _ = close_all_browser_backends(&mut s).await;
                 break;
             }
@@ -323,7 +281,6 @@ async fn run_socket_server(
     _session: &str,
     idle_activity: Arc<IdleActivity>,
     idle_timeout: Option<IdleTimeout>,
-    autosave_interval_ms: u64,
 ) -> Result<(), String> {
     use tokio::net::TcpListener;
 
@@ -381,18 +338,7 @@ async fn run_socket_server(
                 }
             }
             _ = drain_interval.tick() => {
-                let mut s = state.lock().await;
-                let process_exited = s
-                    .browser
-                    .as_mut()
-                    .map(|mgr| mgr.has_process_exited())
-                    .unwrap_or(false);
-                if process_exited {
-                    let _ = close_current_browser(&mut s).await;
-                } else if s.browser.is_some() {
-                    s.drain_cdp_events_background().await;
-                    maybe_autosave_restore_state(&mut s, autosave_interval_ms).await;
-                }
+                let _ = state.lock().await;
             }
             _ = async {
                 match idle_sleep_pin {
@@ -424,7 +370,6 @@ async fn run_socket_server(
                         DEFAULT_IDLE_TIMEOUT_MS / 60_000
                     );
                 }
-                let _ = auto_save_restore_state(&mut s).await;
                 let _ = close_all_browser_backends(&mut s).await;
                 let _ = fs::remove_file(&port_path);
                 break;
@@ -440,7 +385,6 @@ async fn run_socket_server(
             }
             _ = shutdown_signal() => {
                 let mut s = state.lock().await;
-                let _ = auto_save_restore_state(&mut s).await;
                 let _ = close_all_browser_backends(&mut s).await;
                 let _ = fs::remove_file(&port_path);
                 break;

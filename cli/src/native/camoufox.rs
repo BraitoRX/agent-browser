@@ -303,40 +303,8 @@ pub fn failure(id: &str, code: &str, error: &str, poisoned: bool) -> Value {
 }
 
 pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
-    if flags.cli_hide_scrollbars || !flags.hide_scrollbars {
-        return Err("Scrollbar customization is not implemented by Camoufox V1".to_string());
-    }
-    if flags.allowed_domains.is_some()
-        || flags.cdp.is_some()
-        || flags.auto_connect
-        || flags.pin_tab
-        || flags.cli_pin_tab
-        || flags.state.is_some()
-        || flags.restore.is_some()
-        || flags.session_name.is_some()
-        || flags.restore_save.is_some()
-        || flags.restore_check_url.is_some()
-        || flags.restore_check_text.is_some()
-        || flags.restore_check_fn.is_some()
-        || flags.executable_path.is_some()
-        || flags.proxy.is_some()
-        || flags.args.is_some()
-        || flags.user_agent.is_some()
-        || flags.headers.is_some()
-        || !flags.extensions.is_empty()
-        || !flags.init_scripts.is_empty()
-        || !flags.enable.is_empty()
-        || flags.ignore_https_errors
-        || flags.ca_cert.is_some()
-        || flags.clear_ca_cert
-        || flags.allow_file_access
-        || flags.webgpu
-        || flags.no_xvfb
-        || flags.color_scheme.is_some()
-        || flags.download_path.is_some()
-        || flags.no_auto_dialog
-    {
-        return Err("Camoufox V1 does not support CDP/providers, state restoration, domain containment, launch plugins, proxy/custom browser settings, or pin-tab. Remove those settings or use a separate Chrome session.".to_string());
+    if flags.no_xvfb {
+        return Err("AGENT_BROWSER_NO_XVFB is unsupported by Camoufox V1".to_string());
     }
     if let Some(profile) = &flags.profile {
         profile_path(profile)?;
@@ -350,42 +318,6 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
 }
 
 pub fn validate_environment() -> Result<(), String> {
-    for key in [
-        "AGENT_BROWSER_ALLOWED_DOMAINS",
-        "AGENT_BROWSER_CDP",
-        "AGENT_BROWSER_PROVIDER",
-        "AGENT_BROWSER_SESSION_NAME",
-        "AGENT_BROWSER_RESTORE",
-        "AGENT_BROWSER_STATE",
-        "AGENT_BROWSER_EXECUTABLE_PATH",
-        "AGENT_BROWSER_PROXY",
-        "AGENT_BROWSER_ARGS",
-        "AGENT_BROWSER_USER_AGENT",
-        "AGENT_BROWSER_EXTENSIONS",
-        "AGENT_BROWSER_INIT_SCRIPTS",
-        "AGENT_BROWSER_ENABLE",
-        "AGENT_BROWSER_CA_CERT",
-        "AGENT_BROWSER_COLOR_SCHEME",
-        "AGENT_BROWSER_DOWNLOAD_PATH",
-        "AGENT_BROWSER_IOS_DEVICE",
-    ] {
-        if env::var(key).is_ok_and(|value| !value.trim().is_empty()) {
-            return Err(format!("{key} is unsupported by Camoufox V1"));
-        }
-    }
-    for key in [
-        "AGENT_BROWSER_AUTO_CONNECT",
-        "AGENT_BROWSER_PIN_TAB",
-        "AGENT_BROWSER_WEBGPU",
-        "AGENT_BROWSER_IGNORE_HTTPS_ERRORS",
-        "AGENT_BROWSER_ALLOW_FILE_ACCESS",
-        "AGENT_BROWSER_NO_XVFB",
-        "AGENT_BROWSER_NO_AUTO_DIALOG",
-    ] {
-        if env::var(key).is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "yes")) {
-            return Err(format!("{key} is unsupported by Camoufox V1"));
-        }
-    }
     Ok(())
 }
 

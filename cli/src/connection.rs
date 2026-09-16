@@ -434,39 +434,13 @@ pub struct DaemonResult {
 pub struct DaemonOptions<'a> {
     pub headed: bool,
     pub debug: bool,
-    pub executable_path: Option<&'a str>,
-    pub extensions: &'a [String],
-    pub init_scripts: &'a [String],
-    pub enable: &'a [String],
-    pub args: Option<&'a str>,
-    pub user_agent: Option<&'a str>,
-    pub proxy: Option<&'a str>,
-    pub proxy_bypass: Option<&'a str>,
-    pub proxy_username: Option<&'a str>,
-    pub proxy_password: Option<&'a str>,
-    pub ignore_https_errors: bool,
-    pub allow_file_access: bool,
-    pub hide_scrollbars: bool,
-    pub webgpu: bool,
     pub profile: Option<&'a str>,
     pub input_backend: Option<&'a str>,
-    pub state: Option<&'a str>,
-    pub session_name: Option<&'a str>,
-    pub restore_save: Option<&'a str>,
-    pub restore_check_url: Option<&'a str>,
-    pub restore_check_text: Option<&'a str>,
-    pub restore_check_fn: Option<&'a str>,
-    pub download_path: Option<&'a str>,
-    pub allowed_domains: Option<&'a [String]>,
     pub action_policy: Option<&'a str>,
     pub confirm_actions: Option<&'a str>,
     pub engine: Option<&'a str>,
-    pub auto_connect: bool,
-    pub pin_tab: bool,
     pub idle_timeout: Option<&'a str>,
     pub default_timeout: Option<u64>,
-    pub cdp: Option<&'a str>,
-    pub no_auto_dialog: bool,
 }
 
 fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
@@ -479,78 +453,11 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     if opts.debug {
         cmd.env("AGENT_BROWSER_DEBUG", "1");
     }
-    if let Some(path) = opts.executable_path {
-        cmd.env("AGENT_BROWSER_EXECUTABLE_PATH", path);
-    }
-    if !opts.extensions.is_empty() {
-        cmd.env("AGENT_BROWSER_EXTENSIONS", opts.extensions.join(","));
-    }
-    if !opts.init_scripts.is_empty() {
-        cmd.env("AGENT_BROWSER_INIT_SCRIPTS", opts.init_scripts.join(","));
-    }
-    if !opts.enable.is_empty() {
-        cmd.env("AGENT_BROWSER_ENABLE", opts.enable.join(","));
-    }
-    if let Some(a) = opts.args {
-        cmd.env("AGENT_BROWSER_ARGS", a);
-    }
-    if let Some(ua) = opts.user_agent {
-        cmd.env("AGENT_BROWSER_USER_AGENT", ua);
-    }
-    if let Some(p) = opts.proxy {
-        cmd.env("AGENT_BROWSER_PROXY", p);
-    }
-    if let Some(pb) = opts.proxy_bypass {
-        cmd.env("AGENT_BROWSER_PROXY_BYPASS", pb);
-    }
-    if let Some(pu) = opts.proxy_username {
-        cmd.env("AGENT_BROWSER_PROXY_USERNAME", pu);
-    }
-    if let Some(pp) = opts.proxy_password {
-        cmd.env("AGENT_BROWSER_PROXY_PASSWORD", pp);
-    }
-    if opts.ignore_https_errors {
-        cmd.env("AGENT_BROWSER_IGNORE_HTTPS_ERRORS", "1");
-    }
-    if opts.allow_file_access {
-        cmd.env("AGENT_BROWSER_ALLOW_FILE_ACCESS", "1");
-    }
-    cmd.env(
-        "AGENT_BROWSER_HIDE_SCROLLBARS",
-        if opts.hide_scrollbars { "1" } else { "0" },
-    );
-    if opts.webgpu {
-        cmd.env("AGENT_BROWSER_WEBGPU", "1");
-    }
     if let Some(prof) = opts.profile {
         cmd.env("AGENT_BROWSER_PROFILE", prof);
     }
     if let Some(backend) = opts.input_backend {
         cmd.env("AGENT_BROWSER_INPUT_BACKEND", backend);
-    }
-    if let Some(st) = opts.state {
-        cmd.env("AGENT_BROWSER_STATE", st);
-    }
-    if let Some(sn) = opts.session_name {
-        cmd.env("AGENT_BROWSER_SESSION_NAME", sn);
-    }
-    if let Some(policy) = opts.restore_save {
-        cmd.env("AGENT_BROWSER_RESTORE_SAVE", policy);
-    }
-    if let Some(check) = opts.restore_check_url {
-        cmd.env("AGENT_BROWSER_RESTORE_CHECK_URL", check);
-    }
-    if let Some(check) = opts.restore_check_text {
-        cmd.env("AGENT_BROWSER_RESTORE_CHECK_TEXT", check);
-    }
-    if let Some(check) = opts.restore_check_fn {
-        cmd.env("AGENT_BROWSER_RESTORE_CHECK_FN", check);
-    }
-    if let Some(dp) = opts.download_path {
-        cmd.env("AGENT_BROWSER_DOWNLOAD_PATH", dp);
-    }
-    if let Some(ad) = opts.allowed_domains {
-        cmd.env("AGENT_BROWSER_ALLOWED_DOMAINS", ad.join(","));
     }
     if let Some(ap) = opts.action_policy {
         cmd.env("AGENT_BROWSER_ACTION_POLICY", ap);
@@ -561,23 +468,11 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     if let Some(engine) = opts.engine {
         cmd.env("AGENT_BROWSER_ENGINE", engine);
     }
-    if opts.auto_connect {
-        cmd.env("AGENT_BROWSER_AUTO_CONNECT", "1");
-    }
-    if opts.pin_tab {
-        cmd.env("AGENT_BROWSER_PIN_TAB", "1");
-    }
     if let Some(idle) = opts.idle_timeout {
         cmd.env("AGENT_BROWSER_IDLE_TIMEOUT_MS", idle);
     }
     if let Some(timeout) = opts.default_timeout {
         cmd.env("AGENT_BROWSER_DEFAULT_TIMEOUT", timeout.to_string());
-    }
-    if let Some(cdp) = opts.cdp {
-        cmd.env("AGENT_BROWSER_CDP", cdp);
-    }
-    if opts.no_auto_dialog {
-        cmd.env("AGENT_BROWSER_NO_AUTO_DIALOG", "1");
     }
 }
 
@@ -588,7 +483,6 @@ fn daemon_config_fingerprint(opts: &DaemonOptions) -> String {
     opts.confirm_actions.hash(&mut hasher);
     opts.idle_timeout.hash(&mut hasher);
     opts.default_timeout.hash(&mut hasher);
-    opts.no_auto_dialog.hash(&mut hasher);
     opts.input_backend.hash(&mut hasher);
     format!("{:016x}", hasher.finish())
 }
@@ -1251,69 +1145,18 @@ mod tests {
 
     fn test_daemon_options<'a>(
         idle_timeout: Option<&'a str>,
-        no_auto_dialog: bool,
-        allowed_domains: Option<&'a [String]>,
     ) -> DaemonOptions<'a> {
         DaemonOptions {
             headed: false,
             debug: false,
-            executable_path: None,
-            extensions: &[],
-            init_scripts: &[],
-            enable: &[],
-            args: None,
-            user_agent: None,
-            proxy: None,
-            proxy_bypass: None,
-            proxy_username: None,
-            proxy_password: None,
-            ignore_https_errors: false,
-            allow_file_access: false,
-            hide_scrollbars: true,
-            webgpu: false,
             profile: None,
             input_backend: None,
-            state: None,
-            session_name: None,
-            restore_save: None,
-            restore_check_url: None,
-            restore_check_text: None,
-            restore_check_fn: None,
-            download_path: None,
-            allowed_domains,
             action_policy: None,
             confirm_actions: None,
             engine: Some("chrome"),
-            auto_connect: false,
-            pin_tab: false,
             idle_timeout,
             default_timeout: None,
-            cdp: None,
-            no_auto_dialog,
         }
-    }
-
-    #[test]
-    fn test_daemon_config_fingerprint_tracks_daemon_owned_options() {
-        let domains = vec!["example.com".to_string()];
-        let base = test_daemon_options(None, false, None);
-        let idle_changed = test_daemon_options(Some("1000"), false, None);
-        let dialog_changed = test_daemon_options(None, true, None);
-        let domains_changed = test_daemon_options(None, false, Some(&domains));
-
-        assert_ne!(
-            daemon_config_fingerprint(&base),
-            daemon_config_fingerprint(&idle_changed)
-        );
-        assert_ne!(
-            daemon_config_fingerprint(&base),
-            daemon_config_fingerprint(&dialog_changed)
-        );
-        assert_eq!(
-            daemon_config_fingerprint(&base),
-            daemon_config_fingerprint(&domains_changed),
-            "allowed domains are browser launch state, not daemon identity"
-        );
     }
 
     #[test]
@@ -1324,8 +1167,8 @@ mod tests {
         guard.remove("AGENT_BROWSER_NAMESPACE");
 
         let session = "race-config";
-        let winner_opts = test_daemon_options(Some("1000"), false, None);
-        let loser_opts = test_daemon_options(Some("2000"), false, None);
+        let winner_opts = test_daemon_options(Some("1000"));
+        let loser_opts = test_daemon_options(Some("2000"));
 
         fs::create_dir_all(get_socket_dir()).unwrap();
         fs::write(get_pid_path(session), "12345").unwrap();
@@ -1346,7 +1189,7 @@ mod tests {
         guard.remove("AGENT_BROWSER_NAMESPACE");
 
         let session = "race-config-match";
-        let opts = test_daemon_options(Some("1000"), false, None);
+        let opts = test_daemon_options(Some("1000"));
 
         fs::create_dir_all(get_socket_dir()).unwrap();
         fs::write(get_pid_path(session), "12345").unwrap();
@@ -1368,7 +1211,7 @@ mod tests {
         guard.remove("AGENT_BROWSER_NAMESPACE");
 
         let session = "startup-config";
-        let opts = test_daemon_options(Some("1000"), false, None);
+        let opts = test_daemon_options(Some("1000"));
         fs::create_dir_all(get_socket_dir()).unwrap();
 
         let config_path = get_config_path(session);
@@ -1395,7 +1238,7 @@ mod tests {
         guard.remove("AGENT_BROWSER_NAMESPACE");
 
         let session = "race-config-owner";
-        let opts = test_daemon_options(Some("1000"), false, None);
+        let opts = test_daemon_options(Some("1000"));
         let spawned_pid = 67890;
 
         fs::create_dir_all(get_socket_dir()).unwrap();

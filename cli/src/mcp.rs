@@ -4359,35 +4359,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn open_uses_cli_headless_selection_with_custom_windows_chrome() {
-        let guard = crate::test_utils::EnvGuard::new(&["AGENT_BROWSER_HEADED"]);
-        guard.set("AGENT_BROWSER_HEADED", "true");
-        // An MCP caller can explicitly select the headless/private-desktop
-        // launch path even when the user's default is headed.
-        let arguments = json!({
-            "headed": false,
-            "url": "https://example.com",
-            "extraArgs": ["--executable-path", "C:\\Chrome for Testing\\chrome.exe"]
-        });
-        let args = cli_tool_args(&arguments, open_args(&arguments).unwrap(), None).unwrap();
-        let mut flags = crate::flags::parse_flags(&args);
-        flags.engine = Some("chrome".to_string());
-        assert!(!flags.headed);
-        assert!(flags.cli_headed);
-        assert_eq!(
-            flags.executable_path.as_deref(),
-            Some("C:\\Chrome for Testing\\chrome.exe")
-        );
-        let command =
-            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
-        assert_eq!(command["action"], "navigate");
-        assert_eq!(command["url"], "https://example.com");
-        assert_eq!(
-            open_args(&json!({"headed": true})).unwrap(),
-            ["--headed", "true", "open"]
-        );
-    }
 
     #[test]
     fn webmcp_profile_is_opt_in_and_forwards_cli_arguments() {
