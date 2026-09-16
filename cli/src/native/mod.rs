@@ -3,8 +3,6 @@ pub mod a11y;
 #[allow(dead_code)]
 pub mod actions;
 #[allow(dead_code)]
-pub mod auth;
-#[allow(dead_code)]
 pub mod browser;
 pub mod camoufox;
 #[allow(dead_code)]
@@ -26,8 +24,6 @@ pub mod network;
 #[allow(dead_code)]
 pub mod policy;
 #[allow(dead_code)]
-pub mod providers;
-#[allow(dead_code)]
 pub mod recording;
 #[allow(dead_code)]
 pub mod screenshot;
@@ -43,7 +39,5 @@ pub mod stream;
 pub mod tab_binding;
 #[allow(dead_code)]
 pub mod tracing;
-#[allow(dead_code)]
-pub mod webdriver;
 #[allow(dead_code)]
 pub mod webmcp;

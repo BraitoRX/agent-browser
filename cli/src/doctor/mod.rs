@@ -17,7 +17,6 @@ mod fix;
 mod helpers;
 mod launch;
 mod network;
-mod providers;
 mod security;
 mod webgpu;
 
@@ -113,7 +112,6 @@ pub fn run_doctor(opts: DoctorOptions) -> i32 {
     daemon::check(&mut checks);
     config::check(&mut checks);
     security::check(&mut checks);
-    providers::check(&mut checks);
 
     if !opts.offline {
         network::check(&mut checks);

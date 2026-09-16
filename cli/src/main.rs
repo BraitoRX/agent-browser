@@ -9,6 +9,7 @@ mod install;
 mod mcp;
 mod native;
 mod output;
+#[allow(dead_code)]
 mod plugins;
 mod read;
 mod skills;
@@ -122,31 +123,10 @@ fn command_is_external_launch(cmd: &serde_json::Value) -> bool {
     cmd.get("action").and_then(|value| value.as_str()) == Some("launch")
         && (cmd.get("cdpUrl").is_some()
             || cmd.get("cdpPort").is_some()
-            || cmd.get("provider").is_some()
             || cmd
                 .get("autoConnect")
                 .and_then(|value| value.as_bool())
                 .unwrap_or(false))
-}
-
-fn build_provider_launch_command(provider: &str, flags: &Flags) -> serde_json::Value {
-    let mut launch_cmd = json!({
-        "id": gen_id(),
-        "action": "launch",
-        "provider": provider
-    });
-    launch_cmd["plugins"] = json!(flags.plugins.clone());
-    attach_script_launch_options(&mut launch_cmd, flags);
-    attach_webmcp_launch_option(&mut launch_cmd, flags);
-    attach_allowed_domains_to_launch_command(&mut launch_cmd, flags);
-    attach_restore_config_to_command(&mut launch_cmd, flags);
-    attach_ca_cert_to_launch_command(&mut launch_cmd, flags);
-
-    if let Some(ref cs) = flags.color_scheme {
-        launch_cmd["colorScheme"] = json!(cs);
-    }
-
-    launch_cmd
 }
 
 fn restore_key_from_flags(flags: &Flags) -> Option<&str> {
@@ -158,22 +138,8 @@ fn is_valid_restore_save_policy(policy: &str) -> bool {
 }
 
 fn incompatible_launch_mode_error(flags: &Flags) -> Option<&'static str> {
-    if flags.cdp.is_some() && flags.provider.is_some() {
-        return Some("Cannot use --cdp and -p/--provider together");
-    }
-
     if flags.auto_connect && flags.cdp.is_some() {
         return Some("Cannot use --auto-connect and --cdp together");
-    }
-
-    if flags.auto_connect && flags.provider.is_some() {
-        return Some("Cannot use --auto-connect and -p/--provider together");
-    }
-
-    if flags.provider.is_some() && !flags.extensions.is_empty() {
-        return Some(
-            "Cannot use --extension with -p/--provider (extensions require local browser)",
-        );
     }
 
     if flags.cdp.is_some() && !flags.extensions.is_empty() {
@@ -187,11 +153,6 @@ fn incompatible_launch_mode_error(flags: &Flags) -> Option<&'static str> {
     if flags.webgpu && flags.cdp.is_some() {
         return Some(
             "Cannot use --webgpu with --cdp (the WebGPU preset requires a local browser launch; pass --webgpu false to override env/config)",
-        );
-    }
-    if flags.webgpu && flags.provider.is_some() {
-        return Some(
-            "Cannot use --webgpu with -p/--provider (the WebGPU preset requires a local browser launch; pass --webgpu false to override env/config)",
         );
     }
     if flags.webgpu && flags.auto_connect {
@@ -214,11 +175,6 @@ fn incompatible_launch_mode_error(flags: &Flags) -> Option<&'static str> {
     if flags.ca_cert.is_some() && flags.auto_connect {
         return Some(
             "Cannot use --ca-cert with --auto-connect (--ca-cert requires a locally launched Chromium browser on Linux)",
-        );
-    }
-    if flags.ca_cert.is_some() && flags.provider.is_some() {
-        return Some(
-            "Cannot use --ca-cert with -p/--provider (--ca-cert requires a locally launched Chromium browser on Linux)",
         );
     }
     if flags.ca_cert.is_some() && flags.profile.is_some() {
@@ -286,7 +242,6 @@ fn should_send_local_launch_config(flags: &Flags, command: &serde_json::Value) -
         || !flags.enable.is_empty()
         || !flags.extensions.is_empty())
         && flags.cdp.is_none()
-        && flags.provider.is_none()
         && !flags.auto_connect
         && !command_is_external_launch(command)
 }
@@ -1805,8 +1760,6 @@ fn main() {
         profile: flags.profile.as_deref(),
         input_backend: flags.input_backend.as_deref(),
         state: flags.state.as_deref(),
-        provider: flags.provider.as_deref(),
-        device: flags.device.as_deref(),
         session_name: restore_key,
         restore_save: flags.restore_save.as_deref(),
         restore_check_url: flags.restore_check_url.as_deref(),
@@ -1988,28 +1941,6 @@ fn main() {
         }
     }
 
-    // Launch with cloud provider if -p flag is set.
-    if let Some(ref provider) = flags.provider {
-        let launch_cmd = build_provider_launch_command(provider, &flags);
-
-        let err = match send_command(launch_cmd, &flags.session) {
-            Ok(resp) if resp.success => None,
-            Ok(resp) => Some(
-                resp.error
-                    .unwrap_or_else(|| "Provider connection failed".to_string()),
-            ),
-            Err(e) => Some(e.to_string()),
-        };
-
-        if let Some(msg) = err {
-            if flags.json {
-                print_json_error(msg);
-            } else {
-                eprintln!("{} {}", color::error_indicator(), msg);
-            }
-            exit(1);
-        }
-    }
 
     // Launch headed browser or configure browser options (without CDP or provider)
     if should_send_local_launch_config(&flags, &cmd) {
@@ -2582,7 +2513,6 @@ mod tests {
         flags.enable.clear();
         flags.extensions.clear();
         flags.cdp = None;
-        flags.provider = None;
         flags.auto_connect = false;
         flags
     }
@@ -2622,17 +2552,6 @@ mod tests {
     }
 
     #[test]
-    fn test_provider_launch_command_preserves_ca_clear_transition() {
-        let mut flags = neutral_launch_config_flags();
-        flags.clear_ca_cert = true;
-
-        let cmd = build_provider_launch_command("browserbase", &flags);
-
-        assert_eq!(cmd["clearCaCert"], true);
-        assert!(cmd.get("caCert").is_none());
-    }
-
-    #[test]
     fn test_ca_cert_launch_transition_distinguishes_set_omit_and_clear() {
         let mut flags = neutral_launch_config_flags();
         let mut omitted = json!({ "action": "launch" });
@@ -2652,19 +2571,6 @@ mod tests {
         attach_ca_cert_to_launch_command(&mut cleared, &flags);
         assert!(cleared.get("caCert").is_none());
         assert_eq!(cleared["clearCaCert"], true);
-    }
-
-    #[test]
-    fn test_connect_launch_command_preserves_ca_clear_transition() {
-        let mut flags = neutral_launch_config_flags();
-        flags.engine = Some("chrome".to_string());
-        flags.clear_ca_cert = true;
-        flags.cdp = None;
-        let cmd = parse_command(&["connect".to_string(), "9222".to_string()], &flags).unwrap();
-
-        assert_eq!(cmd["cdpPort"], 9222);
-        assert_eq!(cmd["clearCaCert"], true);
-        assert!(!should_send_local_launch_config(&flags, &cmd));
     }
 
     #[test]
@@ -2790,13 +2696,12 @@ mod tests {
         assert!(cmd["restoreCheckFn"].is_null());
     }
 
-    fn launch_mode_flags(auto_connect: bool, cdp: bool, provider: bool, extensions: bool) -> Flags {
+    fn launch_mode_flags(auto_connect: bool, cdp: bool, extensions: bool) -> Flags {
         let mut flags = parse_flags(&[]);
         // Deterministic regardless of ambient AGENT_BROWSER_WEBGPU.
         flags.webgpu = false;
         flags.auto_connect = auto_connect;
         flags.cdp = cdp.then(|| "9222".to_string());
-        flags.provider = provider.then(|| "ios".to_string());
         flags.extensions = if extensions {
             vec!["/tmp/ext".to_string()]
         } else {
@@ -2809,23 +2714,11 @@ mod tests {
     fn test_incompatible_launch_mode_error_matches_existing_messages() {
         let cases = [
             (
-                launch_mode_flags(false, true, true, false),
-                "Cannot use --cdp and -p/--provider together",
-            ),
-            (
-                launch_mode_flags(true, true, false, false),
+                launch_mode_flags(true, true, false),
                 "Cannot use --auto-connect and --cdp together",
             ),
             (
-                launch_mode_flags(true, false, true, false),
-                "Cannot use --auto-connect and -p/--provider together",
-            ),
-            (
-                launch_mode_flags(false, false, true, true),
-                "Cannot use --extension with -p/--provider (extensions require local browser)",
-            ),
-            (
-                launch_mode_flags(false, true, false, true),
+                launch_mode_flags(false, true, true),
                 "Cannot use --extension with --cdp (extensions require local browser)",
             ),
         ];
@@ -2843,15 +2736,11 @@ mod tests {
         };
         let cases = [
             (
-                with_webgpu(launch_mode_flags(false, true, false, false)),
+                with_webgpu(launch_mode_flags(false, true, false)),
                 "Cannot use --webgpu with --cdp (the WebGPU preset requires a local browser launch; pass --webgpu false to override env/config)",
             ),
             (
-                with_webgpu(launch_mode_flags(false, false, true, false)),
-                "Cannot use --webgpu with -p/--provider (the WebGPU preset requires a local browser launch; pass --webgpu false to override env/config)",
-            ),
-            (
-                with_webgpu(launch_mode_flags(true, false, false, false)),
+                with_webgpu(launch_mode_flags(true, false, false)),
                 "Cannot use --webgpu with --auto-connect (the WebGPU preset requires a local browser launch; pass --webgpu false to override env/config)",
             ),
         ];
@@ -2862,13 +2751,13 @@ mod tests {
         // webgpu alone (local launch) is fine.
         assert_eq!(
             incompatible_launch_mode_error(&with_webgpu(launch_mode_flags(
-                false, false, false, false
+                false, false, false
             ))),
             None
         );
         // Attach modes without webgpu stay allowed.
         assert_eq!(
-            incompatible_launch_mode_error(&launch_mode_flags(false, true, false, false)),
+            incompatible_launch_mode_error(&launch_mode_flags(false, true, false)),
             None
         );
     }
@@ -2879,25 +2768,21 @@ mod tests {
             flags.ca_cert = Some("/tmp/ca.pem".to_string());
             flags
         };
-        let mut clear = with_ca(launch_mode_flags(false, false, false, false));
+        let mut clear = with_ca(launch_mode_flags(false, false, false));
         clear.clear_ca_cert = true;
-        let mut ignore_errors = with_ca(launch_mode_flags(false, false, false, false));
+        let mut ignore_errors = with_ca(launch_mode_flags(false, false, false));
         ignore_errors.ignore_https_errors = true;
-        let mut profile = with_ca(launch_mode_flags(false, false, false, false));
+        let mut profile = with_ca(launch_mode_flags(false, false, false));
         profile.profile = Some("/tmp/profile".to_string());
 
         let cases = [
             (
-                with_ca(launch_mode_flags(false, true, false, false)),
+                with_ca(launch_mode_flags(false, true, false)),
                 "Cannot use --ca-cert with --cdp (--ca-cert requires a locally launched Chromium browser on Linux)",
             ),
             (
-                with_ca(launch_mode_flags(true, false, false, false)),
+                with_ca(launch_mode_flags(true, false, false)),
                 "Cannot use --ca-cert with --auto-connect (--ca-cert requires a locally launched Chromium browser on Linux)",
-            ),
-            (
-                with_ca(launch_mode_flags(false, false, true, false)),
-                "Cannot use --ca-cert with -p/--provider (--ca-cert requires a locally launched Chromium browser on Linux)",
             ),
             (
                 ignore_errors,
@@ -2918,15 +2803,15 @@ mod tests {
     #[test]
     fn test_incompatible_launch_mode_error_allows_compatible_flags() {
         assert_eq!(
-            incompatible_launch_mode_error(&launch_mode_flags(true, false, false, false)),
+            incompatible_launch_mode_error(&launch_mode_flags(true, false, false)),
             None
         );
         assert_eq!(
-            incompatible_launch_mode_error(&launch_mode_flags(false, true, false, false)),
+            incompatible_launch_mode_error(&launch_mode_flags(false, true, false)),
             None
         );
         assert_eq!(
-            incompatible_launch_mode_error(&launch_mode_flags(false, false, true, false)),
+            incompatible_launch_mode_error(&launch_mode_flags(false, false, false)),
             None
         );
     }

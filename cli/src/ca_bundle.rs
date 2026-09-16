@@ -78,16 +78,6 @@ fn bundle(mut certs: Vec<CertificateDer<'static>>) -> CaBundle {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn test_bundle(identity: &[u8]) -> CaBundle {
-    let mut hasher = Sha256::new();
-    hasher.update(identity);
-    CaBundle {
-        certs: Vec::new(),
-        digest: hasher.finalize().into(),
-    }
-}
-
 /// True when a trust-anchor conversion accepts these bytes as an X.509
 /// certificate. This is the same check `RootCertStore::add` performs.
 ///

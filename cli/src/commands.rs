@@ -133,10 +133,8 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "quit"
             | "exit"
             | "inspect"
-            | "auth"
             | "confirm"
             | "deny"
-            | "connect"
             | "stream"
             | "get"
             | "is"
@@ -160,7 +158,6 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "state"
             | "tap"
             | "swipe"
-            | "device"
             | "diff"
             | "batch"
             | "vitals"
@@ -458,9 +455,6 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             };
             let url = normalize_navigation_url(url);
             let mut nav_cmd = json!({ "id": id, "action": "navigate", "url": url });
-            if flags.provider.is_some() {
-                nav_cmd["waitUntil"] = json!("none");
-            }
             if let Some(ref headers_json) = flags.headers {
                 let headers =
                     serde_json::from_str::<serde_json::Value>(headers_json).map_err(|_| {
@@ -470,12 +464,6 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                         }
                     })?;
                 nav_cmd["headers"] = headers;
-            }
-            // Include iOS device info if specified (needed for auto-launch with existing daemon)
-            if flags.provider.as_deref() == Some("ios") {
-                if let Some(ref device) = flags.device {
-                    nav_cmd["iosDevice"] = json!(device);
-                }
             }
             Ok(nav_cmd)
         }
@@ -1050,325 +1038,6 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         // === Inspect ===
         "inspect" => Ok(json!({ "id": id, "action": "inspect" })),
 
-        // === Authentication Vault ===
-        "auth" => {
-            let sub = rest.first().map(|s| s.as_ref());
-            match sub {
-                Some("save") => {
-                    let name = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth save".to_string(),
-                        usage: "agent-browser auth save <name> --url <url> --username <user> --password <pass>",
-                    })?;
-
-                    let mut url = None;
-                    let mut username = None;
-                    let mut password = None;
-                    let mut password_stdin = false;
-                    let mut username_selector = None;
-                    let mut password_selector = None;
-                    let mut submit_selector = None;
-
-                    let mut j = 2;
-                    while j < rest.len() {
-                        match rest[j] {
-                            "--url" => {
-                                url = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            "--username" => {
-                                username = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            "--password" => {
-                                password = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            "--password-stdin" => {
-                                password_stdin = true;
-                            }
-                            "--username-selector" => {
-                                username_selector = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            "--password-selector" => {
-                                password_selector = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            "--submit-selector" => {
-                                submit_selector = rest.get(j + 1).cloned();
-                                j += 1;
-                            }
-                            other => {
-                                if other.starts_with("--") {
-                                    return Err(ParseError::InvalidValue {
-                                        message: format!("unknown flag '{}' for auth save", other),
-                                        usage: "agent-browser auth save <name> --url <url> --username <user> --password <pass>",
-                                    });
-                                }
-                            }
-                        }
-                        j += 1;
-                    }
-
-                    let url_val = url.ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth save".to_string(),
-                        usage: "agent-browser auth save <name> --url <url> --username <user> --password <pass> [--password-stdin]",
-                    })?;
-                    let user_val = username.ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth save".to_string(),
-                        usage: "agent-browser auth save <name> --url <url> --username <user> --password <pass> [--password-stdin]",
-                    })?;
-
-                    if !password_stdin && password.is_none() {
-                        return Err(ParseError::MissingArguments {
-                            context: "auth save".to_string(),
-                            usage: "agent-browser auth save <name> --url <url> --username <user> --password <pass> [--password-stdin]",
-                        });
-                    }
-
-                    let mut cmd = json!({
-                        "id": id,
-                        "action": "auth_save",
-                        "name": name,
-                        "url": url_val,
-                        "username": user_val,
-                    });
-                    if password_stdin {
-                        cmd["passwordStdin"] = json!(true);
-                    }
-                    if let Some(pass_val) = password {
-                        cmd["password"] = json!(pass_val);
-                    }
-                    if let Some(us) = username_selector {
-                        cmd["usernameSelector"] = json!(us);
-                    }
-                    if let Some(ps) = password_selector {
-                        cmd["passwordSelector"] = json!(ps);
-                    }
-                    if let Some(ss) = submit_selector {
-                        cmd["submitSelector"] = json!(ss);
-                    }
-                    Ok(cmd)
-                }
-                Some("login") => {
-                    const AUTH_LOGIN_USAGE: &str = "agent-browser auth login <name> [--no-navigate] [--credential-provider <plugin>] [--item <ref>] [--url <url>] [--username-selector <s>] [--password-selector <s>] [--submit-selector <s>]";
-                    let name = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth login".to_string(),
-                        usage: AUTH_LOGIN_USAGE,
-                    })?;
-                    let mut credential_provider: Option<String> = None;
-                    let mut credential_item: Option<String> = None;
-                    let mut url: Option<String> = None;
-                    let mut username_selector: Option<String> = None;
-                    let mut password_selector: Option<String> = None;
-                    let mut submit_selector: Option<String> = None;
-                    let mut no_navigate = false;
-
-                    let mut j = 2;
-                    while j < rest.len() {
-                        match rest[j] {
-                            "--no-navigate" => {
-                                if rest
-                                    .get(j + 1)
-                                    .is_some_and(|value| !value.starts_with("--"))
-                                {
-                                    return Err(ParseError::InvalidValue {
-                                        message: "--no-navigate does not accept a value"
-                                            .to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                }
-                                no_navigate = true;
-                            }
-                            "--credential-provider" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --credential-provider".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                credential_provider = Some((*value).to_string());
-                                j += 1;
-                            }
-                            "--item" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --item".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                credential_item = Some((*value).to_string());
-                                j += 1;
-                            }
-                            "--url" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --url".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                url = Some((*value).to_string());
-                                j += 1;
-                            }
-                            "--username-selector" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --username-selector".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                username_selector = Some((*value).to_string());
-                                j += 1;
-                            }
-                            "--password-selector" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --password-selector".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                password_selector = Some((*value).to_string());
-                                j += 1;
-                            }
-                            "--submit-selector" => {
-                                let Some(value) = rest.get(j + 1).filter(|v| !v.starts_with("--"))
-                                else {
-                                    return Err(ParseError::MissingArguments {
-                                        context: "auth login --submit-selector".to_string(),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                };
-                                submit_selector = Some((*value).to_string());
-                                j += 1;
-                            }
-                            other => {
-                                if other.starts_with("--") {
-                                    return Err(ParseError::InvalidValue {
-                                        message: format!("unknown flag '{}' for auth login", other),
-                                        usage: AUTH_LOGIN_USAGE,
-                                    });
-                                }
-                            }
-                        }
-                        j += 1;
-                    }
-
-                    let mut cmd = json!({ "id": id, "action": "auth_login", "name": name });
-                    if let Some(provider) = credential_provider {
-                        cmd["credentialProvider"] = json!(provider);
-                    }
-                    if let Some(item) = credential_item {
-                        cmd["credentialItem"] = json!(item);
-                    }
-                    if let Some(url) = url {
-                        cmd["url"] = json!(url);
-                    }
-                    if let Some(us) = username_selector {
-                        cmd["usernameSelector"] = json!(us);
-                    }
-                    if let Some(ps) = password_selector {
-                        cmd["passwordSelector"] = json!(ps);
-                    }
-                    if let Some(ss) = submit_selector {
-                        cmd["submitSelector"] = json!(ss);
-                    }
-                    if no_navigate {
-                        // Invocation-only behavior. This is intentionally not
-                        // stored in AuthProfile or credential provider data.
-                        cmd["noNavigate"] = json!(true);
-                    }
-                    Ok(cmd)
-                }
-                Some("list") => Ok(json!({ "id": id, "action": "auth_list" })),
-                Some("delete") | Some("remove") => {
-                    let name = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth delete".to_string(),
-                        usage: "agent-browser auth delete <name>",
-                    })?;
-                    Ok(json!({ "id": id, "action": "auth_delete", "name": name }))
-                }
-                Some("show") => {
-                    let name = rest.get(1).ok_or_else(|| ParseError::MissingArguments {
-                        context: "auth show".to_string(),
-                        usage: "agent-browser auth show <name>",
-                    })?;
-                    Ok(json!({ "id": id, "action": "auth_show", "name": name }))
-                }
-                _ => Err(ParseError::UnknownSubcommand {
-                    subcommand: sub.unwrap_or("(none)").to_string(),
-                    valid_options: &["save", "login", "list", "delete", "show"],
-                }),
-            }
-        }
-
-        // === Action Confirmation ===
-        "confirm" => {
-            let cid = rest.first().ok_or_else(|| ParseError::MissingArguments {
-                context: "confirm".to_string(),
-                usage: "agent-browser confirm <confirmation-id>",
-            })?;
-            Ok(json!({ "id": id, "action": "confirm", "confirmationId": cid }))
-        }
-        "deny" => {
-            let cid = rest.first().ok_or_else(|| ParseError::MissingArguments {
-                context: "deny".to_string(),
-                usage: "agent-browser deny <confirmation-id>",
-            })?;
-            Ok(json!({ "id": id, "action": "deny", "confirmationId": cid }))
-        }
-
-        // === Connect (CDP) ===
-        "connect" => {
-            let endpoint = rest.first().ok_or_else(|| ParseError::MissingArguments {
-                context: "connect".to_string(),
-                usage: "connect <port|url>",
-            })?;
-            // Check if it's a URL (ws://, wss://, http://, https://)
-            if endpoint.starts_with("ws://")
-                || endpoint.starts_with("wss://")
-                || endpoint.starts_with("http://")
-                || endpoint.starts_with("https://")
-            {
-                Ok(json!({ "id": id, "action": "launch", "cdpUrl": endpoint }))
-            } else {
-                // It's a port number - validate and use cdpPort field
-                let port: u16 = match endpoint.parse::<u32>() {
-                    Ok(0) => {
-                        return Err(ParseError::InvalidValue {
-                            message: "Invalid port: port must be greater than 0".to_string(),
-                            usage: "connect <port|url>",
-                        });
-                    }
-                    Ok(p) if p > 65535 => {
-                        return Err(ParseError::InvalidValue {
-                            message: format!(
-                                "Invalid port: {} is out of range (valid range: 1-65535)",
-                                p
-                            ),
-                            usage: "connect <port|url>",
-                        });
-                    }
-                    Ok(p) => p as u16,
-                    Err(_) => {
-                        return Err(ParseError::InvalidValue {
-                            message: format!(
-                                "Invalid value: '{}' is not a valid port number or URL",
-                                endpoint
-                            ),
-                            usage: "connect <port|url>",
-                        });
-                    }
-                };
-                Ok(json!({ "id": id, "action": "launch", "cdpPort": port }))
-            }
-        }
-
-        // === Runtime stream control ===
         "stream" => match rest.first().copied() {
             Some("enable") => {
                 let mut cmd = json!({ "id": id, "action": "stream_enable" });
@@ -3756,7 +3425,6 @@ mod tests {
             proxy_bypass: None,
             args: None,
             user_agent: None,
-            provider: None,
             ignore_https_errors: false,
             ca_cert: None,
             clear_ca_cert: false,
@@ -3766,7 +3434,6 @@ mod tests {
             adblock: false,
             no_webmcp: false,
             no_xvfb: false,
-            device: None,
             auto_connect: false,
             pin_tab: false,
             session_name: None,
@@ -5928,101 +5595,15 @@ mod tests {
 
     // === Connect (CDP) tests ===
 
-    #[test]
-    fn test_connect_with_port() {
-        let cmd = parse_command(&args("connect 9222"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(cmd["cdpPort"], 9222);
-        assert!(cmd.get("cdpUrl").is_none());
-    }
 
-    #[test]
-    fn test_connect_with_ws_url() {
-        let input: Vec<String> = vec![
-            "connect".to_string(),
-            "ws://localhost:9222/devtools/browser/abc123".to_string(),
-        ];
-        let cmd = parse_command(&input, &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(cmd["cdpUrl"], "ws://localhost:9222/devtools/browser/abc123");
-        assert!(cmd.get("cdpPort").is_none());
-    }
 
-    #[test]
-    fn test_connect_with_wss_url() {
-        let input: Vec<String> = vec![
-            "connect".to_string(),
-            "wss://remote-browser.example.com/cdp?token=xyz".to_string(),
-        ];
-        let cmd = parse_command(&input, &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(
-            cmd["cdpUrl"],
-            "wss://remote-browser.example.com/cdp?token=xyz"
-        );
-        assert!(cmd.get("cdpPort").is_none());
-    }
 
-    #[test]
-    fn test_connect_with_http_url() {
-        let input: Vec<String> = vec!["connect".to_string(), "http://localhost:9222".to_string()];
-        let cmd = parse_command(&input, &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(cmd["cdpUrl"], "http://localhost:9222");
-        assert!(cmd.get("cdpPort").is_none());
-    }
 
-    #[test]
-    fn test_connect_missing_argument() {
-        let result = parse_command(&args("connect"), &default_flags());
-        assert!(result.is_err());
-        assert!(matches!(
-            result.unwrap_err(),
-            ParseError::MissingArguments { .. }
-        ));
-    }
 
-    #[test]
-    fn test_connect_invalid_port() {
-        let result = parse_command(&args("connect notanumber"), &default_flags());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, ParseError::InvalidValue { .. }));
-        assert!(err.format().contains("not a valid port number or URL"));
-    }
 
-    #[test]
-    fn test_connect_port_zero() {
-        let result = parse_command(&args("connect 0"), &default_flags());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, ParseError::InvalidValue { .. }));
-        assert!(err.format().contains("port must be greater than 0"));
-    }
 
-    #[test]
-    fn test_connect_port_out_of_range() {
-        let result = parse_command(&args("connect 65536"), &default_flags());
-        assert!(result.is_err());
-        let err = result.unwrap_err();
-        assert!(matches!(err, ParseError::InvalidValue { .. }));
-        assert!(err.format().contains("out of range"));
-        assert!(err.format().contains("1-65535"));
-    }
 
-    #[test]
-    fn test_connect_port_max_valid() {
-        let cmd = parse_command(&args("connect 65535"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(cmd["cdpPort"], 65535);
-    }
 
-    #[test]
-    fn test_connect_port_min_valid() {
-        let cmd = parse_command(&args("connect 1"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "launch");
-        assert_eq!(cmd["cdpPort"], 1);
-    }
 
     // === Runtime stream control tests ===
 
@@ -6741,99 +6322,10 @@ mod tests {
         assert!(cmd.get("commands").is_none());
     }
 
-    #[test]
-    fn test_auth_login_credential_provider_flags() {
-        let cmd = parse_command(
-            &args(
-                "auth login github --credential-provider onepassword --item GitHub --url https://github.com/login --username-selector #login_field --password-selector #password --submit-selector input[type=submit]",
-            ),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "auth_login");
-        assert_eq!(cmd["name"], "github");
-        assert_eq!(cmd["credentialProvider"], "onepassword");
-        assert_eq!(cmd["credentialItem"], "GitHub");
-        assert_eq!(cmd["url"], "https://github.com/login");
-        assert_eq!(cmd["usernameSelector"], "#login_field");
-        assert_eq!(cmd["passwordSelector"], "#password");
-        assert_eq!(cmd["submitSelector"], "input[type=submit]");
-        assert!(cmd.get("noNavigate").is_none());
-    }
 
-    #[test]
-    fn test_auth_login_no_navigate() {
-        let cmd =
-            parse_command(&args("auth login github --no-navigate"), &default_flags()).unwrap();
 
-        assert_eq!(cmd["action"], "auth_login");
-        assert_eq!(cmd["name"], "github");
-        assert_eq!(cmd["noNavigate"], true);
-        assert!(cmd.get("url").is_none());
-    }
 
-    #[test]
-    fn test_auth_login_no_navigate_with_url() {
-        let cmd = parse_command(
-            &args("auth login github --no-navigate --url https://github.com/login"),
-            &default_flags(),
-        )
-        .unwrap();
 
-        assert_eq!(cmd["action"], "auth_login");
-        assert_eq!(cmd["name"], "github");
-        assert_eq!(cmd["noNavigate"], true);
-        assert_eq!(cmd["url"], "https://github.com/login");
-    }
 
-    #[test]
-    fn test_auth_login_no_navigate_combines_with_provider_and_selectors() {
-        let cmd = parse_command(
-            &args(
-                "auth login work --credential-provider vault --item Work --no-navigate --username-selector #email --password-selector #pass --submit-selector #submit",
-            ),
-            &default_flags(),
-        )
-        .unwrap();
 
-        assert_eq!(cmd["credentialProvider"], "vault");
-        assert_eq!(cmd["credentialItem"], "Work");
-        assert_eq!(cmd["noNavigate"], true);
-        assert_eq!(cmd["usernameSelector"], "#email");
-        assert_eq!(cmd["passwordSelector"], "#pass");
-        assert_eq!(cmd["submitSelector"], "#submit");
-    }
-
-    #[test]
-    fn test_auth_login_no_navigate_rejects_value() {
-        let err = parse_command(
-            &args("auth login github --no-navigate true"),
-            &default_flags(),
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, ParseError::InvalidValue { .. }));
-    }
-
-    #[test]
-    fn test_auth_login_credential_provider_requires_value() {
-        let err = parse_command(
-            &args("auth login github --credential-provider"),
-            &default_flags(),
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, ParseError::MissingArguments { .. }));
-    }
-
-    #[test]
-    fn test_auth_login_item_does_not_consume_next_flag_as_value() {
-        let err = parse_command(
-            &args("auth login github --credential-provider vault --item --url https://github.com/login"),
-            &default_flags(),
-        )
-        .unwrap_err();
-
-        assert!(matches!(err, ParseError::MissingArguments { .. }));
-    }
 }

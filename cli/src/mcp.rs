@@ -126,11 +126,6 @@ const TOOL_CLIPBOARD_READ: &str = "agent_browser_clipboard_read";
 const TOOL_CLIPBOARD_WRITE: &str = "agent_browser_clipboard_write";
 const TOOL_CLIPBOARD_COPY: &str = "agent_browser_clipboard_copy";
 const TOOL_CLIPBOARD_PASTE: &str = "agent_browser_clipboard_paste";
-const TOOL_AUTH_SAVE: &str = "agent_browser_auth_save";
-const TOOL_AUTH_LOGIN: &str = "agent_browser_auth_login";
-const TOOL_AUTH_LIST: &str = "agent_browser_auth_list";
-const TOOL_AUTH_SHOW: &str = "agent_browser_auth_show";
-const TOOL_AUTH_DELETE: &str = "agent_browser_auth_delete";
 const TOOL_STATE_SAVE: &str = "agent_browser_state_save";
 const TOOL_STATE_LOAD: &str = "agent_browser_state_load";
 const TOOL_STATE_LIST: &str = "agent_browser_state_list";
@@ -151,7 +146,6 @@ const TOOL_PUSHSTATE: &str = "agent_browser_pushstate";
 const TOOL_REMOVE_INIT_SCRIPT: &str = "agent_browser_remove_init_script";
 const TOOL_CONFIRM: &str = "agent_browser_confirm";
 const TOOL_DENY: &str = "agent_browser_deny";
-const TOOL_CONNECT: &str = "agent_browser_connect";
 const TOOL_STREAM_ENABLE: &str = "agent_browser_stream_enable";
 const TOOL_STREAM_DISABLE: &str = "agent_browser_stream_disable";
 const TOOL_STREAM_STATUS: &str = "agent_browser_stream_status";
@@ -478,11 +472,6 @@ const STATE_PROFILE_TOOLS: &[&str] = &[
     TOOL_COOKIES_SET,
     TOOL_COOKIES_SET_CURL,
     TOOL_COOKIES_CLEAR,
-    TOOL_AUTH_SAVE,
-    TOOL_AUTH_LOGIN,
-    TOOL_AUTH_LIST,
-    TOOL_AUTH_SHOW,
-    TOOL_AUTH_DELETE,
     TOOL_STATE_SAVE,
     TOOL_STATE_LOAD,
     TOOL_STATE_LIST,
@@ -531,7 +520,6 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
     TOOL_BATCH,
     TOOL_CONFIRM,
     TOOL_DENY,
-    TOOL_CONNECT,
     TOOL_STREAM_ENABLE,
     TOOL_STREAM_DISABLE,
     TOOL_STREAM_STATUS,
@@ -1904,56 +1892,6 @@ fn parity_tools() -> Vec<Value> {
             &[],
         ),
         tool(
-            TOOL_AUTH_SAVE,
-            "Auth save",
-            "Save an auth profile.",
-            json!({
-                "name": { "type": "string" },
-                "url": { "type": "string" },
-                "username": { "type": "string" },
-                "password": { "type": "string", "description": "Password to send through child stdin." },
-                "usernameSelector": { "type": "string" },
-                "passwordSelector": { "type": "string" },
-                "submitSelector": { "type": "string" }
-            }),
-            &["name", "url", "username", "password"],
-        ),
-        tool(
-            TOOL_AUTH_LOGIN,
-            "Auth login",
-            "Log in with a saved auth profile.",
-            json!({
-                "name": { "type": "string" },
-                "noNavigate": {
-                    "type": "boolean",
-                    "default": false,
-                    "description": "Use the active top-level page without performing the initial login navigation. The credential URL must match the page origin."
-                }
-            }),
-            &["name"],
-        ),
-        tool(
-            TOOL_AUTH_LIST,
-            "Auth list",
-            "List auth profiles.",
-            json!({}),
-            &[],
-        ),
-        tool(
-            TOOL_AUTH_SHOW,
-            "Auth show",
-            "Show auth profile metadata.",
-            json!({ "name": { "type": "string" } }),
-            &["name"],
-        ),
-        tool(
-            TOOL_AUTH_DELETE,
-            "Auth delete",
-            "Delete an auth profile.",
-            json!({ "name": { "type": "string" } }),
-            &["name"],
-        ),
-        tool(
             TOOL_STATE_SAVE,
             "State save",
             "Save cookies and storage state.",
@@ -2097,16 +2035,6 @@ fn parity_tools() -> Vec<Value> {
             "Deny a pending action.",
             json!({ "id": { "type": "string" } }),
             &["id"],
-        ),
-        tool(
-            TOOL_CONNECT,
-            "Connect CDP",
-            "Connect to a browser over CDP. With pinTab, the session is strictly bound to its own tab: it re-binds by target id after restarts and fails with a tab_gone error instead of adopting another tab. Structured errors include code=tab_gone, data.targetId, and optional sanitized data.lastUrl. Pass pinTab: false to explicitly disable a sticky pin; omit it to keep the current state.",
-            json!({
-                "target": { "type": "string", "description": "CDP port or URL." },
-                "pinTab": { "type": "boolean", "description": "Strict session-to-tab binding (sticky for the session). Explicit false disables a sticky pin; omitted leaves it unchanged." }
-            }),
-            &["target"],
         ),
         tool(
             TOOL_STREAM_ENABLE,
@@ -2507,8 +2435,6 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_TAB_LIST
             | TOOL_DIALOG_STATUS
             | TOOL_CLIPBOARD_READ
-            | TOOL_AUTH_LIST
-            | TOOL_AUTH_SHOW
             | TOOL_STATE_LIST
             | TOOL_STATE_SHOW
             | TOOL_DEVICE
@@ -2746,11 +2672,6 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_CLIPBOARD_WRITE => call_one_string(arguments, "clipboard write", "text"),
         TOOL_CLIPBOARD_COPY => call_literal(arguments, &["clipboard", "copy"]),
         TOOL_CLIPBOARD_PASTE => call_literal(arguments, &["clipboard", "paste"]),
-        TOOL_AUTH_SAVE => call_auth_save(arguments),
-        TOOL_AUTH_LOGIN => call_auth_login(arguments),
-        TOOL_AUTH_LIST => call_literal(arguments, &["auth", "list"]),
-        TOOL_AUTH_SHOW => call_one_string(arguments, "auth show", "name"),
-        TOOL_AUTH_DELETE => call_one_string(arguments, "auth delete", "name"),
         TOOL_STATE_SAVE => call_one_string(arguments, "state save", "path"),
         TOOL_STATE_LOAD => call_one_string(arguments, "state load", "path"),
         TOOL_STATE_LIST => call_literal(arguments, &["state", "list"]),
@@ -2771,7 +2692,6 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_REMOVE_INIT_SCRIPT => call_one_string(arguments, "removeinitscript", "id"),
         TOOL_CONFIRM => call_one_string(arguments, "confirm", "id"),
         TOOL_DENY => call_one_string(arguments, "deny", "id"),
-        TOOL_CONNECT => call_connect(arguments),
         TOOL_STREAM_ENABLE => call_stream_enable(arguments),
         TOOL_STREAM_DISABLE => call_literal(arguments, &["stream", "disable"]),
         TOOL_STREAM_STATUS => call_literal(arguments, &["stream", "status"]),
@@ -2892,17 +2812,6 @@ fn call_literal(arguments: &Value, parts: &[&str]) -> Result<Value, ProtocolErro
 fn call_one_string(arguments: &Value, command: &str, key: &str) -> Result<Value, ProtocolError> {
     let mut args = command_parts(command);
     args.push(required_string(arguments, key)?);
-    call_cli_tool(arguments, args, None)
-}
-
-fn call_connect(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec!["connect".to_string()];
-    args.push(required_string(arguments, "target")?);
-    match arguments.get("pinTab").and_then(|v| v.as_bool()) {
-        Some(true) => args.push("--pin-tab".to_string()),
-        Some(false) => args.push("--no-pin-tab".to_string()),
-        None => {}
-    }
     call_cli_tool(arguments, args, None)
 }
 
@@ -3653,46 +3562,6 @@ fn call_clearable(arguments: &Value, command: &str) -> Result<Value, ProtocolErr
         args.push("--clear".to_string());
     }
     call_cli_tool(arguments, args, None)
-}
-
-fn call_auth_save(arguments: &Value) -> Result<Value, ProtocolError> {
-    let name = required_string(arguments, "name")?;
-    let url = required_string(arguments, "url")?;
-    let username = required_string(arguments, "username")?;
-    let password = required_string(arguments, "password")?;
-    let mut args = vec!["auth".to_string(), "save".to_string(), name];
-    for (key, flag) in [
-        ("url", "--url"),
-        ("username", "--username"),
-        ("usernameSelector", "--username-selector"),
-        ("passwordSelector", "--password-selector"),
-        ("submitSelector", "--submit-selector"),
-    ] {
-        let value = match key {
-            "url" => Some(url.clone()),
-            "username" => Some(username.clone()),
-            _ => optional_string(arguments, key)?,
-        };
-        if let Some(value) = value {
-            args.push(flag.to_string());
-            args.push(value);
-        }
-    }
-    args.push("--password-stdin".to_string());
-    call_cli_tool(arguments, args, Some(password))
-}
-
-fn auth_login_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
-    let name = required_string(arguments, "name")?;
-    let mut args = vec!["auth".to_string(), "login".to_string(), name];
-    if optional_bool(arguments, "noNavigate")?.unwrap_or(false) {
-        args.push("--no-navigate".to_string());
-    }
-    Ok(args)
-}
-
-fn call_auth_login(arguments: &Value) -> Result<Value, ProtocolError> {
-    call_cli_tool(arguments, auth_login_args(arguments)?, None)
 }
 
 fn call_state_clear(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -4748,31 +4617,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn auth_login_tool_exposes_and_forwards_no_navigate() {
-        let tools = tools();
-        let auth_login = tools
-            .iter()
-            .find(|tool| tool["name"].as_str() == Some(TOOL_AUTH_LOGIN))
-            .unwrap();
-        assert_eq!(
-            auth_login["inputSchema"]["properties"]["noNavigate"]["type"],
-            "boolean"
-        );
-
-        assert_eq!(
-            auth_login_args(&json!({ "name": "work" })).unwrap(),
-            vec!["auth", "login", "work"]
-        );
-        assert_eq!(
-            auth_login_args(&json!({ "name": "work", "noNavigate": false })).unwrap(),
-            vec!["auth", "login", "work"]
-        );
-        assert_eq!(
-            auth_login_args(&json!({ "name": "work", "noNavigate": true })).unwrap(),
-            vec!["auth", "login", "work", "--no-navigate"]
-        );
-    }
 
     #[test]
     fn doctor_tool_exposes_webgpu_option() {
@@ -5794,7 +5638,6 @@ mod tests {
         let state = McpConfig::from_profiles_for_engine(vec![ToolProfile::State], true);
         assert!(state.allows(TOOL_COOKIES_GET));
         assert!(state.allows(TOOL_STORAGE_SET));
-        assert!(!state.allows(TOOL_AUTH_SAVE));
         assert!(!state.allows(TOOL_STATE_SAVE));
         assert!(!state.allows(TOOL_PROFILES));
     }

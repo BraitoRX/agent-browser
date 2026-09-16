@@ -707,15 +707,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_default_idle_timeout_does_not_close_webdriver_sessions() {
-        let mut state = DaemonState::new();
-        assert!(!state.blocks_default_idle_shutdown());
-
-        state.backend_type = crate::native::actions::BackendType::WebDriver;
-        assert!(state.blocks_default_idle_shutdown());
-    }
-
     #[tokio::test]
     async fn test_idle_activity_receives_dashboard_activity() {
         let activity = Arc::new(IdleActivity::new());

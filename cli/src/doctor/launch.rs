@@ -70,8 +70,6 @@ pub(super) fn check(checks: &mut Vec<Check>, opts: &DoctorOptions) {
         profile: None,
         input_backend: None,
         state: None,
-        provider: None,
-        device: None,
         session_name: None,
         restore_save: None,
         restore_check_url: None,

@@ -451,8 +451,6 @@ pub struct DaemonOptions<'a> {
     pub profile: Option<&'a str>,
     pub input_backend: Option<&'a str>,
     pub state: Option<&'a str>,
-    pub provider: Option<&'a str>,
-    pub device: Option<&'a str>,
     pub session_name: Option<&'a str>,
     pub restore_save: Option<&'a str>,
     pub restore_check_url: Option<&'a str>,
@@ -533,12 +531,6 @@ fn apply_daemon_env(cmd: &mut Command, session: &str, opts: &DaemonOptions) {
     }
     if let Some(st) = opts.state {
         cmd.env("AGENT_BROWSER_STATE", st);
-    }
-    if let Some(p) = opts.provider {
-        cmd.env("AGENT_BROWSER_PROVIDER", p);
-    }
-    if let Some(d) = opts.device {
-        cmd.env("AGENT_BROWSER_IOS_DEVICE", d);
     }
     if let Some(sn) = opts.session_name {
         cmd.env("AGENT_BROWSER_SESSION_NAME", sn);
@@ -1286,8 +1278,6 @@ mod tests {
             profile: None,
             input_backend: None,
             state: None,
-            provider: None,
-            device: None,
             session_name: None,
             restore_save: None,
             restore_check_url: None,

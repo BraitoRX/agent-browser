@@ -75,8 +75,6 @@ pub struct Config {
     pub proxy_bypass: Option<String>,
     pub args: Option<String>,
     pub user_agent: Option<String>,
-    pub provider: Option<String>,
-    pub device: Option<String>,
     pub hide_scrollbars: Option<bool>,
     pub webgpu: Option<bool>,
     pub adblock: Option<bool>,
@@ -159,8 +157,6 @@ impl Config {
             proxy_bypass: other.proxy_bypass.or(self.proxy_bypass),
             args: other.args.or(self.args),
             user_agent: other.user_agent.or(self.user_agent),
-            provider: other.provider.or(self.provider),
-            device: other.device.or(self.device),
             hide_scrollbars: other.hide_scrollbars.or(self.hide_scrollbars),
             webgpu: other.webgpu.or(self.webgpu),
             adblock: other.adblock.or(self.adblock),
@@ -300,8 +296,6 @@ fn extract_config_path(args: &[String]) -> Option<Option<String>> {
         "--args",
         "--user-agent",
         "-p",
-        "--provider",
-        "--device",
         "--session-name",
         "--color-scheme",
         "--download-path",
@@ -387,7 +381,6 @@ pub struct Flags {
     pub proxy_bypass: Option<String>,
     pub args: Option<String>,
     pub user_agent: Option<String>,
-    pub provider: Option<String>,
     pub ignore_https_errors: bool,
     pub ca_cert: Option<String>,
     pub clear_ca_cert: bool,
@@ -400,7 +393,6 @@ pub struct Flags {
     /// Env-only (AGENT_BROWSER_NO_XVFB): disable automatic Xvfb for headed
     /// launches on displayless Linux hosts.
     pub no_xvfb: bool,
-    pub device: Option<String>,
     pub auto_connect: bool,
     pub pin_tab: bool,
     pub session_name: Option<String>,
@@ -584,7 +576,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
         user_agent: env::var("AGENT_BROWSER_USER_AGENT")
             .ok()
             .or(config.user_agent),
-        provider: env::var("AGENT_BROWSER_PROVIDER").ok().or(config.provider),
         ignore_https_errors: env_var_is_truthy("AGENT_BROWSER_IGNORE_HTTPS_ERRORS")
             || config.ignore_https_errors.unwrap_or(false),
         ca_cert,
@@ -599,7 +590,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
         no_webmcp: env_var_is_truthy("AGENT_BROWSER_NO_WEBMCP")
             || config.no_webmcp.unwrap_or(false),
         no_xvfb: env_var_is_truthy("AGENT_BROWSER_NO_XVFB"),
-        device: env::var("AGENT_BROWSER_IOS_DEVICE").ok().or(config.device),
         auto_connect: env_var_is_truthy("AGENT_BROWSER_AUTO_CONNECT")
             || config.auto_connect.unwrap_or(false),
         pin_tab: env_var_is_truthy("AGENT_BROWSER_PIN_TAB") || config.pin_tab.unwrap_or(false),
@@ -918,12 +908,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
                     i += 1;
                 }
             }
-            "-p" | "--provider" => {
-                if let Some(p) = args.get(i + 1) {
-                    flags.provider = Some(p.clone());
-                    i += 1;
-                }
-            }
             "--ignore-https-errors" => {
                 let (val, consumed) = parse_bool_arg(args, i);
                 flags.ignore_https_errors = val;
@@ -963,12 +947,6 @@ pub fn parse_flags(args: &[String]) -> Flags {
                 flags.hide_scrollbars = val;
                 flags.cli_hide_scrollbars = true;
                 if consumed {
-                    i += 1;
-                }
-            }
-            "--device" => {
-                if let Some(d) = args.get(i + 1) {
-                    flags.device = Some(d.clone());
                     i += 1;
                 }
             }
@@ -1196,8 +1174,6 @@ pub fn clean_args(args: &[String]) -> Vec<String> {
         "--args",
         "--user-agent",
         "-p",
-        "--provider",
-        "--device",
         "--session-name",
         "--color-scheme",
         "--download-path",
@@ -1424,17 +1400,6 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_bare_restore_before_auth_command_uses_session() {
-        let input = args("--session next-loop --restore auth list");
-        let flags = parse_flags(&input);
-
-        assert_eq!(flags.session, "next-loop");
-        assert!(flags.restore_uses_session);
-        assert!(flags.restore.is_none());
-        assert_eq!(clean_args(&input), vec!["auth", "list"]);
-    }
-
-    #[test]
     fn test_parse_bare_restore_before_hover_command_uses_session() {
         let input = args("--session next-loop --restore hover button");
         let flags = parse_flags(&input);
@@ -1617,8 +1582,6 @@ mod tests {
             "proxyBypass": "localhost",
             "args": "--no-sandbox",
             "userAgent": "test-agent",
-            "provider": "ios",
-            "device": "iPhone 15",
             "hideScrollbars": false,
             "ignoreHttpsErrors": true,
             "allowFileAccess": true,
@@ -1651,8 +1614,6 @@ mod tests {
         assert_eq!(config.proxy_bypass.as_deref(), Some("localhost"));
         assert_eq!(config.args.as_deref(), Some("--no-sandbox"));
         assert_eq!(config.user_agent.as_deref(), Some("test-agent"));
-        assert_eq!(config.provider.as_deref(), Some("ios"));
-        assert_eq!(config.device.as_deref(), Some("iPhone 15"));
         assert_eq!(config.hide_scrollbars, Some(false));
         assert_eq!(config.ignore_https_errors, Some(true));
         assert_eq!(config.allow_file_access, Some(true));

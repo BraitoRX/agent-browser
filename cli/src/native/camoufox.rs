@@ -308,7 +308,6 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
     }
     if flags.allowed_domains.is_some()
         || flags.cdp.is_some()
-        || flags.provider.is_some()
         || flags.auto_connect
         || flags.pin_tab
         || flags.cli_pin_tab
@@ -334,7 +333,6 @@ pub fn validate_flags(flags: &crate::flags::Flags) -> Result<(), String> {
         || flags.allow_file_access
         || flags.webgpu
         || flags.no_xvfb
-        || flags.device.is_some()
         || flags.color_scheme.is_some()
         || flags.download_path.is_some()
         || flags.no_auto_dialog
