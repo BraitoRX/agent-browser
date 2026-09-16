@@ -163,7 +163,6 @@ pub fn is_top_level_command(value: &str) -> bool {
             | "device"
             | "diff"
             | "batch"
-            | "react"
             | "vitals"
             | "web-vitals"
             | "a11y"
@@ -2017,9 +2016,6 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             Ok(cmd)
         }
 
-        // === React (requires `open --enable react-devtools`) ===
-        "react" => parse_react(&rest, &id),
-
         // === Core Web Vitals + hydration ===
         "vitals" | "web-vitals" => {
             let mut cmd = json!({ "id": id, "action": "vitals" });
@@ -2743,74 +2739,6 @@ fn parse_record_take(
         cmd["fps"] = json!(rate);
     }
     Ok(cmd)
-}
-
-fn parse_react(rest: &[&str], id: &str) -> Result<Value, ParseError> {
-    const VALID: &[&str] = &["tree", "inspect", "renders", "suspense"];
-    let sub = rest.first().copied().ok_or(ParseError::MissingArguments {
-        context: "react".to_string(),
-        usage: "react <tree|inspect|renders|suspense>",
-    })?;
-    // MCP runs child commands with global `--json` for transport. That global
-    // flag is stripped before command parsing, so `--raw-json` preserves the
-    // React command's raw payload toggle for MCP without changing public docs.
-    let json_out = rest.contains(&"--json") || rest.contains(&"--raw-json");
-    let flag = |key: &str| -> Value {
-        if json_out {
-            json!({ "id": id, "action": key, "json": true })
-        } else {
-            json!({ "id": id, "action": key })
-        }
-    };
-    match sub {
-        "tree" => Ok(flag("react_tree")),
-        "inspect" => {
-            let id_arg = rest
-                .iter()
-                .skip(1)
-                .find(|a| !a.starts_with("--"))
-                .copied()
-                .ok_or(ParseError::MissingArguments {
-                    context: "react inspect".to_string(),
-                    usage: "react inspect <id>",
-                })?;
-            let numeric: i64 = id_arg.parse().map_err(|_| ParseError::InvalidValue {
-                message: format!("react inspect id must be a number, got '{}'", id_arg),
-                usage: "react inspect <id>",
-            })?;
-            let mut cmd = json!({ "id": id, "action": "react_inspect", "fiberId": numeric });
-            if json_out {
-                cmd["json"] = json!(true);
-            }
-            Ok(cmd)
-        }
-        "renders" => {
-            let op = rest.get(1).copied().unwrap_or("start");
-            match op {
-                "start" => Ok(flag("react_renders_start")),
-                "stop" => Ok(flag("react_renders_stop")),
-                other => Err(ParseError::UnknownSubcommand {
-                    subcommand: other.to_string(),
-                    valid_options: &["start", "stop"],
-                }),
-            }
-        }
-        "suspense" => {
-            let only_dynamic = rest.contains(&"--only-dynamic");
-            let mut cmd = json!({ "id": id, "action": "react_suspense" });
-            if json_out {
-                cmd["json"] = json!(true);
-            }
-            if only_dynamic {
-                cmd["onlyDynamic"] = json!(true);
-            }
-            Ok(cmd)
-        }
-        other => Err(ParseError::UnknownSubcommand {
-            subcommand: other.to_string(),
-            valid_options: VALID,
-        }),
-    }
 }
 
 fn parse_diff(rest: &[&str], id: &str) -> Result<Value, ParseError> {
@@ -4003,77 +3931,6 @@ mod tests {
             "cURL-without-cookie error leaked secret value: {}",
             err
         );
-    }
-
-    #[test]
-    fn test_react_tree_command() {
-        let cmd = parse_command(&args("react tree"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_tree");
-    }
-
-    #[test]
-    fn test_react_tree_json() {
-        let cmd = parse_command(&args("react tree --json"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_tree");
-        assert_eq!(cmd["json"], true);
-    }
-
-    #[test]
-    fn test_react_tree_raw_json_internal_flag() {
-        let cmd = parse_command(&args("react tree --raw-json"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_tree");
-        assert_eq!(cmd["json"], true);
-    }
-
-    #[test]
-    fn test_react_inspect_command() {
-        let cmd = parse_command(&args("react inspect 12345"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_inspect");
-        assert_eq!(cmd["fiberId"], 12345);
-    }
-
-    #[test]
-    fn test_react_inspect_requires_numeric_id() {
-        let err = parse_command(&args("react inspect not-a-number"), &default_flags());
-        assert!(err.is_err());
-    }
-
-    #[test]
-    fn test_react_renders_start_stop() {
-        let start = parse_command(&args("react renders start"), &default_flags()).unwrap();
-        assert_eq!(start["action"], "react_renders_start");
-        let stop = parse_command(&args("react renders stop"), &default_flags()).unwrap();
-        assert_eq!(stop["action"], "react_renders_stop");
-        let stop_json =
-            parse_command(&args("react renders stop --json"), &default_flags()).unwrap();
-        assert_eq!(stop_json["json"], true);
-    }
-
-    #[test]
-    fn test_react_suspense() {
-        let cmd = parse_command(&args("react suspense"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_suspense");
-        // onlyDynamic defaults to unset; absence means the full report
-        assert!(cmd.get("onlyDynamic").is_none());
-    }
-
-    #[test]
-    fn test_react_suspense_only_dynamic() {
-        let cmd = parse_command(&args("react suspense --only-dynamic"), &default_flags()).unwrap();
-        assert_eq!(cmd["action"], "react_suspense");
-        assert_eq!(cmd["onlyDynamic"], true);
-    }
-
-    #[test]
-    fn test_react_suspense_only_dynamic_with_json() {
-        let cmd = parse_command(
-            &args("react suspense --only-dynamic --json"),
-            &default_flags(),
-        )
-        .unwrap();
-        assert_eq!(cmd["action"], "react_suspense");
-        assert_eq!(cmd["onlyDynamic"], true);
-        assert_eq!(cmd["json"], true);
     }
 
     #[test]

@@ -2664,9 +2664,6 @@ mod tests {
         assert!(snapshot.get("clearCaCert").is_none());
     }
 
-
-
-
     #[test]
     fn test_allowed_domains_requests_local_launch_configuration() {
         let mut flags = neutral_launch_config_flags();
@@ -2898,7 +2895,6 @@ mod tests {
             assert_eq!(incompatible_launch_mode_error(&flags), Some(expected));
         }
     }
-
 
     #[test]
     fn test_incompatible_launch_mode_error_allows_compatible_flags() {

@@ -30,7 +30,6 @@ use super::interaction;
 use super::network::{self, DomainFilter, EventTracker};
 use super::policy::{ActionPolicy, ConfirmActions, PolicyResult};
 use super::providers;
-use super::react;
 use super::recording::{self, RecordingState};
 use super::screenshot::{self, ScreenshotOptions};
 use super::snapshot::{self, SnapshotOptions};
@@ -3117,11 +3116,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "addinitscript" => handle_addinitscript(cmd, state).await,
         "removeinitscript" => handle_removeinitscript(cmd, state).await,
         "addstyle" => handle_addstyle(cmd, state).await,
-        "react_tree" => handle_react_tree(cmd, state).await,
-        "react_inspect" => handle_react_inspect(cmd, state).await,
-        "react_renders_start" => handle_react_renders_start(cmd, state).await,
-        "react_renders_stop" => handle_react_renders_stop(cmd, state).await,
-        "react_suspense" => handle_react_suspense(cmd, state).await,
         "vitals" => handle_vitals(cmd, state).await,
         "a11y" => handle_a11y(cmd, state).await,
         "pushstate" => handle_pushstate(cmd, state).await,
@@ -4273,7 +4267,7 @@ async fn auto_launch(
     Ok(())
 }
 
-/// Apply AGENT_BROWSER_ENABLE (built-in init scripts like `react-devtools`)
+/// Apply AGENT_BROWSER_ENABLE (built-in init script features)
 /// and AGENT_BROWSER_INIT_SCRIPTS (user-provided files) to the browser so the
 /// scripts are registered before any page JS runs on the next navigation.
 /// Also evaluates each script on the current page (if any) so the effect is
@@ -4334,14 +4328,7 @@ async fn apply_launch_init_scripts(
     let mut sources: Vec<String> = Vec::new();
 
     for feature in enable_features {
-        match feature.as_str() {
-            "react-devtools" | "react" => {
-                sources.push(react::INSTALL_HOOK_JS.to_string());
-            }
-            other => {
-                eprintln!("warning: unknown --enable feature '{}'", other);
-            }
-        }
+        eprintln!("warning: unknown --enable feature '{}'", feature);
     }
 
     for path in init_script_paths {
@@ -8236,7 +8223,7 @@ async fn handle_removeinitscript(cmd: &Value, state: &mut DaemonState) -> Result
     Ok(json!({ "removed": true, "identifier": identifier }))
 }
 
-// === React / Web primitives ===
+// === Web primitives ===
 
 /// Parse a `Runtime.evaluate` result whose expression returned a JSON string.
 /// Returns a helpful error if parsing fails.
@@ -8247,132 +8234,141 @@ fn parse_json_string(value: Value, what: &str) -> Result<Value, String> {
     serde_json::from_str(s).map_err(|e| format!("{} returned invalid JSON: {}", what, e))
 }
 
-async fn handle_react_tree(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let script =
-        react::scripts::TREE_SNAPSHOT.replace("{{PICK_RI}}", react::scripts::PICK_REACT_RENDERER);
-    let result = mgr.evaluate(&script, None).await?;
-    let nodes_json = parse_json_string(result, "react tree")?;
-    let nodes: Vec<react::TreeNode> = serde_json::from_value(nodes_json)
-        .map_err(|e| format!("Failed to parse tree nodes: {}", e))?;
+/// Init script for Core Web Vitals + React hydration timing capture. Installs
+/// PerformanceObservers for LCP/CLS and intercepts `console.timeStamp` to
+/// capture React's profiling reconciler timings. Idempotent.
+const VITALS_INIT: &str = r#"
+(() => {
+  if (window.__AB_VITALS_INSTALLED__) return;
+  window.__AB_VITALS_INSTALLED__ = true;
 
-    let return_json = cmd.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-    if return_json {
-        let nodes_value: Vec<Value> = nodes
-            .iter()
-            .map(|n| {
-                json!({
-                    "id": n.id,
-                    "type": n.node_type,
-                    "name": n.name,
-                    "key": n.key,
-                    "parent": n.parent,
-                })
-            })
-            .collect();
-        Ok(json!({ "nodes": nodes_value }))
-    } else {
-        Ok(json!({ "tree": react::format_tree(&nodes) }))
-    }
-}
+  const cwv = { lcp: null, cls: 0, clsEntries: [], fcp: null, inp: null };
+  window.__AB_VITALS__ = cwv;
 
-async fn handle_react_inspect(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let fiber_id = cmd
-        .get("fiberId")
-        .and_then(|v| v.as_i64())
-        .ok_or("Missing 'fiberId' parameter (numeric React fiber id)")?;
+  try {
+    new PerformanceObserver((list) => {
+      const entries = list.getEntries();
+      if (entries.length > 0) {
+        const last = entries[entries.length - 1];
+        cwv.lcp = {
+          startTime: Math.round(last.startTime * 100) / 100,
+          size: last.size,
+          element: last.element && last.element.tagName ? last.element.tagName.toLowerCase() : null,
+          url: last.url || null,
+        };
+      }
+    }).observe({ type: "largest-contentful-paint", buffered: true });
+  } catch {}
 
-    let script = react::scripts::TREE_INSPECT
-        .replace("{{ID}}", &fiber_id.to_string())
-        .replace("{{PICK_RI}}", react::scripts::PICK_REACT_RENDERER);
-    let result = mgr.evaluate(&script, None).await?;
-    let parsed = parse_json_string(result, "react inspect")?;
-    Ok(parsed)
-}
-
-async fn handle_react_renders_start(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    // Install for future navigations, then evaluate immediately so the
-    // current page starts recording without a reload.
-    let identifier = mgr
-        .add_script_to_evaluate(react::scripts::RENDERS_INIT)
-        .await?;
-    mgr.evaluate(react::scripts::RENDERS_INIT, None).await?;
-    let _ = cmd;
-    Ok(json!({
-        "recording": true,
-        "identifier": identifier,
-        "message": "recording renders - interact with the page, then run `react renders stop`"
-    }))
-}
-
-async fn handle_react_renders_stop(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let result = mgr.evaluate(react::scripts::RENDERS_STOP, None).await?;
-    let data_json = parse_json_string(result, "react renders stop")?;
-    let data: react::RendersData = serde_json::from_value(data_json.clone())
-        .map_err(|e| format!("Failed to parse renders data: {}", e))?;
-
-    let return_json = cmd.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-    if return_json {
-        Ok(data_json)
-    } else {
-        Ok(json!({ "report": react::format_renders_report(&data) }))
-    }
-}
-
-async fn handle_react_suspense(cmd: &Value, state: &DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let script =
-        react::scripts::SUSPENSE_WALK.replace("{{PICK_RI}}", react::scripts::PICK_REACT_RENDERER);
-    let result = mgr.evaluate(&script, None).await?;
-    let boundaries_json = parse_json_string(result, "react suspense")?;
-    let boundaries: Vec<react::Boundary> = serde_json::from_value(boundaries_json.clone())
-        .map_err(|e| format!("Failed to parse suspense boundaries: {}", e))?;
-
-    let return_json = cmd.get("json").and_then(|v| v.as_bool()).unwrap_or(false);
-    let only_dynamic = cmd
-        .get("onlyDynamic")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
-    if return_json {
-        // When only-dynamic is set, filter the JSON payload too so callers
-        // get consistent output regardless of format choice.
-        if only_dynamic {
-            let filtered: Vec<&react::Boundary> = boundaries
-                .iter()
-                .filter(|b| {
-                    b.parent_id != 0
-                        && (b.is_suspended
-                            || !b.suspended_by.is_empty()
-                            || b.unknown_suspenders.is_some())
-                })
-                .collect();
-            Ok(json!({ "boundaries": filtered }))
-        } else {
-            Ok(json!({ "boundaries": boundaries_json }))
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (!entry.hadRecentInput) {
+          cwv.cls += entry.value;
+          cwv.clsEntries.push({
+            value: Math.round(entry.value * 10000) / 10000,
+            startTime: Math.round(entry.startTime * 100) / 100,
+          });
         }
-    } else {
-        Ok(json!({ "report": react::format_suspense_report(&boundaries, only_dynamic) }))
+      }
+    }).observe({ type: "layout-shift", buffered: true });
+  } catch {}
+
+  try {
+    new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) {
+        if (entry.name === "first-contentful-paint") {
+          cwv.fcp = Math.round(entry.startTime * 100) / 100;
+        }
+      }
+    }).observe({ type: "paint", buffered: true });
+  } catch {}
+
+  try {
+    new PerformanceObserver((list) => {
+      let worst = cwv.inp || 0;
+      for (const entry of list.getEntries()) {
+        if (entry.duration > worst) worst = entry.duration;
+      }
+      if (worst > 0) cwv.inp = Math.round(worst * 100) / 100;
+    }).observe({ type: "event", buffered: true, durationThreshold: 40 });
+  } catch {}
+
+  // React profiling build emits console.timeStamp(label, start, end, track, trackGroup, color)
+  // for reconciler phases and per-component hydration timing. Intercept and collect.
+  const timing = [];
+  window.__AB_REACT_TIMING__ = timing;
+  const orig = console.timeStamp;
+  console.timeStamp = function (label) {
+    const args = arguments;
+    if (typeof label === "string" && args.length >= 3 && typeof args[1] === "number") {
+      timing.push({
+        label,
+        startTime: args[1],
+        endTime: args[2],
+        track: args[3] || "",
+        trackGroup: args[4] || "",
+        color: args[5] || "",
+      });
     }
-}
+    return orig.apply(console, args);
+  };
+})()
+"#;
+
+/// Read script for vitals — collects observed metrics plus Navigation Timing
+/// TTFB and any React hydration phases. Returns JSON.
+const VITALS_READ: &str = r#"
+(() => {
+  const cwv = window.__AB_VITALS__ || {};
+  const timing = window.__AB_REACT_TIMING__ || [];
+  const nav = performance.getEntriesByType("navigation")[0];
+  const ttfb = nav
+    ? Math.round((nav.responseStart - nav.requestStart) * 100) / 100
+    : null;
+  return JSON.stringify({ cwv, timing, ttfb });
+})()
+"#;
+
+/// SPA client-side navigation. Tries the framework router first so Next.js
+/// app/pages router triggers an RSC fetch (pure `history.pushState` would
+/// be shallow routing and bypass data loading). Falls back to
+/// `history.pushState` + popstate/navigate events for vanilla pages and
+/// routers that listen to history events (React Router, TanStack Router,
+/// Solid Router, Vue Router).
+const PUSHSTATE: &str = r#"
+((url) => {
+  const before = location.href;
+  const absolute = new URL(url, before).href;
+  if (absolute === before) return before;
+
+  // Next.js pages + app router expose window.next.router with a `push`
+  // method that triggers the RSC fetch and re-render pipeline.
+  const r = typeof window.next === "object" && window.next && window.next.router;
+  if (r && typeof r.push === "function") {
+    try { r.push(url); return location.href; } catch {}
+  }
+
+  history.pushState(null, "", absolute);
+  try { dispatchEvent(new PopStateEvent("popstate", { state: null })); } catch {}
+  try { dispatchEvent(new Event("navigate")); } catch {}
+  return location.href;
+})({{URL}})
+"#;
 
 async fn handle_vitals(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
     // Install observers BEFORE the navigation/reload that we want to measure.
     // The script is idempotent — a no-op if already installed on the current page.
     {
         let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-        let _ = mgr.evaluate(react::scripts::VITALS_INIT, None).await?;
+        let _ = mgr.evaluate(VITALS_INIT, None).await?;
     }
 
     // Register as an init script too, so navigations done via `vitals --url`
     // start observing from the first paint.
     {
         let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-        let _ = mgr
-            .add_script_to_evaluate(react::scripts::VITALS_INIT)
-            .await;
+        let _ = mgr.add_script_to_evaluate(VITALS_INIT).await;
     }
 
     // Navigate to the target URL (or reload the current page) to trigger a
@@ -8390,7 +8386,7 @@ async fn handle_vitals(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
 
     let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
     let url = mgr.get_url().await.unwrap_or_default();
-    let result = mgr.evaluate(react::scripts::VITALS_READ, None).await?;
+    let result = mgr.evaluate(VITALS_READ, None).await?;
     let raw = parse_json_string(result, "vitals")?;
 
     // The raw payload has { cwv, timing, ttfb }. Merge with URL and process
@@ -8526,7 +8522,7 @@ async fn handle_pushstate(cmd: &Value, state: &DaemonState) -> Result<Value, Str
         .get("url")
         .and_then(|v| v.as_str())
         .ok_or("Missing 'url' parameter")?;
-    let script = react::scripts::PUSHSTATE.replace(
+    let script = PUSHSTATE.replace(
         "{{URL}}",
         &serde_json::to_string(url).unwrap_or_else(|_| "\"\"".to_string()),
     );

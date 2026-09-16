@@ -2256,12 +2256,9 @@ async fn connect_cdp_with_retry(
     }
 }
 
-
-
 fn remaining_until(deadline: Instant) -> Option<Duration> {
     deadline.checked_duration_since(Instant::now())
 }
-
 
 async fn resolve_cdp_url(input: &str) -> Result<String, String> {
     if input.starts_with("ws://") || input.starts_with("wss://") {
@@ -2652,10 +2649,6 @@ mod tests {
             .expect("past instant should be representable");
         assert!(remaining_until(deadline).is_none());
     }
-
-
-
-
 
     #[test]
     fn test_is_internal_chrome_target() {

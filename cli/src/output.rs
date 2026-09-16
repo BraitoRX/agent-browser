@@ -639,7 +639,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
             println!("{}", cdp_url);
             return;
         }
-        // Rich command reports (React renders/suspense and older daemon responses)
+        // Rich command reports (older daemon responses)
         if let Some(report) = data.get("report").and_then(|v| v.as_str()) {
             println!("{}", report);
             return;
@@ -1548,7 +1548,7 @@ Usage: agent-browser open [url]
 Without a URL, launches the browser but stays on about:blank. This lets
 you stage state (network routes, cookies, init scripts) before the first
 real navigation — useful for SSR debug, auth setup, and capturing fresh
-`react suspense` / `vitals` state without noise from a prior page.
+`vitals` state without noise from a prior page.
 
 With a URL, launches and navigates. If no protocol is provided, https://
 is automatically prepended. When the page registers WebMCP tools, successful
@@ -1565,7 +1565,6 @@ Global Options:
   --session <name>     Use specific session
   --headers <json>     Set HTTP headers (scoped to this origin)
   --headed             Show browser window
-  --enable react-devtools   Inject the React DevTools hook before any page JS
   --init-script <path>      Register a page init script (repeatable)
 
 Examples:
@@ -3727,7 +3726,7 @@ client protocol versions during initialization.
 
 The default tools profile is core, which keeps MCP context small for everyday
 browser automation. Use --tools all for the full typed CLI parity surface, or
-combine profiles with commas, such as --tools core,network,react.
+combine profiles with commas, such as --tools core,network.
 
 Tool profiles:
   core       Default. Navigation, snapshots, interaction, waits, reads,
@@ -3738,7 +3737,6 @@ Tool profiles:
              clipboard, plugins, doctor, dashboard, install, upgrade, chat, diff,
              batch, confirm/deny
   tabs       Back/forward/reload, tabs, windows, frames, dialogs
-  react      React tree/inspect/renders/suspense, vitals, pushstate
   mobile     Viewport/device/geolocation/media, touch, swipe, mouse, keyboard
   gestures   Camoufox gesture discovery/execution, install, session info, skills
   all        Every MCP tool, including the full typed CLI parity surface
@@ -4033,18 +4031,9 @@ WebMCP (experimental):
   webmcp cancel <id>         Cancel an active invocation
   Successful navigation advertises when the page has WebMCP tools
 
-React (requires `open --enable react-devtools`):
-  react tree                 Full React component tree (depth id parent name columns)
-  react inspect <id>         Inspect one fiber (props, hooks, state, source)
-  react renders start        Start recording re-renders via onCommitFiberRoot
-  react renders stop [--json] Stop and print render profile
-  react suspense [--only-dynamic] [--json]
-                             Walk Suspense boundaries + classifier report
-                             --only-dynamic hides the "static" list
-
 Performance:
-  vitals [url] [--json]      Core Web Vitals (LCP/CLS/TTFB/FCP/INP) +
-                             React hydration summary; --json returns full data
+  vitals [url] [--json]      Core Web Vitals (LCP/CLS/TTFB/FCP/INP); --json
+                             returns full data
 
 Accessibility:
   a11y [url] [--tags <t1,t2>] [--selector <css>] [--json]
@@ -4148,7 +4137,7 @@ Options:
   --extension <path>         Load browser extensions (repeatable)
   --init-script <path>       Register a page init script before the first navigation (repeatable)
                              (or AGENT_BROWSER_INIT_SCRIPTS env, comma-separated)
-  --enable <feature>         Built-in init scripts: react-devtools (repeatable or comma-separated)
+  --enable <feature>         Built-in init script feature (repeatable or comma-separated)
                              (or AGENT_BROWSER_ENABLE env)
   --args <args>              Browser launch args, comma or newline separated (or AGENT_BROWSER_ARGS)
                              e.g., --args "--no-sandbox,--disable-blink-features=AutomationControlled"
@@ -4255,7 +4244,7 @@ Environment:
   AGENT_BROWSER_EXECUTABLE_PATH  Custom browser executable path
   AGENT_BROWSER_EXTENSIONS       Comma-separated browser extension paths
   AGENT_BROWSER_INIT_SCRIPTS     Comma-separated paths to page init scripts
-  AGENT_BROWSER_ENABLE           Comma-separated built-in init script features (e.g. react-devtools)
+  AGENT_BROWSER_ENABLE           Comma-separated built-in init script features
   AGENT_BROWSER_HEADED           Show browser window (not headless)
   AGENT_BROWSER_NO_XVFB          Disable automatic Xvfb for headed mode on displayless Linux hosts
   AGENT_BROWSER_WEBGPU           Enable WebGPU (SwiftShader software Vulkan on Linux)

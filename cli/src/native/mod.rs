@@ -28,8 +28,6 @@ pub mod policy;
 #[allow(dead_code)]
 pub mod providers;
 #[allow(dead_code)]
-pub mod react;
-#[allow(dead_code)]
 pub mod recording;
 #[allow(dead_code)]
 pub mod screenshot;
@@ -49,4 +47,3 @@ pub mod tracing;
 pub mod webdriver;
 #[allow(dead_code)]
 pub mod webmcp;
-

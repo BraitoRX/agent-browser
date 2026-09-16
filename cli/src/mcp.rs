@@ -145,11 +145,6 @@ const TOOL_DIFF_SNAPSHOT: &str = "agent_browser_diff_snapshot";
 const TOOL_DIFF_SCREENSHOT: &str = "agent_browser_diff_screenshot";
 const TOOL_DIFF_URL: &str = "agent_browser_diff_url";
 const TOOL_BATCH: &str = "agent_browser_batch";
-const TOOL_REACT_TREE: &str = "agent_browser_react_tree";
-const TOOL_REACT_INSPECT: &str = "agent_browser_react_inspect";
-const TOOL_REACT_RENDERS_START: &str = "agent_browser_react_renders_start";
-const TOOL_REACT_RENDERS_STOP: &str = "agent_browser_react_renders_stop";
-const TOOL_REACT_SUSPENSE: &str = "agent_browser_react_suspense";
 const TOOL_VITALS: &str = "agent_browser_vitals";
 const TOOL_A11Y: &str = "agent_browser_a11y";
 const TOOL_PUSHSTATE: &str = "agent_browser_pushstate";
@@ -189,7 +184,6 @@ const TOOL_CLOSE: &str = "agent_browser_close";
 const TOOL_TOOLS_PROFILES: &str = "agent_browser_tools_profiles";
 const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
-const RAW_JSON_ARG: &str = "--raw-json";
 
 #[derive(Debug)]
 struct ProtocolError {
@@ -234,7 +228,6 @@ enum ToolProfile {
     State,
     Debug,
     Tabs,
-    React,
     Mobile,
     Webmcp,
     Gestures,
@@ -249,7 +242,6 @@ impl ToolProfile {
             "state" | "storage" | "auth" => Some(Self::State),
             "debug" | "diagnostics" => Some(Self::Debug),
             "tabs" | "frames" => Some(Self::Tabs),
-            "react" | "web" => Some(Self::React),
             "mobile" | "ios" => Some(Self::Mobile),
             "webmcp" => Some(Self::Webmcp),
             "gestures" => Some(Self::Gestures),
@@ -265,7 +257,6 @@ impl ToolProfile {
             Self::State => "state",
             Self::Debug => "debug",
             Self::Tabs => "tabs",
-            Self::React => "react",
             Self::Mobile => "mobile",
             Self::Webmcp => "webmcp",
             Self::Gestures => "gestures",
@@ -280,7 +271,6 @@ impl ToolProfile {
             Self::State => "Cookies, storage, auth profiles, saved browser state, sessions, Chrome profiles, and bundled skills.",
             Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, recording, clipboard, plugin registry and plugin command.run, doctor, dashboard, install, upgrade, and chat.",
             Self::Tabs => "Tab, window, frame, and JavaScript dialog management.",
-            Self::React => "React tree inspection, render recording, Suspense inspection, Web Vitals, SPA pushstate, and init-script removal.",
             Self::Mobile => "Viewport/device/geolocation/media emulation plus touch, swipe, and lower-level mouse tools.",
             Self::Webmcp => "Experimental page-provided WebMCP discovery, invocation, detached results, and cancellation.",
             Self::Gestures => "Camoufox gesture discovery and execution, runtime installation, session information, and bundled skills. Combine with core for normal browsing.",
@@ -295,7 +285,6 @@ impl ToolProfile {
             Self::State => STATE_PROFILE_TOOLS,
             Self::Debug => DEBUG_PROFILE_TOOLS,
             Self::Tabs => TABS_PROFILE_TOOLS,
-            Self::React => REACT_PROFILE_TOOLS,
             Self::Mobile => MOBILE_PROFILE_TOOLS,
             Self::Webmcp => WEBMCP_PROFILE_TOOLS,
             Self::Gestures => GESTURES_PROFILE_TOOLS,
@@ -369,7 +358,6 @@ impl McpConfig {
             ToolProfile::State => "Camoufox cookies, storage, session diagnostics, and bundled skills.",
             ToolProfile::Debug => "Camoufox download handling, console and error reads, batched commands, runtime installation, and pending-action confirm/deny.",
             ToolProfile::Tabs => "Camoufox tab and frame-scope management plus JavaScript dialog status and dialog arming.",
-            ToolProfile::React => "No tools from this profile are available on Camoufox.",
             ToolProfile::Mobile => "No tools from this profile are available on Camoufox.",
             ToolProfile::Webmcp => "No tools from this profile are available on Camoufox.",
             ToolProfile::Gestures => "Camoufox gesture discovery and execution, runtime installation, session information, and bundled skills. Combine with core for normal browsing.",
@@ -525,6 +513,9 @@ const DEBUG_PROFILE_TOOLS: &[&str] = &[
     TOOL_RECORD_START,
     TOOL_RECORD_STOP,
     TOOL_RECORD_RESTART,
+    TOOL_VITALS,
+    TOOL_PUSHSTATE,
+    TOOL_REMOVE_INIT_SCRIPT,
     TOOL_A11Y,
     TOOL_CONSOLE,
     TOOL_ERRORS,
@@ -570,17 +561,6 @@ const TABS_PROFILE_TOOLS: &[&str] = &[
     TOOL_DIALOG_STATUS,
     TOOL_DIALOG_ACCEPT,
     TOOL_DIALOG_DISMISS,
-];
-
-const REACT_PROFILE_TOOLS: &[&str] = &[
-    TOOL_REACT_TREE,
-    TOOL_REACT_INSPECT,
-    TOOL_REACT_RENDERS_START,
-    TOOL_REACT_RENDERS_STOP,
-    TOOL_REACT_SUSPENSE,
-    TOOL_VITALS,
-    TOOL_PUSHSTATE,
-    TOOL_REMOVE_INIT_SCRIPT,
 ];
 
 const MOBILE_PROFILE_TOOLS: &[&str] = &[
@@ -1084,7 +1064,6 @@ fn tool_profile_names() -> Vec<&'static str> {
         ToolProfile::State,
         ToolProfile::Debug,
         ToolProfile::Tabs,
-        ToolProfile::React,
         ToolProfile::Mobile,
         ToolProfile::Webmcp,
         ToolProfile::Gestures,
@@ -1102,7 +1081,6 @@ fn tool_profile_summaries(config: &McpConfig) -> Vec<Value> {
         ToolProfile::State,
         ToolProfile::Debug,
         ToolProfile::Tabs,
-        ToolProfile::React,
         ToolProfile::Mobile,
         ToolProfile::Webmcp,
         ToolProfile::Gestures,
@@ -2074,41 +2052,6 @@ fn parity_tools() -> Vec<Value> {
             &["commands"],
         ),
         tool(
-            TOOL_REACT_TREE,
-            "React tree",
-            "Inspect React tree.",
-            json!({ "json": { "type": "boolean" } }),
-            &[],
-        ),
-        tool(
-            TOOL_REACT_INSPECT,
-            "React inspect",
-            "Inspect a React fiber.",
-            json!({ "id": { "type": "integer", "minimum": 0 }, "json": { "type": "boolean" } }),
-            &["id"],
-        ),
-        tool(
-            TOOL_REACT_RENDERS_START,
-            "React renders start",
-            "Start render recording.",
-            json!({ "json": { "type": "boolean" } }),
-            &[],
-        ),
-        tool(
-            TOOL_REACT_RENDERS_STOP,
-            "React renders stop",
-            "Stop render recording.",
-            json!({ "json": { "type": "boolean" } }),
-            &[],
-        ),
-        tool(
-            TOOL_REACT_SUSPENSE,
-            "React suspense",
-            "Inspect Suspense boundaries.",
-            json!({ "onlyDynamic": { "type": "boolean" }, "json": { "type": "boolean" } }),
-            &[],
-        ),
-        tool(
             TOOL_VITALS,
             "Vitals",
             "Collect Core Web Vitals and hydration metrics.",
@@ -2569,9 +2512,6 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_STATE_LIST
             | TOOL_STATE_SHOW
             | TOOL_DEVICE
-            | TOOL_REACT_TREE
-            | TOOL_REACT_INSPECT
-            | TOOL_REACT_SUSPENSE
             | TOOL_VITALS
             | TOOL_STREAM_STATUS
             | TOOL_WEBMCP_LIST
@@ -2825,11 +2765,6 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_DIFF_SCREENSHOT => call_diff_screenshot(arguments),
         TOOL_DIFF_URL => call_diff_url(arguments),
         TOOL_BATCH => call_batch(arguments),
-        TOOL_REACT_TREE => call_react_tree(arguments),
-        TOOL_REACT_INSPECT => call_react_inspect(arguments),
-        TOOL_REACT_RENDERS_START => call_react_renders_start(arguments),
-        TOOL_REACT_RENDERS_STOP => call_react_renders_stop(arguments),
-        TOOL_REACT_SUSPENSE => call_react_suspense(arguments),
         TOOL_VITALS => call_vitals(arguments),
         TOOL_A11Y => call_a11y(arguments),
         TOOL_PUSHSTATE => call_one_string(arguments, "pushstate", "url"),
@@ -2873,7 +2808,7 @@ fn call_tools_profiles(config: &McpConfig) -> Result<Value, ProtocolError> {
     let compose = if config.camoufox {
         "core,network,gestures"
     } else {
-        "core,network,react"
+        "core,network"
     };
     let text = format!(
         "Active MCP tools profile(s): {}\n\nAvailable profiles:\n{}\n\nRestart the MCP server with `agent-browser mcp --tools <profile>` or combine profiles with commas, for example `agent-browser mcp --tools {compose}`. The all profile exposes only tools available for this server's engine.",
@@ -3937,58 +3872,6 @@ fn call_batch(arguments: &Value) -> Result<Value, ProtocolError> {
     call_cli_tool(arguments, args, Some(stdin))
 }
 
-fn call_react_tree(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec!["react".to_string(), "tree".to_string()];
-    append_react_raw_json_arg(arguments, &mut args)?;
-    call_cli_tool(arguments, args, None)
-}
-
-fn call_react_inspect(arguments: &Value) -> Result<Value, ProtocolError> {
-    let id = required_u64(arguments, "id")?;
-    let mut args = vec!["react".to_string(), "inspect".to_string(), id.to_string()];
-    append_react_raw_json_arg(arguments, &mut args)?;
-    call_cli_tool(arguments, args, None)
-}
-
-fn call_react_renders_start(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec![
-        "react".to_string(),
-        "renders".to_string(),
-        "start".to_string(),
-    ];
-    append_react_raw_json_arg(arguments, &mut args)?;
-    call_cli_tool(arguments, args, None)
-}
-
-fn call_react_renders_stop(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec![
-        "react".to_string(),
-        "renders".to_string(),
-        "stop".to_string(),
-    ];
-    append_react_raw_json_arg(arguments, &mut args)?;
-    call_cli_tool(arguments, args, None)
-}
-
-fn call_react_suspense(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec!["react".to_string(), "suspense".to_string()];
-    if optional_bool(arguments, "onlyDynamic")?.unwrap_or(false) {
-        args.push("--only-dynamic".to_string());
-    }
-    append_react_raw_json_arg(arguments, &mut args)?;
-    call_cli_tool(arguments, args, None)
-}
-
-fn append_react_raw_json_arg(
-    arguments: &Value,
-    args: &mut Vec<String>,
-) -> Result<(), ProtocolError> {
-    if optional_bool(arguments, "json")?.unwrap_or(false) {
-        args.push(RAW_JSON_ARG.to_string());
-    }
-    Ok(())
-}
-
 fn call_vitals(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = vec!["vitals".to_string()];
     if optional_bool(arguments, "json")?.unwrap_or(false) {
@@ -4734,7 +4617,6 @@ mod tests {
         assert!(names.contains(&TOOL_SCREENSHOT));
         assert!(names.contains(&TOOL_GET_CDP_URL));
         assert!(names.contains(&TOOL_NETWORK_HAR_START));
-        assert!(names.contains(&TOOL_REACT_SUSPENSE));
         assert!(names.contains(&TOOL_SKILLS_GET));
         assert!(names.contains(&TOOL_PLUGIN_ADD));
         assert!(names.contains(&TOOL_PLUGIN_LIST));
@@ -4979,13 +4861,12 @@ mod tests {
         assert!(names.contains(&TOOL_SCREENSHOT));
         assert!(!names.contains(&TOOL_NETWORK_HAR_START));
         assert!(!names.contains(&TOOL_PLUGIN_LIST));
-        assert!(!names.contains(&TOOL_REACT_TREE));
         assert!(result.get("nextCursor").is_none());
     }
 
     #[test]
     fn tools_list_supports_composed_profiles() {
-        let config = McpConfig::from_profiles(vec![ToolProfile::Core, ToolProfile::React]);
+        let config = McpConfig::from_profiles(vec![ToolProfile::Core, ToolProfile::Debug]);
         let result = list_tools(None, &config).unwrap();
         let names: Vec<&str> = result["tools"]
             .as_array()
@@ -4995,7 +4876,6 @@ mod tests {
             .collect();
 
         assert!(names.contains(&TOOL_OPEN));
-        assert!(names.contains(&TOOL_REACT_TREE));
         assert!(names.contains(&TOOL_VITALS));
         assert!(!names.contains(&TOOL_NETWORK_HAR_START));
     }
@@ -5006,7 +4886,6 @@ mod tests {
         assert!(config.allows(TOOL_OPEN));
         assert!(config.allows(TOOL_READ));
         assert!(config.allows(TOOL_NETWORK_REQUESTS));
-        assert!(!config.allows(TOOL_REACT_TREE));
     }
 
     #[test]
@@ -5015,7 +4894,6 @@ mod tests {
         assert!(config.allows(TOOL_OPEN));
         assert!(config.allows(TOOL_READ));
         assert!(config.allows(TOOL_NETWORK_HAR_START));
-        assert!(config.allows(TOOL_REACT_TREE));
     }
 
     #[test]
@@ -5053,7 +4931,7 @@ mod tests {
         assert!(result["content"][0]["text"]
             .as_str()
             .unwrap()
-            .contains("agent-browser mcp --tools core,network,react"));
+            .contains("agent-browser mcp --tools core,network"));
         let debug_profile = result["structuredContent"]["profiles"]
             .as_array()
             .unwrap()
@@ -5121,14 +4999,6 @@ mod tests {
         .unwrap();
 
         assert_eq!(args, vec!["click", "@e1", "--new-tab"]);
-    }
-
-    #[test]
-    fn react_json_uses_command_local_raw_json_flag() {
-        let mut args = vec!["react".to_string(), "tree".to_string()];
-        append_react_raw_json_arg(&json!({ "json": true }), &mut args).unwrap();
-
-        assert_eq!(args, vec!["react", "tree", RAW_JSON_ARG]);
     }
 
     #[test]
