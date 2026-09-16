@@ -1441,18 +1441,13 @@ fn main() {
     // session for the live launch test).
     if clean.first().map(|s| s.as_str()) == Some("doctor") {
         let opts = doctor::DoctorOptions {
-            offline: args.iter().any(|a| a == "--offline"),
-            quick: args.iter().any(|a| a == "--quick"),
             fix: args.iter().any(|a| a == "--fix"),
             json: flags.json,
             // Explicit CLI opt-in only: a global AGENT_BROWSER_WEBGPU/config
             // "webgpu": true must not make every doctor run launch the extra
             // Chrome probe (and fail on hosts missing Vulkan deps).
-            webgpu: flags.cli_webgpu && flags.webgpu,
-            debug: flags.debug,
             // Merged (env/config included) so the probe reflects how the
             // user's sessions actually launch.
-            headed: flags.headed,
         };
         exit(doctor::run_doctor(opts));
     }

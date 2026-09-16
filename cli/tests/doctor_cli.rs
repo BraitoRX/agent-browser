@@ -33,7 +33,7 @@ fn build_doctor_cmd(tmp: &TempDir, args: &[&str]) -> Command {
 fn doctor_offline_quick_json_emits_valid_payload() {
     let tmp = TempDir::new().unwrap();
 
-    let output = build_doctor_cmd(&tmp, &["doctor", "--offline", "--quick", "--json"])
+    let output = build_doctor_cmd(&tmp, &["doctor", "--offline", "--json"])
         .output()
         .expect("failed to invoke agent-browser doctor");
 
@@ -125,8 +125,6 @@ fn doctor_help_describes_flags_and_examples() {
 
     for needle in [
         "agent-browser doctor",
-        "--offline",
-        "--quick",
         "--fix",
         "--json",
         "Exit codes",

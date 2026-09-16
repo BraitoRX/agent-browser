@@ -1,24 +1,19 @@
 //! Diagnose an agent-browser installation.
 //!
-//! Runs a battery of checks across environment, Chrome install, the ffmpeg
-//! install `record` needs, daemon state, config files, encryption,
-//! providers, network reachability, and a live headless browser launch test.
+//! Runs a battery of checks across environment, the Camoufox runtime,
+//! daemon state, config files, and encryption.
 //!
 //! Auto-cleans stale daemon socket/pid/version sidecar files. Destructive
-//! repairs (reinstalling Chrome, purging old state files, generating a
-//! missing encryption key) are gated behind `--fix`.
+//! repairs (purging old state files, generating a missing encryption key)
+//! are gated behind `--fix`.
 
-mod chrome;
+mod camoufox;
 mod config;
 mod daemon;
 mod environment;
-mod ffmpeg;
 mod fix;
 mod helpers;
-mod launch;
-mod network;
 mod security;
-mod webgpu;
 
 use serde_json::{json, Value};
 
@@ -26,19 +21,8 @@ use crate::color;
 
 #[derive(Default, Clone, Copy)]
 pub struct DoctorOptions {
-    pub offline: bool,
-    pub quick: bool,
     pub fix: bool,
     pub json: bool,
-    /// Run the live WebGPU render probe (opt-in; launches a second Chrome).
-    pub webgpu: bool,
-    /// Forward --debug to the scratch daemons the live probes spawn, so the
-    /// "re-run with --debug" fix hints actually produce diagnostics.
-    pub debug: bool,
-    /// Run the WebGPU probe headed instead of headless, validating the
-    /// capture path the probe's own failure hint recommends (auto-Xvfb on
-    /// displayless Linux, logged-in desktop on Windows).
-    pub headed: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -107,23 +91,10 @@ pub fn run_doctor(opts: DoctorOptions) -> i32 {
     let mut fixed: Vec<String> = Vec::new();
 
     environment::check(&mut checks);
-    chrome::check(&mut checks);
-    ffmpeg::check(&mut checks);
+    camoufox::check(&mut checks);
     daemon::check(&mut checks);
     config::check(&mut checks);
     security::check(&mut checks);
-
-    if !opts.offline {
-        network::check(&mut checks);
-    }
-
-    if !opts.quick {
-        launch::check(&mut checks, &opts);
-    }
-
-    if opts.webgpu {
-        webgpu::check(&mut checks, &opts);
-    }
 
     if opts.fix {
         fix::run(&mut checks, &mut fixed);
