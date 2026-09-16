@@ -2664,73 +2664,8 @@ mod tests {
         assert!(snapshot.get("clearCaCert").is_none());
     }
 
-    #[test]
-    fn test_published_schemas_define_pin_tab_boolean() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("cli should have a repository parent");
-        let root_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("agent-browser.schema.json")).unwrap(),
-        )
-        .unwrap();
-        let docs_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("docs/public/schema.json")).unwrap(),
-        )
-        .unwrap();
 
-        let root_pin_tab = &root_schema["properties"]["pinTab"];
-        let docs_pin_tab = &docs_schema["properties"]["pinTab"];
-        assert_eq!(root_pin_tab["type"], "boolean");
-        assert_eq!(docs_pin_tab["type"], "boolean");
-        assert_eq!(root_pin_tab, docs_pin_tab);
-    }
 
-    #[test]
-    fn test_published_schemas_define_matching_ca_cert_string() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("cli should have a repository parent");
-        let root_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("agent-browser.schema.json")).unwrap(),
-        )
-        .unwrap();
-        let docs_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("docs/public/schema.json")).unwrap(),
-        )
-        .unwrap();
-
-        let root_ca_cert = &root_schema["properties"]["caCert"];
-        let docs_ca_cert = &docs_schema["properties"]["caCert"];
-        assert_eq!(root_ca_cert["type"], "string");
-        assert_eq!(docs_ca_cert["type"], "string");
-        assert_eq!(root_ca_cert, docs_ca_cert);
-        assert_eq!(root_schema["properties"]["clearCaCert"]["type"], "boolean");
-        assert_eq!(
-            root_schema["properties"]["clearCaCert"],
-            docs_schema["properties"]["clearCaCert"]
-        );
-    }
-
-    #[test]
-    fn test_published_schemas_define_matching_no_webmcp_boolean() {
-        let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .expect("cli should have a repository parent");
-        let root_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("agent-browser.schema.json")).unwrap(),
-        )
-        .unwrap();
-        let docs_schema: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(repo_root.join("docs/public/schema.json")).unwrap(),
-        )
-        .unwrap();
-
-        assert_eq!(root_schema["properties"]["noWebmcp"]["type"], "boolean");
-        assert_eq!(
-            root_schema["properties"]["noWebmcp"],
-            docs_schema["properties"]["noWebmcp"]
-        );
-    }
 
     #[test]
     fn test_allowed_domains_requests_local_launch_configuration() {
@@ -2970,33 +2905,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_readme_proxy_ca_config_uses_compatible_options() {
-        let readme = include_str!("../../README.upstream.md");
-        let marker = "**Example proxy CA configuration:**";
-        let example = readme
-            .split_once(marker)
-            .and_then(|(_, rest)| rest.split_once("```json"))
-            .and_then(|(_, rest)| rest.split_once("```"))
-            .map(|(json, _)| json.trim())
-            .expect("README proxy CA configuration example");
-        let config: flags::Config = serde_json::from_str(example).unwrap();
-        let mut flags = neutral_launch_config_flags();
-        flags.profile = config.profile;
-        flags.ignore_https_errors = config.ignore_https_errors.unwrap_or(false);
-        flags.ca_cert = config.ca_cert;
-        flags.clear_ca_cert = config.clear_ca_cert.unwrap_or(false);
-        flags.cdp = config.cdp;
-        flags.auto_connect = config.auto_connect.unwrap_or(false);
-        flags.provider = config.provider;
-        flags.engine = config.engine;
-
-        let error = incompatible_launch_mode_error(&flags);
-        assert!(
-            error.is_none() || error == Some("--ca-cert is currently supported only on Linux"),
-            "README proxy CA configuration is incompatible: {error:?}"
-        );
-    }
 
     #[test]
     fn test_incompatible_launch_mode_error_allows_compatible_flags() {

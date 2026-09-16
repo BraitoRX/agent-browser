@@ -119,6 +119,69 @@ class FakeRuntime:
         self._page_to_tab: Dict[int, str] = {}
 
 
+    async def test_document_body_survives_subrequest_eviction(self) -> None:
+        observer, context, _runtime = self.make_observer()
+        document = FakeRequest("https://example.test/page", resource_type="document")
+        doc_response = FakeResponse(
+            document,
+            status=200,
+            headers={"Content-Type": "text/html"},
+            body=b"<html>payload</html>",
+        )
+        context.emit("request", document)
+        context.emit("response", doc_response)
+        context.emit("requestfinished", document)
+
+        for index in range(network_observer.MAX_REQUESTS):
+            request = FakeRequest(f"https://example.test/asset/{index}", resource_type="fetch")
+            response = FakeResponse(request, headers={"Content-Type": "text/plain"}, body=b"x")
+            context.emit("request", request)
+            context.emit("response", response)
+            context.emit("requestfinished", request)
+
+        listing = observer.requests(filter="example.test/page", type="document")
+        self.assertEqual(len(listing["requests"]), 1)
+        document_id = listing["requests"][0]["requestId"]
+        detail = await observer.request_detail(document_id)
+        self.assertEqual(detail["responseBody"], "<html>payload</html>")
+        self.assertEqual(doc_response.body_calls, 1)
+        self.assertGreater(observer.requests()["dropped"], 0)
+
+    async def test_document_body_allows_eight_mib(self) -> None:
+        observer, context, _runtime = self.make_observer()
+        payload = b"a" * (network_observer.MAX_BODY_BYTES + 5)
+        request = FakeRequest("https://example.test/big-page", resource_type="document")
+        response = FakeResponse(
+            request,
+            status=200,
+            headers={"Content-Type": "text/html"},
+            body=payload,
+        )
+        context.emit("request", request)
+        context.emit("response", response)
+        context.emit("requestfinished", request)
+
+        detail = await observer.request_detail("n1")
+        self.assertIs(detail["responseBodyTruncated"], True)
+        self.assertEqual(detail["responseBodyBytes"], len(payload))
+        self.assertEqual(len(detail["responseBody"]), network_observer.MAX_DOCUMENT_BODY_BYTES)
+
+        fetch_request = FakeRequest("https://example.test/big-api", resource_type="fetch")
+        fetch_response = FakeResponse(
+            fetch_request,
+            status=200,
+            headers={"Content-Type": "application/json"},
+            body=payload,
+        )
+        context.emit("request", fetch_request)
+        context.emit("response", fetch_response)
+        context.emit("requestfinished", fetch_request)
+
+        fetch_detail = await observer.request_detail("n2")
+        self.assertIs(fetch_detail["responseBodyTruncated"], True)
+        self.assertEqual(len(fetch_detail["responseBody"]), network_observer.MAX_BODY_BYTES)
+
+
 class NetworkObserverTests(unittest.IsolatedAsyncioTestCase):
     def make_observer(self) -> Any:
         runtime = FakeRuntime()
@@ -218,7 +281,7 @@ class NetworkObserverTests(unittest.IsolatedAsyncioTestCase):
         context.emit("response", failed_response)
         context.emit("requestfailed", failed_request)
 
-        oversized_request = FakeRequest("https://example.test/huge")
+        oversized_request = FakeRequest("https://example.test/huge", resource_type="fetch")
         oversized_response = FakeResponse(
             oversized_request,
             status=200,

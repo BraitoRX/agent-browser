@@ -635,6 +635,9 @@ impl CamoufoxBackend {
                 });
             let bubble_profile_mounted = host_profile.is_some();
             let deadline = env::var("AGENT_BROWSER_ACTION_DEADLINE_MS").ok();
+            let gestures_dir = env::var("AGENT_BROWSER_GESTURES_DIR")
+                .ok()
+                .filter(|value| !value.is_empty());
             let args = bubble_run_args(
                 &assets,
                 &motion,
@@ -647,6 +650,14 @@ impl CamoufoxBackend {
             );
             let mut command = Command::new("docker");
             command.args(&args);
+            if let Some(dir) = gestures_dir {
+                let path = PathBuf::from(&dir);
+                if path.is_dir() {
+                    command
+                        .args(["-v", &format!("{}:/worker/gestures-external:ro", dir)])
+                        .args(["-e", "AGENT_BROWSER_GESTURES_DIR=/worker/gestures-external"]);
+                }
+            }
             (
                 command,
                 Some(vnc_port),

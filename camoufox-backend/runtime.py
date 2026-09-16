@@ -453,6 +453,80 @@ def _resolve_host_os() -> str:
     return _HOST_OS_MAP.get(platform.system(), "linux")
 
 
+_LOCALE_CONFIG_KEYS = (
+    "locale:language",
+    "locale:region",
+    "locale:script",
+    "locale:all",
+    "navigator.language",
+)
+
+_CONFIG_CHUNK_SIZE = 32768
+
+_CAMOU_CONFIG_CHUNK_RE = re.compile(r"^CAMOU_CONFIG_([0-9]+)$")
+
+
+def _sanitize_fingerprint_config(options: Dict[str, Any]) -> None:
+    """Remove locale-spoof keys from a generated Camoufox config.
+
+    Camoufox's locale-spoofing patch hooks Locale::Language()/Region()/Script() so every
+    internal Locale instance reports the spoofed subtags while MaskConfig carries
+    locale:* or navigator.language. That poisons Intl.DisplayNames for every consumer
+    (measured: of('US'), of('GB'), of('KY') all resolve to the spoofed region's name), and
+    pages that validate locales through DisplayNames — OpenRouter's gt-next is one — throw
+    during hydration and replace the document with their own error screen. The
+    GetDefaultLocale() override alone is the intended spoof surface; the subtag accessors
+    are the collateral. Until the Camoufox patch is narrowed upstream, launching without
+    these keys keeps the engine's intl machinery coherent. navigator.language in the page
+    then reflects the browser's real build locale and the intl.accept_languages pref, not
+    a geo-coherent spoof.
+
+    The fingerprint is serialized into CAMOU_CONFIG_<n> environment chunks, so the keys
+    are removed from the decoded JSON and the chunks are rewritten in place.
+    """
+    config = options.get("config")
+    if not isinstance(config, dict):
+        config = {}
+    removed = False
+    for key in _LOCALE_CONFIG_KEYS:
+        if key in config:
+            config.pop(key, None)
+            removed = True
+    if removed:
+        options["config"] = config
+    env = options.get("env")
+    if not isinstance(env, dict):
+        return
+    chunk_keys = sorted(
+        (key for key in env if isinstance(key, str) and _CAMOU_CONFIG_CHUNK_RE.match(key)),
+        key=lambda key: int(_CAMOU_CONFIG_CHUNK_RE.match(key).group(1)),
+    )
+    if not chunk_keys:
+        return
+    raw = "".join(env[key] for key in chunk_keys)
+    try:
+        config = json.loads(raw)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(config, dict):
+        return
+    removed = False
+    for key in _LOCALE_CONFIG_KEYS:
+        if key in config:
+            config.pop(key, None)
+            removed = True
+    if not removed:
+        return
+    encoded = json.dumps(config, separators=(",", ":"))
+    # Re-chunk at a conservative size so no single env var grows beyond limits.
+    chunks = [encoded[i : i + _CONFIG_CHUNK_SIZE] for i in range(0, len(encoded), _CONFIG_CHUNK_SIZE)]
+    for old_key in list(env):
+        if isinstance(old_key, str) and _CAMOU_CONFIG_CHUNK_RE.match(old_key):
+            del env[old_key]
+    for index, chunk in enumerate(chunks, start=1):
+        env[f"CAMOU_CONFIG_{index}"] = chunk
+
+
 def _geoip_launch_value() -> Optional[bool]:
     """Enable IP-based geo coherence only when the geoip extra and database exist."""
     try:
@@ -674,6 +748,7 @@ class CamoufoxRuntime:
                 )
                 launch_build["geoip"] = None
                 options = await asyncio.to_thread(launch_options, **launch_build, **profile_kwargs)
+            _sanitize_fingerprint_config(options)
             options["executable_path"] = str(executable)
             if persistent is not None:
                 if not profile_kwargs:

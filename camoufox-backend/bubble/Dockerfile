@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libxcomposite1 libxcursor1 libxdamage1 libxfixes3 libxi6 libxrender1 \
       libfreetype6 libfontconfig1 dbus-x11 \
       fonts-noto-color-emoji fonts-noto-cjk fonts-freefont-ttf \
+      libavcodec59 libavutil57 libavformat59 \
       xvfb x11-xserver-utils xfonts-base x11vnc websockify novnc \
     && rm -rf /var/lib/apt/lists/*
 

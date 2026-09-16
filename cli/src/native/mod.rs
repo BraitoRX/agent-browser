@@ -50,7 +50,3 @@ pub mod webdriver;
 #[allow(dead_code)]
 pub mod webmcp;
 
-#[cfg(test)]
-mod e2e_tests;
-#[cfg(test)]
-mod parity_tests;

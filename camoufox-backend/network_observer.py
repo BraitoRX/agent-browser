@@ -14,6 +14,7 @@ from input_context import BackendError, CODE_INVALID_REQUEST
 MAX_REQUESTS = 500
 MAX_METADATA_BYTES = 8 * 1024
 MAX_BODY_BYTES = 1024 * 1024
+MAX_DOCUMENT_BODY_BYTES = 8 * 1024 * 1024
 MAX_HEADER_ENTRIES = 256
 MAX_HEADER_TOTAL_BYTES = 64 * 1024
 DETAIL_API_TIMEOUT_SECONDS = 2.0
@@ -428,11 +429,12 @@ class NetworkObserver:
         if raw_length is None:
             raw_length = _lookup_header(header_map, "content-length")
         known_size = _parse_content_length(raw_length)
-        if known_size is not None and known_size > MAX_BODY_BYTES:
+        max_body = MAX_DOCUMENT_BODY_BYTES if record.resource_type == "document" else MAX_BODY_BYTES
+        if known_size is not None and known_size > max_body:
             detail["responseBodyUnavailable"] = {
                 "reason": "oversized",
                 "contentLength": known_size,
-                "limit": MAX_BODY_BYTES,
+                "limit": max_body,
             }
             return
 
@@ -447,9 +449,9 @@ class NetworkObserver:
             return
 
         data = bytes(raw_body)
-        truncated = len(data) > MAX_BODY_BYTES
+        truncated = len(data) > max_body
         if truncated:
-            data = data[:MAX_BODY_BYTES]
+            data = data[:max_body]
         text, is_base64 = _decode_body(data, content_type)
         detail["responseBody"] = text
         detail["base64Encoded"] = is_base64
@@ -478,10 +480,17 @@ class NetworkObserver:
         record.response = None
 
     def _evict_oldest(self) -> None:
-        _request_id, record = self._records.popitem(last=False)
+        record = self._oldest_evictable()
+        self._records.pop(record.request_id, None)
         self._by_key.pop(record.request_key, None)
         self._drop_handles(record)
         self._dropped += 1
+
+    def _oldest_evictable(self) -> _Record:
+        for record in self._records.values():
+            if record.resource_type != "document":
+                return record
+        return next(iter(self._records.values()))
 
     def _tab_id(self, request: Any) -> Optional[str]:
         try:
