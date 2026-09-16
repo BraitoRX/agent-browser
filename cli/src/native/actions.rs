@@ -29,7 +29,7 @@ use super::screenshot::{self, ScreenshotOptions};
 use super::snapshot::{self, SnapshotOptions};
 use super::state;
 use super::storage;
-use super::stream::{self, IdleActivity, StreamServer};
+use super::idle::IdleActivity;
 use super::tab_binding;
 use super::tracing::{self as native_tracing, TracingState};
 use super::webmcp;
@@ -518,7 +518,6 @@ pub struct DaemonState {
     pub webmcp: webmcp::RuntimeState,
     /// Whether the active launch opted into Chrome's experimental WebMCP features.
     pub webmcp_enabled: bool,
-    pub screencasting: bool,
     pub policy: Option<ActionPolicy>,
     pub pending_confirmation: Option<PendingConfirmation>,
     pub har_recording: bool,
@@ -565,10 +564,6 @@ pub struct DaemonState {
     /// When true, automatically dismiss `beforeunload` dialogs and accept `alert`
     /// dialogs so they never block the agent.  Enabled by default.
     pub auto_dialog: bool,
-    /// Shared slot for stream server to receive CDP client when browser launches.
-    pub stream_client: Option<Arc<RwLock<Option<Arc<CdpClient>>>>>,
-    /// Stream server instance kept alive so the broadcast channel remains open.
-    pub stream_server: Option<Arc<StreamServer>>,
     /// Daemon-owned activity clock shared by commands and stream servers.
     pub idle_activity: Arc<IdleActivity>,
     /// Hash of launch options used for the current browser, for relaunch detection.
@@ -651,7 +646,6 @@ impl DaemonState {
             event_rx: None,
             webmcp: webmcp::RuntimeState::default(),
             webmcp_enabled: false,
-            screencasting: false,
             policy: ActionPolicy::load_if_exists(),
             pending_confirmation: None,
             har_recording: false,
@@ -676,8 +670,6 @@ impl DaemonState {
                 env::var("AGENT_BROWSER_NO_AUTO_DIALOG").as_deref(),
                 Ok("1" | "true" | "yes")
             ),
-            stream_client: None,
-            stream_server: None,
             idle_activity: Arc::new(IdleActivity::new()),
             launch_hash: None,
             effective_ca_cert: None,
@@ -725,19 +717,9 @@ impl DaemonState {
         self.mouse_state = MouseState::default();
     }
 
-    /// Create state with an optional stream client slot and server instance
-    /// (for daemon startup with stream server).
-    pub fn new_with_stream(
-        stream_client: Option<Arc<RwLock<Option<Arc<CdpClient>>>>>,
-        stream_server: Option<Arc<StreamServer>>,
-        idle_activity: Arc<IdleActivity>,
-    ) -> Self {
+    /// Create state for daemon startup, sharing the daemon-wide idle clock.
+    pub fn new_with_idle(idle_activity: Arc<IdleActivity>) -> Self {
         let mut s = Self::new();
-        if stream_server.is_some() {
-            s.request_tracking = true;
-        }
-        s.stream_client = stream_client;
-        s.stream_server = stream_server;
         s.idle_activity = idle_activity;
         s
     }
@@ -988,36 +970,6 @@ impl DaemonState {
         }));
     }
 
-    /// Update the stream server's CDP client slot when browser is set or cleared.
-    pub async fn update_stream_client(&self) {
-        if let Some(ref slot) = self.stream_client {
-            let mut guard = slot.write().await;
-            *guard = self.browser.as_ref().map(|m| Arc::clone(&m.client));
-        }
-        if let Some(ref server) = self.stream_server {
-            // Update the CDP page session ID so screencast commands target the right page
-            let session_id = self
-                .browser
-                .as_ref()
-                .and_then(|m| m.active_session_id().ok().map(|s| s.to_string()));
-            let connected = self.browser.is_some();
-            let sc = server.is_screencasting().await;
-            let (vw, vh) = server.viewport().await;
-            if let Some(ref mgr) = self.browser {
-                server
-                    .bind_cdp_session_and_broadcast_tabs(session_id, &mgr.tab_list())
-                    .await;
-            } else {
-                server
-                    .bind_cdp_session_and_broadcast_tabs(session_id, &[])
-                    .await;
-            }
-            server
-                .broadcast_status(connected, sc, vw, vh, &self.engine)
-                .await;
-        }
-    }
-
     pub async fn drain_cdp_events_background(&mut self) -> Result<(), String> {
         let drained = self.drain_cdp_events();
         self.apply_drained_events(drained).await
@@ -1050,17 +1002,6 @@ impl DaemonState {
         // target without changing iframe topology. Refresh after either kind
         // of event so network capture stays scoped to the active page.
         let active_frame_scope_changed = active_frame_scope_may_have_changed(&drained);
-        // ACK screencast frames
-        if !drained.pending_acks.is_empty() {
-            if let Some(ref browser) = self.browser {
-                if let Ok(session_id) = browser.active_session_id() {
-                    for ack_sid in drained.pending_acks {
-                        let _ = stream::ack_screencast_frame(&browser.client, session_id, ack_sid)
-                            .await;
-                    }
-                }
-            }
-        }
 
         // Remove destroyed targets
         for target_id in &drained.destroyed_targets {
@@ -1643,9 +1584,6 @@ impl DaemonState {
                                 .cloned()
                                 .unwrap_or_default();
                             let text = network::format_console_args(&raw_args);
-                            if let Some(ref server) = self.stream_server {
-                                server.broadcast_console(level, &text, &raw_args);
-                            }
                             self.event_tracker.add_console(level, &text, raw_args);
                         }
                         "Runtime.exceptionThrown" => {
@@ -1664,13 +1602,6 @@ impl DaemonState {
                                     details.line_number,
                                     details.column_number,
                                 );
-                                if let Some(ref server) = self.stream_server {
-                                    server.broadcast_page_error(
-                                        text,
-                                        details.line_number,
-                                        details.column_number,
-                                    );
-                                }
                             }
                         }
                         "Network.requestWillBeSent"
@@ -1894,10 +1825,7 @@ impl DaemonState {
                                 }
                             }
                         }
-                        // Frame broadcasting and acks are handled in real-time by the
-                        // stream server's background CDP event loop. Here we just
-                        // collect acks as a fallback for non-streaming mode.
-                        "Page.screencastFrame" if self.stream_server.is_none() => {
+                        "Page.screencastFrame" => {
                             if let Some(sid) =
                                 event.params.get("sessionId").and_then(|v| v.as_i64())
                             {
@@ -2144,9 +2072,7 @@ pub(crate) async fn close_current_browser(state: &mut DaemonState) -> Result<(),
     state.iframe_sessions.clear();
     state.active_iframe_sessions.clear();
     state.webmcp.clear_all();
-    state.screencasting = false;
     state.reset_input_state();
-    state.update_stream_client().await;
 
     if let Some(err) = close_error {
         return Err(err);
@@ -2199,9 +2125,6 @@ fn skip_launch_action(action: &str) -> bool {
             | "state_clear"
             | "state_clean"
             | "state_rename"
-            | "stream_enable"
-            | "stream_disable"
-            | "stream_status"
             | "session_info"
             | "gestures"
             | "gesture"
@@ -2354,7 +2277,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         .unwrap_or("")
         .to_string();
 
-    let cmd_start = std::time::Instant::now();
     let requested_engine = cmd.get("engine").and_then(Value::as_str);
     let use_camoufox =
         state.camoufox.is_some() || requested_engine.unwrap_or(&state.engine) == "camoufox";
@@ -2421,30 +2343,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         return resp;
     }
 
-    if let Some(ref server) = state.stream_server {
-        let mut broadcast_cmd;
-        let has_internal_fields = cmd.get("pinTab").is_some()
-            || cmd.get("restoreKey").is_some()
-            || cmd.get("restoreSave").is_some()
-            || cmd.get("restoreCheckUrl").is_some()
-            || cmd.get("restoreCheckText").is_some()
-            || cmd.get("restoreCheckFn").is_some();
-        let cmd_for_broadcast = if has_internal_fields {
-            broadcast_cmd = cmd.clone();
-            if let Some(obj) = broadcast_cmd.as_object_mut() {
-                obj.remove("pinTab");
-                obj.remove("restoreKey");
-                obj.remove("restoreSave");
-                obj.remove("restoreCheckUrl");
-                obj.remove("restoreCheckText");
-                obj.remove("restoreCheckFn");
-            }
-            &broadcast_cmd
-        } else {
-            cmd
-        };
-        server.broadcast_command(action, &id, cmd_for_broadcast);
-    }
 
     // Drain and apply pending CDP events (console, errors, screencast frames, target lifecycle)
     if let Err(e) = state.drain_cdp_events_background().await {
@@ -2790,11 +2688,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         "clipboard" => handle_clipboard(cmd, state).await,
         "wheel" => handle_wheel(cmd, state).await,
         "device" => handle_device(cmd, state).await,
-        "screencast_start" => handle_screencast_start(cmd, state).await,
-        "screencast_stop" => handle_screencast_stop(state).await,
-        "stream_enable" => handle_stream_enable(cmd, state).await,
-        "stream_disable" => handle_stream_disable(state).await,
-        "stream_status" => handle_stream_status(state).await,
         "webmcp_list" => handle_webmcp_list(state).await,
         "webmcp_invoke" => handle_webmcp_invoke(cmd, state).await,
         "webmcp_result" => handle_webmcp_result(cmd, state).await,
@@ -2927,23 +2820,6 @@ pub async fn execute_command(cmd: &Value, state: &mut DaemonState) -> Value {
         }
     }
 
-    if let Some(ref server) = state.stream_server {
-        let duration_ms = cmd_start.elapsed().as_millis() as u64;
-        let success = resp
-            .get("status")
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| s == "success");
-        let data = resp.get("data").cloned().unwrap_or(Value::Null);
-        server.broadcast_result(&id, action, success, &data, duration_ms);
-
-        if let Some(ref mgr) = state.browser {
-            let tabs = mgr.tab_list();
-            let session_id = mgr.active_session_id().ok().map(|s| s.to_string());
-            server
-                .bind_cdp_session_and_broadcast_tabs(session_id, &tabs)
-                .await;
-        }
-    }
 
     resp
 }
@@ -3650,6 +3526,56 @@ async fn apply_session_setup(state: &mut DaemonState, session_id: &str) -> Resul
     Ok(())
 }
 
+fn launch_enable_features_from_env() -> Vec<String> {
+    env::var("AGENT_BROWSER_ENABLE")
+        .ok()
+        .map(|raw| {
+            raw.split([',', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn launch_init_script_paths_from_env() -> Vec<String> {
+    env::var("AGENT_BROWSER_INIT_SCRIPTS")
+        .ok()
+        .map(|raw| {
+            raw.split([',', '\n'])
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+
+fn string_array_from_command(cmd: &Value, key: &str) -> Option<Vec<String>> {
+    cmd.get(key).and_then(|v| v.as_array()).map(|arr| {
+        arr.iter()
+            .filter_map(|v| v.as_str().map(|s| s.to_string()))
+            .collect()
+    })
+}
+
+fn allowed_domains_from_launch_command(cmd: &Value) -> Option<Vec<String>> {
+    let value = cmd.get("allowedDomains")?;
+    let raw_domains: Vec<&str> = match value {
+        Value::String(domains) => domains.split(',').collect(),
+        Value::Array(domains) => domains.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    Some(
+        raw_domains
+            .into_iter()
+            .map(|domain| domain.trim().to_lowercase())
+            .filter(|domain| !domain.is_empty())
+            .collect(),
+    )
+}
+
+
 async fn auto_launch(
     state: &mut DaemonState,
 ) -> Result<(), String> {
@@ -3660,9 +3586,7 @@ async fn auto_launch(
 
     // Use the stream server's viewport dimensions for --window-size so the
     // content area matches the desired viewport from the start.
-    if let Some(ref server) = state.stream_server {
-        options.viewport_size = Some(server.viewport().await);
-    }
+
     let engine = env::var("AGENT_BROWSER_ENGINE").ok();
     let cdp = env::var("AGENT_BROWSER_CDP").ok();
     let auto_connect = env::var("AGENT_BROWSER_AUTO_CONNECT").is_ok();
@@ -3722,7 +3646,6 @@ async fn auto_launch(
         state.start_fetch_handler();
         state.start_dialog_handler();
         apply_tab_binding_on_attach_or_rollback(state).await?;
-        state.update_stream_client().await;
         install_network_controls_or_close(state, has_proxy_auth).await?;
         apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
         try_auto_restore_state(state).await;
@@ -3762,7 +3685,6 @@ async fn auto_launch(
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
         state.start_dialog_handler();
-        state.update_stream_client().await;
         install_network_controls_or_close(state, has_proxy_auth).await?;
         apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
         try_auto_restore_state(state).await;
@@ -3814,66 +3736,12 @@ async fn auto_launch(
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
     state.start_dialog_handler();
-    state.update_stream_client().await;
     install_network_controls_or_close(state, has_proxy_auth).await?;
 
     apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
     try_auto_restore_state(state).await;
     try_load_storage_state(state, &storage_state_path).await;
     Ok(())
-}
-
-/// Apply AGENT_BROWSER_ENABLE (built-in init script features)
-/// and AGENT_BROWSER_INIT_SCRIPTS (user-provided files) to the browser so the
-/// scripts are registered before any page JS runs on the next navigation.
-/// Also evaluates each script on the current page (if any) so the effect is
-/// immediate for already-loaded pages.
-fn launch_enable_features_from_env() -> Vec<String> {
-    env::var("AGENT_BROWSER_ENABLE")
-        .ok()
-        .map(|raw| {
-            raw.split([',', '\n'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn launch_init_script_paths_from_env() -> Vec<String> {
-    env::var("AGENT_BROWSER_INIT_SCRIPTS")
-        .ok()
-        .map(|raw| {
-            raw.split([',', '\n'])
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn string_array_from_command(cmd: &Value, key: &str) -> Option<Vec<String>> {
-    cmd.get(key).and_then(|v| v.as_array()).map(|arr| {
-        arr.iter()
-            .filter_map(|v| v.as_str().map(|s| s.to_string()))
-            .collect()
-    })
-}
-
-fn allowed_domains_from_launch_command(cmd: &Value) -> Option<Vec<String>> {
-    let value = cmd.get("allowedDomains")?;
-    let raw_domains: Vec<&str> = match value {
-        Value::String(domains) => domains.split(',').collect(),
-        Value::Array(domains) => domains.iter().filter_map(Value::as_str).collect(),
-        _ => Vec::new(),
-    };
-    Some(
-        raw_domains
-            .into_iter()
-            .map(|domain| domain.trim().to_lowercase())
-            .filter(|domain| !domain.is_empty())
-            .collect(),
-    )
 }
 
 async fn apply_launch_init_scripts(
@@ -4556,7 +4424,6 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         state.start_fetch_handler();
         state.start_dialog_handler();
         apply_tab_binding_on_attach_or_rollback(state).await?;
-        state.update_stream_client().await;
         install_network_controls_or_close(state, has_proxy_auth).await?;
         apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
         try_auto_restore_state(state).await;
@@ -4573,7 +4440,6 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         state.start_fetch_handler();
         state.start_dialog_handler();
         apply_tab_binding_on_attach_or_rollback(state).await?;
-        state.update_stream_client().await;
         install_network_controls_or_close(state, has_proxy_auth).await?;
         apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
         try_auto_restore_state(state).await;
@@ -4595,7 +4461,6 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
         state.subscribe_to_browser_events();
         state.start_fetch_handler();
         state.start_dialog_handler();
-        state.update_stream_client().await;
         install_network_controls_or_close(state, has_proxy_auth).await?;
         apply_launch_init_scripts(state, &enable_features, &init_script_paths).await;
         try_auto_restore_state(state).await;
@@ -4614,7 +4479,6 @@ async fn handle_launch(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     state.subscribe_to_browser_events();
     state.start_fetch_handler();
     state.start_dialog_handler();
-    state.update_stream_client().await;
 
     // Install containment before loading state or running user init scripts.
     // Failure closes the browser so a requested allowlist never degrades to an
@@ -6266,26 +6130,6 @@ async fn handle_tab_switch(cmd: &Value, state: &mut DaemonState) -> Result<Value
     // A dialog-blocked tab's renderer is paused and cannot answer an eval, so
     // skip the viewport sync; it would otherwise stall on the CDP timeout. The
     // sync resumes on the next command once the dialog is resolved.
-    let dialog_blocked = result.get("dialogBlocked").and_then(|v| v.as_bool()) == Some(true);
-    if let Some(ref server) = state.stream_server {
-        if let Some(mgr) = state.browser.as_ref().filter(|_| !dialog_blocked) {
-            if let Ok(dims) = mgr
-                .evaluate(
-                    "JSON.stringify([window.innerWidth,window.innerHeight])",
-                    None,
-                )
-                .await
-            {
-                if let Some(s) = dims.get("result").and_then(|v| v.as_str()) {
-                    if let Ok(arr) = serde_json::from_str::<Vec<u32>>(s) {
-                        if arr.len() == 2 && arr[0] > 0 && arr[1] > 0 {
-                            server.set_viewport(arr[0], arr[1]).await;
-                        }
-                    }
-                }
-            }
-        }
-    }
 
     Ok(result)
 }
@@ -6333,11 +6177,6 @@ async fn handle_viewport(cmd: &Value, state: &mut DaemonState) -> Result<Value, 
     mgr.set_viewport(width, height, scale, mobile).await?;
 
     state.viewport = Some((width, height, scale, mobile));
-
-    // Update stream server viewport so status messages and screencast use the new dimensions
-    if let Some(ref server) = state.stream_server {
-        server.set_viewport(width as u32, height as u32).await;
-    }
 
     Ok(json!({ "width": width, "height": height, "deviceScaleFactor": scale, "mobile": mobile }))
 }
@@ -7611,11 +7450,6 @@ async fn handle_device(cmd: &Value, state: &mut DaemonState) -> Result<Value, St
     state.viewport = Some((width, height, scale, mobile));
     state.session_setup.user_agent = Some(ua.to_string());
 
-    // Update stream server viewport so status messages and screencast use the new dimensions
-    if let Some(ref server) = state.stream_server {
-        server.set_viewport(width as u32, height as u32).await;
-    }
-
     Ok(json!({
         "device": name,
         "width": width,
@@ -7717,91 +7551,6 @@ fn write_extensions_file_from_paths(session_id: &str, extensions: Option<&[Strin
 
 fn remove_extensions_file(session_id: &str) {
     let _ = fs::remove_file(extensions_file_path(session_id));
-}
-
-async fn current_stream_status(state: &DaemonState) -> Value {
-    debug_assert_eq!(
-        state.stream_server.is_some(),
-        state.stream_client.is_some(),
-        "stream server and stream client slot should be set together"
-    );
-
-    let connected = match state.browser.as_ref() {
-        Some(mgr) => mgr.is_connection_alive().await,
-        None => false,
-    };
-    let runtime_screencasting = match state.stream_server.as_ref() {
-        Some(server) => server.is_screencasting().await,
-        None => false,
-    };
-
-    json!({
-        "enabled": state.stream_server.is_some(),
-        "port": state
-            .stream_server
-            .as_ref()
-            .map(|server| Value::from(server.port()))
-            .unwrap_or(Value::Null),
-        "connected": connected,
-        "screencasting": connected && (state.screencasting || runtime_screencasting),
-    })
-}
-
-async fn handle_stream_enable(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    if state.stream_server.is_some() {
-        return Err("Streaming is already enabled for this session".to_string());
-    }
-
-    let requested_port = match cmd.get("port").and_then(|value| value.as_u64()) {
-        Some(raw) => u16::try_from(raw)
-            .map_err(|_| format!("Invalid stream port '{}': expected 0-65535", raw))?,
-        None => 0,
-    };
-
-    let (server, client_slot) = StreamServer::start_without_client(
-        requested_port,
-        state.session_id.clone(),
-        false,
-        state.idle_activity.clone(),
-    )
-    .await?;
-    let port = server.port();
-    if let Err(err) = write_stream_file(&state.session_id, port) {
-        server.shutdown().await;
-        return Err(err);
-    }
-
-    state.stream_client = Some(client_slot);
-    state.stream_server = Some(Arc::new(server));
-    state.request_tracking = true;
-    state.refresh_active_iframe_sessions().await;
-    if state.screencasting {
-        if let Some(ref server) = state.stream_server {
-            server.set_screencasting(true).await;
-        }
-    }
-    state.update_stream_client().await;
-
-    Ok(current_stream_status(state).await)
-}
-
-async fn handle_stream_disable(state: &mut DaemonState) -> Result<Value, String> {
-    let Some(server) = state.stream_server.clone() else {
-        return Err("Streaming is not enabled for this session".to_string());
-    };
-
-    server.shutdown().await;
-    state.stream_server = None;
-    state.stream_client = None;
-    remove_stream_file(&state.session_id)?;
-    remove_engine_file(&state.session_id);
-    remove_provider_file(&state.session_id);
-
-    Ok(json!({ "disabled": true }))
-}
-
-async fn handle_stream_status(state: &DaemonState) -> Result<Value, String> {
-    Ok(current_stream_status(state).await)
 }
 
 async fn webmcp_page_context(
@@ -8051,89 +7800,6 @@ async fn handle_webmcp_cancel(cmd: &Value, state: &mut DaemonState) -> Result<Va
 // ---------------------------------------------------------------------------
 // Screencast handlers
 // ---------------------------------------------------------------------------
-
-async fn handle_screencast_start(cmd: &Value, state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?.to_string();
-
-    if state.screencasting {
-        return Err("Screencast already active".to_string());
-    }
-
-    // Use stored viewport as default for screencast dimensions
-    // Quality only. The frame-size env vars are deliberately not applied here:
-    // this command reports its dimensions as the viewport in the status
-    // broadcast, and clients scale pointer coordinates by that, so a smaller
-    // encode would move every click.
-    let env_cfg = stream::ScreencastConfig::from_env();
-    let (default_w, default_h) = if let Some(ref server) = state.stream_server {
-        server.viewport().await
-    } else {
-        (1280, 720)
-    };
-    let format = cmd.get("format").and_then(|v| v.as_str()).unwrap_or("jpeg");
-    let quality = cmd
-        .get("quality")
-        .and_then(|v| v.as_i64())
-        .map(|q| q as i32)
-        .unwrap_or(env_cfg.quality);
-    let max_width = cmd
-        .get("maxWidth")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(default_w as i64) as i32;
-    let max_height = cmd
-        .get("maxHeight")
-        .and_then(|v| v.as_i64())
-        .unwrap_or(default_h as i64) as i32;
-
-    stream::start_screencast(
-        &mgr.client,
-        &session_id,
-        format,
-        quality,
-        max_width,
-        max_height,
-    )
-    .await?;
-    state.screencasting = true;
-
-    if let Some(ref server) = state.stream_server {
-        server.set_screencasting(true).await;
-        server
-            .broadcast_status(
-                true,
-                true,
-                max_width as u32,
-                max_height as u32,
-                &state.engine,
-            )
-            .await;
-    }
-
-    Ok(json!({ "started": true }))
-}
-
-async fn handle_screencast_stop(state: &mut DaemonState) -> Result<Value, String> {
-    let mgr = state.browser.as_ref().ok_or("Browser not launched")?;
-    let session_id = mgr.active_session_id()?;
-
-    if !state.screencasting {
-        return Err("No screencast active".to_string());
-    }
-
-    stream::stop_screencast(&mgr.client, session_id).await?;
-    state.screencasting = false;
-
-    if let Some(ref server) = state.stream_server {
-        server.set_screencasting(false).await;
-        let (vw, vh) = server.viewport().await;
-        server
-            .broadcast_status(true, false, vw, vh, &state.engine)
-            .await;
-    }
-
-    Ok(json!({ "stopped": true }))
-}
 
 // ---------------------------------------------------------------------------
 // Wait variant handlers
@@ -9489,11 +9155,6 @@ async fn handle_window_new(cmd: &Value, state: &mut DaemonState) -> Result<Value
             .unwrap_or(720) as i32;
         let mgr = state.browser.as_mut().ok_or("Browser not launched")?;
         mgr.set_viewport(width, height, 1.0, false).await?;
-
-        // Update stream server viewport
-        if let Some(ref server) = state.stream_server {
-            server.set_viewport(width as u32, height as u32).await;
-        }
     }
 
     let total = state

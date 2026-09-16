@@ -14,7 +14,9 @@ pub mod daemon;
 #[allow(dead_code)]
 pub mod diff;
 #[allow(dead_code)]
+#[allow(dead_code)]
 pub mod element;
+pub mod idle;
 #[allow(dead_code)]
 #[allow(dead_code)]
 pub mod interaction;
@@ -31,8 +33,6 @@ pub mod snapshot;
 pub mod state;
 #[allow(dead_code)]
 pub mod storage;
-#[allow(dead_code)]
-pub mod stream;
 #[allow(dead_code)]
 pub mod tab_binding;
 #[allow(dead_code)]

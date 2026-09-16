@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::color;
 use crate::flags::Flags;
-use crate::native::stream::chat;
+use crate::native::idle::chat;
 
 const DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
 
