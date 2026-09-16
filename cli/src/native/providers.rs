@@ -1083,7 +1083,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
             &plugins,
             Some(json!({
                 "colorScheme": "dark",
-                "engine": "lightpanda",
+                "engine": "chrome",
                 "headed": true,
                 "userAgent": "cli-agent"
             })),
@@ -1093,7 +1093,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
         let request: Value =
             serde_json::from_str(&std::fs::read_to_string(request_path).unwrap()).unwrap();
         assert_eq!(request["request"]["launchOptions"]["colorScheme"], "dark");
-        assert_eq!(request["request"]["launchOptions"]["engine"], "lightpanda");
+        assert_eq!(request["request"]["launchOptions"]["engine"], "chrome");
         assert_eq!(request["request"]["launchOptions"]["headed"], true);
         assert_eq!(
             request["request"]["launchOptions"]["userAgent"],

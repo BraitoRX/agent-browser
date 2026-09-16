@@ -1,6 +1,5 @@
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, Mutex};
@@ -8,7 +7,6 @@ use tokio::sync::{broadcast, Mutex};
 use super::cdp::chrome::{auto_connect_cdp, launch_chrome, ChromeProcess, LaunchOptions};
 use super::cdp::client::CdpClient;
 use super::cdp::discovery::discover_cdp_url;
-use super::cdp::lightpanda::{launch_lightpanda, LightpandaLaunchOptions, LightpandaProcess};
 use super::cdp::types::*;
 use super::element::{resolve_element_object_id, RefMap};
 use super::tab_binding;
@@ -68,42 +66,6 @@ pub fn validate_launch_options(
                 );
             }
         }
-    }
-    Ok(())
-}
-
-/// Validates that Chrome-only options are not used with Lightpanda.
-fn validate_lightpanda_options(options: &LaunchOptions) -> Result<(), String> {
-    if options
-        .extensions
-        .as_ref()
-        .map(|e| !e.is_empty())
-        .unwrap_or(false)
-    {
-        return Err("Extensions are not supported with Lightpanda".to_string());
-    }
-    if options.profile.is_some() {
-        return Err("Profiles are not supported with Lightpanda".to_string());
-    }
-    if options.storage_state.is_some() {
-        return Err("Storage state is not supported with Lightpanda".to_string());
-    }
-    if options.allow_file_access {
-        return Err("File access is not supported with Lightpanda".to_string());
-    }
-    if !options.headless {
-        return Err("Headed mode is not supported with Lightpanda (headless only)".to_string());
-    }
-    if options.webgpu {
-        return Err("WebGPU (--webgpu) is not supported with Lightpanda".to_string());
-    }
-    if options.ca_cert.is_some() {
-        return Err("--ca-cert is not supported with Lightpanda (Chromium only)".to_string());
-    }
-    if !options.args.is_empty() {
-        return Err(
-            "Custom Chrome arguments (--args) are not supported with Lightpanda".to_string(),
-        );
     }
     Ok(())
 }
@@ -364,21 +326,18 @@ impl WaitUntil {
 
 pub enum BrowserProcess {
     Chrome(ChromeProcess),
-    Lightpanda(LightpandaProcess),
 }
 
 impl BrowserProcess {
     pub fn kill(&mut self) {
         match self {
             BrowserProcess::Chrome(p) => p.kill(),
-            BrowserProcess::Lightpanda(p) => p.kill(),
         }
     }
 
     pub fn wait_or_kill(&mut self, timeout: std::time::Duration) {
         match self {
             BrowserProcess::Chrome(p) => p.wait_or_kill(timeout),
-            BrowserProcess::Lightpanda(p) => p.kill(),
         }
     }
 
@@ -386,7 +345,6 @@ impl BrowserProcess {
     pub fn has_exited(&mut self) -> bool {
         match self {
             BrowserProcess::Chrome(p) => p.has_exited(),
-            BrowserProcess::Lightpanda(_) => false,
         }
     }
 }
@@ -481,12 +439,9 @@ impl BrowserManager {
                     );
                 }
             }
-            "lightpanda" => {
-                validate_lightpanda_options(&options)?;
-            }
             _ => {
                 return Err(format!(
-                    "Unknown engine '{}'. Supported engines: chrome, lightpanda",
+                    "Unknown engine '{}'. Supported engines: chrome",
                     engine
                 ));
             }
@@ -498,29 +453,15 @@ impl BrowserManager {
         let download_path = options.download_path.clone();
         let headless = options.effectively_headless();
 
-        let (ws_url, process) = match engine {
-            "lightpanda" => {
-                let lp_options = LightpandaLaunchOptions {
-                    executable_path: options.executable_path.clone(),
-                    proxy: options.proxy.clone(),
-                    port: None,
-                };
-                let lp = launch_lightpanda(&lp_options).await?;
-                let url = lp.ws_url.clone();
-                (url, BrowserProcess::Lightpanda(lp))
-            }
-            _ => {
-                let chrome = tokio::task::spawn_blocking(move || launch_chrome(&options))
-                    .await
-                    .map_err(|e| format!("Chrome launch task failed: {}", e))??;
-                let url = chrome.ws_url.clone();
-                (url, BrowserProcess::Chrome(chrome))
-            }
+        let (ws_url, process) = {
+            let chrome = tokio::task::spawn_blocking(move || launch_chrome(&options))
+                .await
+                .map_err(|e| format!("Chrome launch task failed: {}", e))??;
+            let url = chrome.ws_url.clone();
+            (url, BrowserProcess::Chrome(chrome))
         };
 
-        let mut manager = if engine == "lightpanda" {
-            initialize_lightpanda_manager(ws_url, process).await?
-        } else {
+        let mut manager = {
             let client = Arc::new(CdpClient::connect(&ws_url).await?);
             let mut manager = Self {
                 client,
@@ -852,7 +793,6 @@ impl BrowserManager {
         // flatten: true gives each iframe its own session_id.
         // waitForDebuggerOnStart keeps child targets paused until the daemon
         // installs any required network controls and explicitly resumes them.
-        // Ignored on engines that don't support it (e.g. Lightpanda).
         let _ = self
             .client
             .send_command(
@@ -2316,110 +2256,12 @@ async fn connect_cdp_with_retry(
     }
 }
 
-async fn initialize_lightpanda_manager(
-    ws_url: String,
-    process: BrowserProcess,
-) -> Result<BrowserManager, String> {
-    let deadline = Instant::now() + LIGHTPANDA_TARGET_INIT_TIMEOUT;
-    let mut process = Some(process);
 
-    loop {
-        let client = match connect_cdp_with_retry(
-            &ws_url,
-            LIGHTPANDA_CDP_CONNECT_TIMEOUT,
-            LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL,
-        )
-        .await
-        {
-            Ok(client) => client,
-            Err(err) => {
-                if Instant::now() >= deadline {
-                    return Err(lightpanda_target_init_timeout(Some(&err)));
-                }
-                tokio::time::sleep(LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL).await;
-                continue;
-            }
-        };
-
-        let mut manager = BrowserManager {
-            client: Arc::new(client),
-            browser_process: None,
-            ws_url: ws_url.clone(),
-            pages: Vec::new(),
-            active_page_index: 0,
-            default_timeout_ms: 25_000,
-            download_path: None,
-            ignore_https_errors: false,
-            visited_origins: HashSet::new(),
-            next_tab_id: 1,
-            direct_page: false,
-            pin_tab: false,
-            bound_target_id: None,
-            bound_target_gone: None,
-            headless: true,
-        };
-
-        match discover_and_attach_lightpanda_targets(&mut manager, deadline).await {
-            Ok(()) => {
-                manager.browser_process = process.take();
-                return Ok(manager);
-            }
-            Err(err) => {
-                let _ = manager
-                    .close_with_timeout(Some(FAILED_INITIALIZATION_CLOSE_TIMEOUT))
-                    .await;
-                if Instant::now() >= deadline {
-                    return Err(lightpanda_target_init_timeout(Some(&err)));
-                }
-                tokio::time::sleep(LIGHTPANDA_CDP_CONNECT_POLL_INTERVAL).await;
-            }
-        }
-    }
-}
-
-async fn discover_and_attach_lightpanda_targets(
-    manager: &mut BrowserManager,
-    deadline: Instant,
-) -> Result<(), String> {
-    run_with_lightpanda_deadline(
-        deadline,
-        manager.discover_and_attach_targets(),
-        "Target domain initialization attempt exceeded the remaining startup deadline",
-    )
-    .await
-}
 
 fn remaining_until(deadline: Instant) -> Option<Duration> {
     deadline.checked_duration_since(Instant::now())
 }
 
-async fn run_with_lightpanda_deadline<F, T>(
-    deadline: Instant,
-    operation: F,
-    timeout_context: &'static str,
-) -> Result<T, String>
-where
-    F: Future<Output = Result<T, String>>,
-{
-    let remaining = remaining_until(deadline)
-        .ok_or_else(|| lightpanda_target_init_timeout(Some("deadline expired before retry")))?;
-
-    match tokio::time::timeout(remaining, operation).await {
-        Ok(result) => result,
-        Err(_) => Err(lightpanda_target_init_timeout(Some(timeout_context))),
-    }
-}
-
-fn lightpanda_target_init_timeout(last_error: Option<&str>) -> String {
-    let mut message = format!(
-        "Timed out after {}ms waiting for Lightpanda Target domain to initialize",
-        LIGHTPANDA_TARGET_INIT_TIMEOUT.as_millis(),
-    );
-    if let Some(last_error) = last_error {
-        message.push_str(&format!("\nLast error: {}", last_error));
-    }
-    message
-}
 
 async fn resolve_cdp_url(input: &str) -> Result<String, String> {
     if input.starts_with("ws://") || input.starts_with("wss://") {
@@ -2811,63 +2653,9 @@ mod tests {
         assert!(remaining_until(deadline).is_none());
     }
 
-    #[tokio::test]
-    async fn test_run_with_lightpanda_deadline_enforces_timeout() {
-        let deadline = Instant::now() + Duration::from_millis(25);
-        let err = tokio::time::timeout(
-            Duration::from_secs(1),
-            run_with_lightpanda_deadline(
-                deadline,
-                async {
-                    sleep(Duration::from_millis(100)).await;
-                    Ok::<(), String>(())
-                },
-                "Target domain initialization attempt exceeded the remaining startup deadline",
-            ),
-        )
-        .await
-        .expect("outer timeout should not fire")
-        .unwrap_err();
 
-        assert!(err.contains(
-            "Timed out after 10000ms waiting for Lightpanda Target domain to initialize"
-        ));
-        assert!(err.contains("remaining startup deadline"));
-    }
 
-    #[tokio::test]
-    async fn test_run_with_lightpanda_deadline_returns_operation_error() {
-        let deadline = Instant::now() + Duration::from_secs(1);
-        let err = run_with_lightpanda_deadline(
-            deadline,
-            async { Err::<(), String>("Target.getTargets failed".to_string()) },
-            "unused timeout context",
-        )
-        .await
-        .unwrap_err();
 
-        assert_eq!(err, "Target.getTargets failed");
-    }
-
-    #[test]
-    fn test_lightpanda_target_init_timeout_includes_last_error() {
-        let err = lightpanda_target_init_timeout(Some("Target.setDiscoverTargets failed"));
-        assert!(err.contains(
-            "Timed out after 10000ms waiting for Lightpanda Target domain to initialize"
-        ));
-        assert!(err.contains("Target.setDiscoverTargets failed"));
-    }
-
-    #[test]
-    fn test_validate_lightpanda_rejects_webgpu() {
-        let options = LaunchOptions {
-            webgpu: true,
-            ..Default::default()
-        };
-        let err = validate_lightpanda_options(&options).unwrap_err();
-        assert!(err.contains("WebGPU"));
-        assert!(validate_lightpanda_options(&LaunchOptions::default()).is_ok());
-    }
 
     #[test]
     fn test_is_internal_chrome_target() {
@@ -3379,28 +3167,6 @@ mod tests {
     }
 
     #[cfg(unix)]
-    #[tokio::test]
-    async fn test_failed_lightpanda_initialization_disconnects_before_retry() {
-        let (url, server) = initialization_server("Network.enable", false, 2, false).await;
-        let (dir, options) = initialization_process(&url);
-        let process = tokio::task::spawn_blocking(move || launch_chrome(&options))
-            .await
-            .unwrap()
-            .unwrap();
-        let mut manager = tokio::time::timeout(
-            Duration::from_secs(4),
-            initialize_lightpanda_manager(url, BrowserProcess::Chrome(process)),
-        )
-        .await
-        .expect("Lightpanda should release the failed connection and retry")
-        .unwrap();
-        assert!(!manager.browser_process.as_mut().unwrap().has_exited());
-        manager.close().await.unwrap();
-        let observed = server.await.unwrap();
-        assert!(!observed[0].iter().any(|method| method == "Browser.close"));
-        assert!(observed[1].iter().any(|method| method == "Browser.close"));
-        assert_initialization_process_reaped(dir.path());
-    }
 
     const TARGET_A: &str = "AAAA0000BBBB1111CCCC2222DDDD3333";
     const TARGET_B: &str = "4F0A1111BBBB2222CCCC3333DDDD4444";

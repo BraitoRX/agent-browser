@@ -2869,8 +2869,6 @@ mod tests {
         ignore_errors.ignore_https_errors = true;
         let mut profile = with_ca(launch_mode_flags(false, false, false, false));
         profile.profile = Some("/tmp/profile".to_string());
-        let mut lightpanda = with_ca(launch_mode_flags(false, false, false, false));
-        lightpanda.engine = Some("lightpanda".to_string());
 
         let cases = [
             (
@@ -2892,10 +2890,6 @@ mod tests {
             (
                 profile,
                 "Cannot use --ca-cert with --profile because isolated CA trust would change the profile's NSS environment",
-            ),
-            (
-                lightpanda,
-                "--ca-cert is supported only with the Chrome engine on Linux",
             ),
             (clear, "Cannot use --ca-cert with --no-ca-cert"),
         ];

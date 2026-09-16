@@ -2395,7 +2395,7 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
         _ => serde_json::Map::new(),
     };
     props.insert("engine".to_string(), json!({
-        "type": "string", "enum": ["chrome", "lightpanda", "camoufox"],
+        "type": "string", "enum": ["chrome", "camoufox"],
         "description": "Browser engine. Omit to inherit AGENT_BROWSER_ENGINE/config. Camoufox V1 has an explicit supported subset; unsupported commands fail without falling back."
     }));
     props.insert(
@@ -4345,9 +4345,9 @@ fn append_common_global_args(
     session: Option<&str>,
 ) -> Result<(), ProtocolError> {
     if let Some(engine) = optional_string(arguments, "engine")? {
-        if !matches!(engine.as_str(), "chrome" | "lightpanda" | "camoufox") {
+        if !matches!(engine.as_str(), "chrome" | "camoufox") {
             return Err(ProtocolError::invalid_params(
-                "engine must be chrome, lightpanda, or camoufox",
+                "engine must be chrome or camoufox",
             ));
         }
         args.extend(["--engine".to_string(), engine]);

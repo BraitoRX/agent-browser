@@ -908,14 +908,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_lightpanda_background_full_navigation_does_not_replace_active_url() {
+    async fn test_lightpanda_engine_background_full_navigation_does_not_replace_active_url() {
         let (client, events, methods) = mock_cdp("F-MAIN").await;
         let mut harness = start_loop_with_client_and_engine(
             Some("S-ACTIVE"),
             client,
             events,
             methods,
-            "lightpanda",
+            "chrome",
         )
         .await;
         next_message_of_type(&mut harness.messages, "status").await;

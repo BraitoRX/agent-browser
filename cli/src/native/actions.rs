@@ -611,7 +611,7 @@ pub struct DaemonState {
     /// Whether browser-level auto-attach has been enabled for the current
     /// browser so top-level popups pause before their first request.
     network_auto_attach_installed: bool,
-    /// Browser engine name (e.g. "chrome", "lightpanda", "camoufox") for observability.
+    /// Browser engine name (e.g. "chrome", "camoufox") for observability.
     pub engine: String,
     /// Default timeout for wait operations, from AGENT_BROWSER_DEFAULT_TIMEOUT env var.
     pub default_timeout_ms: u64,
@@ -14744,13 +14744,13 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"data":{}}'
 
     #[test]
     fn test_webmcp_unsupported_error_is_actionable_and_machine_readable() {
-        let error = webmcp::unsupported_error("active backend is lightpanda");
+        let error = webmcp::unsupported_error("active backend is test-engine");
         let resp = error_response("cmd-webmcp", &error);
         assert_eq!(resp["success"], false);
         assert_eq!(resp["code"], webmcp::ERR_UNSUPPORTED);
         assert!(error.contains("current agent-browser-managed Chrome"));
         assert!(error.contains("without --no-webmcp"));
-        assert!(error.contains("active backend is lightpanda"));
+        assert!(error.contains("active backend is test-engine"));
     }
 
     #[tokio::test]
@@ -15118,7 +15118,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"data":{}}'
             ..Default::default()
         };
         assert!(validate_ca_cert_launch_mode(&ca, Some("chrome"), true).is_err());
-        assert!(validate_ca_cert_launch_mode(&ca, Some("lightpanda"), false).is_err());
+        assert!(validate_ca_cert_launch_mode(&ca, Some("chrome"), false).is_err());
 
         let ignored = LaunchOptions {
             ca_cert: Some("/tmp/proxy-ca.pem".to_string()),
@@ -15805,7 +15805,7 @@ printf '%s' '{"protocol":"agent-browser.plugin.v1","success":true,"browser":{"cd
 
         assert_ne!(
             launch_hash(&opts, &[], &[], &[], &[], Some("chrome"), "local", None),
-            launch_hash(&opts, &[], &[], &[], &[], Some("lightpanda"), "local", None)
+            launch_hash(&opts, &[], &[], &[], &[], Some("camoufox"), "local", None)
         );
         assert_ne!(
             launch_hash(
