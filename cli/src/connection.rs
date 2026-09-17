@@ -224,8 +224,6 @@ pub enum CleanReason {
     UnreadablePidFile,
     /// A `.sock` file had no corresponding `.pid` file (unix only).
     OrphanedSocket,
-    /// The `dashboard.pid` referenced a process that no longer exists.
-    DashboardGone,
 }
 
 /// A session whose sidecar files were removed as a side effect of a walk.
@@ -235,20 +233,12 @@ pub struct CleanedSession {
     pub reason: CleanReason,
 }
 
-/// Information about the standalone dashboard process, if any.
-#[derive(Debug, Clone, Copy)]
-pub struct DashboardInfo {
-    pub pid: u32,
-    pub alive: bool,
-}
-
 /// Snapshot of daemon state under [`get_socket_dir()`] after a walk. Stale
 /// sidecar files are cleaned up as a side effect and recorded in `cleaned`.
 #[derive(Debug, Default)]
 pub struct DaemonInventory {
     pub sessions: Vec<ActiveSession>,
     pub cleaned: Vec<CleanedSession>,
-    pub dashboard: Option<DashboardInfo>,
 }
 
 /// Read the session's `.version` sidecar if present and non-empty.
@@ -265,9 +255,6 @@ pub fn read_session_version(session: &str) -> Option<String> {
 /// - Live daemons go into `sessions` with their `.version` file contents.
 /// - Stale entries (process gone, unreadable pid, orphaned `.sock`) are
 ///   cleaned via [`cleanup_stale_files`] and recorded in `cleaned`.
-/// - `dashboard.pid` lands in `dashboard` with liveness info; if the
-///   process is gone, the pid file is removed and a `DashboardGone` entry
-///   is added to `cleaned`.
 ///
 /// If the socket directory doesn't exist, returns an empty inventory with
 /// no side effects.
@@ -282,24 +269,6 @@ pub fn walk_daemons() -> DaemonInventory {
 
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-
-        if name == "dashboard.pid" {
-            if let Ok(s) = fs::read_to_string(entry.path()) {
-                if let Ok(pid) = s.trim().parse::<u32>() {
-                    let alive = is_pid_alive(pid);
-                    inventory.dashboard = Some(DashboardInfo { pid, alive });
-                    if !alive {
-                        let _ = fs::remove_file(entry.path());
-                        let _ = fs::remove_file(socket_dir.join("dashboard.config"));
-                        inventory.cleaned.push(CleanedSession {
-                            name: "dashboard".to_string(),
-                            reason: CleanReason::DashboardGone,
-                        });
-                    }
-                }
-            }
-            continue;
-        }
 
         let session_name = match name.strip_suffix(".pid") {
             Some(s) if !s.is_empty() => s.to_string(),
@@ -1153,7 +1122,7 @@ mod tests {
             input_backend: None,
             action_policy: None,
             confirm_actions: None,
-            engine: Some("chrome"),
+            engine: Some("camoufox"),
             idle_timeout,
             default_timeout: None,
         }

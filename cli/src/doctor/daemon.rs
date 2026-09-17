@@ -12,7 +12,7 @@ pub(super) fn check(checks: &mut Vec<Check>) {
 
     for cleaned in &inventory.cleaned {
         let reason = match cleaned.reason {
-            CleanReason::ProcessGone | CleanReason::DashboardGone => "process gone",
+            CleanReason::ProcessGone => "process gone",
             CleanReason::UnreadablePidFile => "unreadable pid file",
             CleanReason::OrphanedSocket => "orphaned socket",
         };
@@ -54,17 +54,6 @@ pub(super) fn check(checks: &mut Vec<Check>) {
                 check = check.with_fix(format!("agent-browser --session {} close", session.name));
             }
             checks.push(check);
-        }
-    }
-
-    if let Some(dashboard) = inventory.dashboard {
-        if dashboard.alive {
-            checks.push(Check::new(
-                "daemon.dashboard",
-                category,
-                Status::Pass,
-                format!("Dashboard server running (pid {})", dashboard.pid),
-            ));
         }
     }
 }

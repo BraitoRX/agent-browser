@@ -466,15 +466,7 @@ fn run_session(args: &[String], session: &str, json_mode: bool) {
     }
 }
 
-/// Start the dashboard with an explicit proxy-origin allowlist and a unique
-/// access token. Both are kept separate from the request Host so DNS rebinding
-/// cannot grant access to an attacker-controlled origin. Persist the effective
-/// settings beside the PID so repeated starts cannot silently claim that a live
-/// process adopted different settings.
 fn run_close_all(flags: &Flags) {
-    // walk_daemons auto-cleans stale .pid / .sock / .stream sidecar files and
-    // separates out the standalone dashboard. We only want to send `close` to
-    // real session daemons; the dashboard has its own `dashboard stop`.
     let inventory = walk_daemons();
     let sessions: Vec<(String, u32)> = inventory
         .sessions

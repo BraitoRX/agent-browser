@@ -2128,7 +2128,7 @@ Global Options:
 Examples:
   agent-browser wait "#loading-spinner"
   agent-browser wait 2000
-  agent-browser wait --url "**/dashboard"
+  agent-browser wait --url "**/status"
   # Use networkidle only for pages known to become quiet:
   agent-browser wait --load networkidle
   agent-browser wait --fn "window.appReady === true"
@@ -3134,60 +3134,6 @@ Examples:
 "##
         }
 
-        // === Dashboard ===
-        "dashboard" => {
-            r##"
-agent-browser dashboard - Observability dashboard
-
-Usage: agent-browser dashboard [start|stop] [options]
-
-Manage the observability dashboard, a local web UI that shows live
-browser viewports and command activity feeds for all sessions.
-The dashboard is bundled into the binary and requires no separate install.
-
-Subcommands:
-  start [--port <n>] [--allowed-origins <origins>]
-                        Start the dashboard server (default port: 4848)
-  stop                 Stop the dashboard server
-
-Running 'agent-browser dashboard' with no subcommand is equivalent to 'dashboard start'.
-
-The dashboard runs as a standalone background process, independent of
-browser sessions. All sessions automatically stream to the dashboard.
-Loopback origins work without configuration or a token. For a reverse-proxied or
-forwarded dashboard, pass --allowed-origins with the exact browser origin
-or set AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS. The browser stays on the
-dashboard origin; session tabs, status, and stream traffic are proxied
-internally, so session ports do not need to be exposed.
-For reverse-proxied origins, start prints private external access URLs
-containing an unguessable fragment token. Open the matching URL to establish
-the browser session and do not share it. Loopback URLs do not require or
-receive this token. Configure a reverse proxy to redact cookies from logs.
-Stop the dashboard before changing its port or allowed origins.
-
-Options:
-  --port <n>           Port for the dashboard server (default: 4848)
-  --allowed-origins <origins>
-                       Comma-separated exact HTTPS origins allowed when the
-                       dashboard is exposed through a reverse proxy. Loopback
-                       origins are allowed by default. Can also be set with
-                       AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS.
-
-Ports must be integers from 1 to 65535. Every allowed origin must be valid.
-Unknown options, missing values, and malformed origins fail without starting
-the dashboard server.
-
-Global Options:
-  --json               Output as JSON
-
-Examples:
-  agent-browser dashboard start
-  agent-browser dashboard start --port 8080
-  agent-browser dashboard start --allowed-origins https://dashboard.example.com
-  agent-browser dashboard stop
-"##
-        }
-
         // === Connect ===
         "connect" => {
             r##"
@@ -3213,8 +3159,7 @@ Global Options:
   --session <name>     Use specific session
 
 Examples:
-  # Connect to local Chrome with remote debugging
-  # Start Chrome: google-chrome --remote-debugging-port=9222
+  # Connect to a local browser with remote debugging
   agent-browser connect 9222
 
   # Connect using WebSocket URL from /json/version endpoint
@@ -3295,48 +3240,6 @@ Options:
 Examples:
   agent-browser tap "#submit-button"
   agent-browser tap @e1
-  agent-browser -p ios tap "button:has-text('Sign In')"
-"##
-        }
-        "swipe" => {
-            r##"
-agent-browser swipe - Swipe gesture (iOS)
-
-Usage: agent-browser swipe <direction> [distance]
-
-Performs a swipe gesture on iOS Safari. The direction determines
-which way the content moves (swipe up scrolls down, etc.).
-
-Arguments:
-  direction    up, down, left, or right
-  distance     Optional distance in pixels (default: 300)
-
-Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  agent-browser -p ios swipe up
-  agent-browser -p ios swipe down 500
-  agent-browser -p ios swipe left
-"##
-        }
-        "device" => {
-            r##"
-agent-browser device - Manage iOS simulators
-
-Usage: agent-browser device <subcommand>
-
-Subcommands:
-  list    List available iOS simulators
-
-Options:
-  --json               Output as JSON
-  --session <name>     Use specific session
-
-Examples:
-  agent-browser device list
-  agent-browser -p ios device list
 "##
         }
 
@@ -3542,7 +3445,7 @@ Tool profiles:
   network    Network routes, request inspection, HAR, headers, credentials, offline
   state      Cookies, storage, auth, saved state, sessions, profiles, skills
   debug      Console/errors, tracing, profiling, accessibility audits, clipboard,
-             doctor, dashboard, install, upgrade, chat, diff, batch, confirm/deny
+             doctor, install, upgrade, chat, diff, batch, confirm/deny
   tabs       Back/forward/reload, tabs, windows, frames, dialogs
   mobile     Viewport/device/geolocation/media, touch, swipe, mouse, keyboard
   gestures   Camoufox gesture discovery/execution, install, session info, skills
@@ -3821,19 +3724,11 @@ Chat (AI):
   chat                       Start interactive chat (REPL mode when stdin is a TTY)
   Options: --model <name>, -v/--verbose, -q/--quiet
 
-Dashboard:
-  dashboard [start]          Start the dashboard server (default port: 4848)
-  dashboard start --port <n> Start on a specific port
-  dashboard start --allowed-origins <origins>
-                            Allow exact HTTPS reverse-proxied origins
-  dashboard stop             Stop the dashboard server
-
 Setup:
   install                    Install browser binaries
   install --with-deps        Also install system dependencies (Linux)
   upgrade                    Upgrade to the latest version
   doctor [--fix]             Diagnose install; auto-clean stale files
-  dashboard start            Start the observability dashboard
   profiles                   List available Chrome profiles
 
 Snapshot Options:
@@ -3884,9 +3779,8 @@ Options:
                              (or AGENT_BROWSER_CA_CERT; local Chromium on Linux; install --with-deps provides certutil)
   --no-ca-cert               Clear CA trust retained by the running browser session
   --allow-file-access        Allow file:// URLs to access local files (Chromium only)
-  --hide-scrollbars <bool>   Hide native scrollbars in headless Chromium screenshots (default: true)
+  --hide-scrollbars <bool>   Hide native scrollbars in headless screenshots (default: true)
                              Use --hide-scrollbars false to keep scrollbars visible
-  -p, --provider <name>      Browser provider: ios, browserbase, kernel, browseruse, browserless, or agentcore
   --device <name>            iOS device name (e.g., "iPhone 15 Pro")
   --json                     JSON output
   --annotate                 Annotated screenshot with numbered labels and legend
@@ -3914,7 +3808,7 @@ Options:
   --confirm-actions <list>   Categories requiring confirmation (or AGENT_BROWSER_CONFIRM_ACTIONS)
   --confirm-interactive      Interactive confirmation prompts; auto-denies if stdin is not a TTY (or AGENT_BROWSER_CONFIRM_INTERACTIVE)
   --engine <name>            Browser engine: camoufox (default when the runtime
-                           is installed), chrome
+                           is installed)
   --input-backend <name>     Camoufox only: input dispatch backend, juggler (default, browser-internal)
                              or os-native (XTEST against the browser's private X display, delivered
                              inside a container bubble). Requires Docker/OrbStack and the bubble image
@@ -3925,7 +3819,7 @@ Options:
                              reachable at a fixed domain: https://agent-browser-bubble-<session>.orb.local/vnc.html
                              (vncDomainUrl in launch and session info)
   --idle-timeout <time>      Shut down daemon after inactivity: 10s, 3m, 1h, or raw ms
-                             (default: 1h; 0 disables; dashboard input resets the timer)
+                             (default: 1h; 0 disables; input resets the timer)
   --no-auto-dialog           Disable automatic dismissal of alert/beforeunload dialogs (or AGENT_BROWSER_NO_AUTO_DIALOG)
   --model <name>             AI model for chat (or AI_GATEWAY_MODEL env)
   -v, --verbose              Show tool commands and their raw output
@@ -3987,7 +3881,6 @@ Environment:
   AGENT_BROWSER_IGNORE_HTTPS_ERRORS Ignore HTTPS certificate errors
   AGENT_BROWSER_CA_CERT          Path to CA certificate to trust (HTTPS interception proxies)
   AGENT_BROWSER_CLEAR_CA_CERT    Clear CA trust retained by the running browser session
-  AGENT_BROWSER_PROVIDER         Browser provider (ios, browserbase, kernel, browseruse, browserless, or agentcore)
   AGENT_BROWSER_AUTO_CONNECT     Auto-discover and connect to running Chrome
   AGENT_BROWSER_PIN_TAB          Pin the session to its bound tab (strict tab binding)
   AGENT_BROWSER_ALLOW_FILE_ACCESS Allow file:// URLs to access local files
@@ -4002,10 +3895,8 @@ Environment:
   AGENT_BROWSER_STREAM_QUALITY   JPEG quality 0-100 (default: 80)
   AGENT_BROWSER_STREAM_MAX_WIDTH  Cap frame width in pixels (default: the viewport)
   AGENT_BROWSER_STREAM_MAX_HEIGHT Cap frame height in pixels (default: the viewport)
-  AGENT_BROWSER_DASHBOARD_ALLOWED_ORIGINS
-                                 Comma-separated exact HTTPS origins allowed for a reverse-proxied dashboard
   AGENT_BROWSER_IDLE_TIMEOUT_MS  Auto-shutdown daemon after N ms of inactivity (default: 3600000 = 1h; 0 disables)
-                                 Dashboard input resets the timer; headed, Safari/iOS WebDriver, and user-attached browsers are exempt from the default
+                                 Headed, Safari/iOS WebDriver, and user-attached browsers are exempt from the default
                                  Provider-owned cloud browsers remain eligible for default cleanup
   AGENT_BROWSER_IOS_DEVICE       Default iOS device name
   AGENT_BROWSER_IOS_UDID         Default iOS device UDID
@@ -4016,7 +3907,7 @@ Environment:
   AGENT_BROWSER_CONFIRM_ACTIONS  Action categories requiring confirmation
   AGENT_BROWSER_CONFIRM_INTERACTIVE Enable interactive confirmation prompts
   AGENT_BROWSER_NO_AUTO_DIALOG   Disable automatic dismissal of alert/beforeunload dialogs
-  AGENT_BROWSER_ENGINE           Browser engine: camoufox (default when the runtime is installed), chrome
+  AGENT_BROWSER_ENGINE           Browser engine: camoufox
   AGENT_BROWSER_CAMOUFOX_RUNTIME Absolute private Camoufox runtime root
   AGENT_BROWSER_PROFILE         Persistent profile directory; Camoufox requires an absolute private path
   AGENT_BROWSER_PYTHON           Install-time Python executable (default python3)
@@ -4034,7 +3925,7 @@ Environment:
   AGENT_BROWSER_SCREENSHOT_QUALITY JPEG quality 0-100
   AGENT_BROWSER_SCREENSHOT_FORMAT Screenshot format: png, jpeg
   AI_GATEWAY_URL                 Vercel AI Gateway base URL (default: https://ai-gateway.vercel.sh)
-  AI_GATEWAY_API_KEY             API key for the AI Gateway (enables chat command and dashboard AI chat)
+  AI_GATEWAY_API_KEY             API key for the AI Gateway (enables chat command)
   AI_GATEWAY_MODEL               Default AI model (default: anthropic/claude-sonnet-4.6, or --model flag)
 
 Install:
@@ -4104,13 +3995,6 @@ Command Chaining:
   agent-browser open example.com && agent-browser snapshot -i
   agent-browser fill @e1 "user@example.com" && agent-browser fill @e2 "pass" && agent-browser click @e3
   agent-browser open example.com && agent-browser screenshot
-
-iOS Simulator (requires Xcode and Appium):
-  agent-browser -p ios open example.com                    # Use default iPhone
-  agent-browser -p ios --device "iPhone 15 Pro" open url   # Specific device
-  agent-browser -p ios device list                         # List simulators
-  agent-browser -p ios swipe up                            # Swipe gesture
-  agent-browser -p ios tap @e1                             # Touch element
 "#
     );
 }
@@ -4349,7 +4233,7 @@ axe-core: 4.12.1  violations: 0  incomplete: 0  passes: 30"
     #[test]
     fn test_format_vitals_text_summary() {
         let data = json!({
-            "url": "https://example.com/dashboard",
+            "url": "https://example.com/status",
             "ttfb": 12.34,
             "fcp": 56.0,
             "lcp": {
@@ -4376,7 +4260,7 @@ axe-core: 4.12.1  violations: 0  incomplete: 0  passes: 30"
 
         assert_eq!(
             rendered,
-            "url: https://example.com/dashboard\n\
+            "url: https://example.com/status\n\
 ttfb: 12.34ms  fcp: 56ms  lcp: 123.45ms  cls: 0.01  inp: -\n\
 lcp: element: img  asset: https://example.com/assets/hero.png\n\
 hydration: 50.25ms  phases: 1  hydratedComponents: 2"

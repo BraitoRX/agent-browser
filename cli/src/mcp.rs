@@ -206,7 +206,7 @@ impl ToolProfile {
             Self::Core => "Everyday browser automation with navigation, snapshots, common interaction, waits, screenshots, basic reads, tab basics, JavaScript eval, close, and profile discovery.",
             Self::Network => "Network interception, request inspection, HAR capture, headers, credentials, and offline mode.",
             Self::State => "Cookies, storage, auth profiles, saved browser state, sessions, Chrome profiles, and bundled skills.",
-            Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, clipboard, doctor, dashboard, install, upgrade, and chat.",
+            Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, clipboard, doctor, install, upgrade, and chat.",
             Self::Tabs => "Tab, window, frame, and JavaScript dialog management.",
             Self::Mobile => "Viewport/device/geolocation/media emulation plus touch, swipe, and lower-level mouse tools.",
             Self::Webmcp => "Experimental page-provided WebMCP discovery, invocation, detached results, and cancellation.",
@@ -1680,7 +1680,7 @@ fn tool(name: &str, title: &str, description: &str, properties: Value, required:
         _ => serde_json::Map::new(),
     };
     props.insert("engine".to_string(), json!({
-        "type": "string", "enum": ["chrome", "camoufox"],
+        "type": "string", "enum": ["camoufox"],
         "description": "Browser engine. Omit to inherit AGENT_BROWSER_ENGINE/config. Camoufox V1 has an explicit supported subset; unsupported commands fail without falling back."
     }));
     props.insert(
@@ -3034,9 +3034,9 @@ fn append_common_global_args(
     session: Option<&str>,
 ) -> Result<(), ProtocolError> {
     if let Some(engine) = optional_string(arguments, "engine")? {
-        if !matches!(engine.as_str(), "chrome" | "camoufox") {
+        if !matches!(engine.as_str(), "camoufox") {
             return Err(ProtocolError::invalid_params(
-                "engine must be chrome or camoufox",
+                "engine must be camoufox",
             ));
         }
         args.extend(["--engine".to_string(), engine]);

@@ -600,7 +600,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
         // === Wait ===
         "wait" => {
             // --timeout applies to EVERY wait variant (the docs advertise
-            // e.g. `wait --url "**/dashboard" --timeout 120000`); it used to
+            // e.g. `wait --url "**/example" --timeout 120000`); it used to
             // be parsed only for --text/--download and silently ignored
             // elsewhere. Extract it first so variants parse independently.
             let mut rest = rest.clone();
@@ -627,7 +627,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
                 cmd
             };
 
-            // Check for --url flag: wait --url "**/dashboard"
+            // Check for --url flag: wait --url "**/example"
             if let Some(idx) = rest.iter().position(|&s| s == "--url" || s == "-u") {
                 let url = rest
                     .get(idx + 1)
@@ -3012,9 +3012,9 @@ mod tests {
 
     #[test]
     fn test_wait_url() {
-        let cmd = parse_command(&args("wait --url **/dashboard"), &default_flags()).unwrap();
+        let cmd = parse_command(&args("wait --url **/example"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "waitforurl");
-        assert_eq!(cmd["url"], "**/dashboard");
+        assert_eq!(cmd["url"], "**/example");
     }
 
     #[test]
@@ -3308,7 +3308,7 @@ mod tests {
     #[test]
     fn test_wait_url_inherits_default_timeout() {
         let flags = flags_with_default_timeout(4000);
-        let cmd = parse_command(&args("wait --url **/dashboard"), &flags).unwrap();
+        let cmd = parse_command(&args("wait --url **/example"), &flags).unwrap();
         assert_eq!(cmd["action"], "waitforurl");
         assert_eq!(cmd["timeout"], 4000);
     }
