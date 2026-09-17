@@ -1858,7 +1858,7 @@ Usage:
   agent-browser --engine camoufox gesture <name> --params '<JSON object>'
     [--observe none|snapshot|screenshot]
 
-Built-ins: click, hover, hold, drag, scroll, type, path.
+Built-ins: click, hover, hold, drag, scroll, type.
 Discover a schema before executing it. External modules from
 AGENT_BROWSER_GESTURES_DIR own their schema and implementation; no transport
 or MCP edits are needed. They are trusted Python code, not sandboxed.
@@ -1877,7 +1877,7 @@ After timeout/ambiguous input, do not replay; close and inspect the session.
 
 Motion is launch-time AGENT_BROWSER_MOTION: human-fast (native humanize=0.25),
 fast, precision. The value 0.25 is tuning, not a measured latency guarantee.
-The path gesture requires fast/precision. Hold duration is at most 20000ms.
+Hold duration is at most 20000ms.
 
 Examples:
   agent-browser --engine camoufox gestures drag --json

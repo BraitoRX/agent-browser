@@ -76,7 +76,6 @@ const TOOL_NETWORK_UNROUTE: &str = "agent_browser_network_unroute";
 const TOOL_NETWORK_REQUESTS: &str = "agent_browser_network_requests";
 const TOOL_NETWORK_REQUEST: &str = "agent_browser_network_request";
 const TOOL_NETWORK_WEBSOCKETS: &str = "agent_browser_network_websockets";
-const TOOL_NETWORK_WORKERS: &str = "agent_browser_network_workers";
 const TOOL_NETWORK_HAR_START: &str = "agent_browser_network_har_start";
 const TOOL_NETWORK_HAR_STOP: &str = "agent_browser_network_har_stop";
 const TOOL_STORAGE_GET: &str = "agent_browser_storage_get";
@@ -104,9 +103,7 @@ const TOOL_STATE_RENAME: &str = "agent_browser_state_rename";
 const TOOL_BATCH: &str = "agent_browser_batch";
 const TOOL_CONFIRM: &str = "agent_browser_confirm";
 const TOOL_DENY: &str = "agent_browser_deny";
-const TOOL_SESSION: &str = "agent_browser_session";
 const TOOL_SESSION_LIST: &str = "agent_browser_session_list";
-const TOOL_SESSION_ID: &str = "agent_browser_session_id";
 const TOOL_SESSION_INFO: &str = "agent_browser_session_info";
 const TOOL_SKILLS_LIST: &str = "agent_browser_skills_list";
 const TOOL_SKILLS_GET: &str = "agent_browser_skills_get";
@@ -205,11 +202,11 @@ impl ToolProfile {
         match self {
             Self::Core => "Everyday browser automation with navigation, snapshots, common interaction, waits, screenshots, basic reads, tab basics, JavaScript eval, close, and profile discovery.",
             Self::Network => "Network interception, request inspection, HAR capture, headers, credentials, and offline mode.",
-            Self::State => "Cookies, storage, auth profiles, saved browser state, sessions, Chrome profiles, and bundled skills.",
-            Self::Debug => "Console/errors, highlighting, DevTools, tracing, profiling, accessibility audits, PDF, downloads/uploads, clipboard, doctor, install, upgrade, and chat.",
+            Self::State => "Cookies, storage, auth profiles, saved browser state, sessions, and bundled skills.",
+            Self::Debug => "Console/errors, highlighting, tracing, profiling, accessibility audits, PDF, downloads/uploads, clipboard, doctor, install, upgrade, and chat.",
             Self::Tabs => "Tab, window, frame, and JavaScript dialog management.",
             Self::Mobile => "Viewport/device/geolocation/media emulation plus touch, swipe, and lower-level mouse tools.",
-            Self::Webmcp => "Experimental page-provided WebMCP discovery, invocation, detached results, and cancellation.",
+            Self::Webmcp => "No tools from this profile are currently exposed.",
             Self::Gestures => "Camoufox gesture discovery and execution, runtime installation, session information, and bundled skills. Combine with core for normal browsing.",
             Self::All => "Every MCP tool, including the full typed CLI parity surface.",
         }
@@ -398,7 +395,6 @@ const NETWORK_PROFILE_TOOLS: &[&str] = &[
     TOOL_NETWORK_REQUESTS,
     TOOL_NETWORK_REQUEST,
     TOOL_NETWORK_WEBSOCKETS,
-    TOOL_NETWORK_WORKERS,
     TOOL_NETWORK_HAR_START,
     TOOL_NETWORK_HAR_STOP,
 ];
@@ -415,9 +411,7 @@ const STATE_PROFILE_TOOLS: &[&str] = &[
     TOOL_STATE_SHOW,
     TOOL_STATE_CLEAN,
     TOOL_STATE_RENAME,
-    TOOL_SESSION,
     TOOL_SESSION_LIST,
-    TOOL_SESSION_ID,
     TOOL_SESSION_INFO,
     TOOL_SKILLS_LIST,
     TOOL_SKILLS_GET,
@@ -536,9 +530,7 @@ const CAMOUFOX_LOCAL_TOOLS: &[&str] = &[
     TOOL_SKILLS_LIST,
     TOOL_SKILLS_GET,
     TOOL_SKILLS_PATH,
-    TOOL_SESSION,
     TOOL_SESSION_LIST,
-    TOOL_SESSION_ID,
     TOOL_SESSION_INFO,
     TOOL_GESTURES,
     TOOL_GESTURE,
@@ -805,7 +797,6 @@ fn camoufox_tool(mut tool: Value) -> Value {
     props.get_mut("profile").unwrap()["description"] = json!("Absolute path to a private persistent Camoufox profile. Reuse it to retain login storage across restarts. Close before changing profiles; only one browser may own a profile. Omit to use configured defaults.");
     props.get_mut("extraArgs").unwrap()["description"] = json!("Advanced CLI arguments, still subject to Camoufox capability and safety validation. Engine overrides are rejected.");
     let removed: &[&str] = match name.as_str() {
-        TOOL_OPEN => &["webgpu", "webmcp"],
         TOOL_READ => &[
             "url",
             "raw",
@@ -816,7 +807,6 @@ fn camoufox_tool(mut tool: Value) -> Value {
             "readTimeoutMs",
         ],
         TOOL_SNAPSHOT => &["interactive", "compact", "includeUrls"],
-        TOOL_SCREENSHOT => &["selector", "fullPage", "annotate", "quality"],
         TOOL_CLICK => &["newTab"],
         TOOL_INSTALL => &["withDeps"],
         _ => &[],
@@ -838,7 +828,6 @@ fn camoufox_tool(mut tool: Value) -> Value {
         _ => {}
     }
     let description = match name.as_str() {
-        TOOL_OPEN => Some("Launch Camoufox and optionally navigate. A configured profile retains persistent login storage across restarts. After session loss, explicitly close/open with the same profile. Never replay ambiguous input."),
         TOOL_CLOSE => Some("Close the named browser session without deleting its persistent profile. Tabs and transient state end; persistent cookies and site storage remain. Leave a user's persistent browser open unless closure or recovery is requested."),
         TOOL_READ => Some("Read rendered body text from the selected frame, not a URL fetch or markdown extractor. Use scoped DOM queries or eval when accessibility snapshots omit content. Returns frameId/frameUrl."),
         TOOL_SNAPSHOT => Some("Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options. Every snapshot, including a scoped one, replaces exposed refs; navigation, frame detachment and scope changes clear them. DOM-only changes can still cause native locator failures. Use DOM queries for content absent from this accessibility view. Pass quiet:true on volatile pages to wait up to 3s for a 250ms mutation-silent window before capturing."),
@@ -850,7 +839,7 @@ fn camoufox_tool(mut tool: Value) -> Value {
         TOOL_WAIT_FOR_FUNCTION => Some("Wait for a JavaScript expression in the selected frame's isolated world to become truthy."),
         TOOL_WAIT_FOR_TEXT => Some("Wait for visible matching text in the selected frame."),
         TOOL_DRAG => Some("Drag one main-frame element to another with native input. Frame-prefixed refs are not supported for drag. Never replay an ambiguous input."),
-        TOOL_HOVER_HOLD => Some("Keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs. Screenshots and reads continue during the hold. Pass stop=true to stop instead of a selector."),
+        TOOL_HOVER_HOLD => Some("Keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs."),
         TOOL_INSTALL => Some("Explicitly provision the private Camoufox Python environment and browser cache. Python 3.10+ is required. This may take several minutes; installation is never automatic at startup."),
         _ => None,
     };
@@ -1003,13 +992,12 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_OPEN,
             "Open page",
-            "Launch the browser and optionally navigate to a URL. Camoufox requires explicit close/open after session loss; a closed active tab needs tab_switch or tab_new instead. Never replay ambiguous input. On Windows, owned headless Chrome uses a private desktop and its process tree closes with the daemon, including forced termination. Headed browsers use the interactive desktop. Successful navigation responses include WebMCP availability metadata when the page exposes allowed tools.",
+            "Launch the browser and optionally navigate to a URL. Never replay ambiguous input.",
             json!({
                 "url": { "type": "string", "description": "URL to open. Omit to launch about:blank." },
-                "headed": { "type": "boolean", "description": "Show the browser window. Explicit true/false overrides AGENT_BROWSER_HEADED and config; omit to use those defaults. On macOS, headed Camoufox sets its Python helper to an accessory application before display detection to keep the helper out of the Dock; the browser remains headed." },
-                "adblock": { "type": "boolean", "description": "Camoufox only: load the managed runtime's bundled uBlock Origin addon for this session. Explicit true/false overrides AGENT_BROWSER_ADBLOCK and config; omit to use those defaults. Close the session before changing it." },
-                "webgpu": { "type": "boolean", "description": "Enable WebGPU (SwiftShader software Vulkan on Linux; no GPU required). Explicit true/false overrides AGENT_BROWSER_WEBGPU and config; omit to use those defaults." }
-                ,"webmcp": { "type": "boolean", "description": "Enable experimental WebMCP support. Defaults to true for locally launched Chrome; set false to pass --no-webmcp." }
+                "headed": { "type": "boolean", "description": "Show the browser window. Explicit true/false overrides AGENT_BROWSER_HEADED and config; omit to use those defaults." },
+                "adblock": { "type": "boolean", "description": "Camoufox only: load the managed runtime's bundled uBlock Origin addon for this session. Explicit true/false overrides AGENT_BROWSER_ADBLOCK and config; omit to use those defaults. Close the session before changing it." }
+                ,"webmcp": { "type": "boolean", "description": "Set false to disable WebMCP by passing --no-webmcp." }
             }),
             &[],
         ),
@@ -1031,21 +1019,18 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_SNAPSHOT,
             "Snapshot page",
-            "Return an accessibility-tree snapshot with stable element refs.",
+            "Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options.",
             json!({
-                "interactive": { "type": "boolean", "description": "Only include interactive elements. Defaults to false for Camoufox and true for other engines. Camoufox rejects explicit true." },
-                "compact": { "type": "boolean", "default": false, "description": "Remove empty structural elements." },
-                "depth": { "type": "integer", "minimum": 0, "description": "Limit tree depth." },
+                "depth": { "type": "integer", "minimum": 0, "maximum": 100, "description": "Native tree depth limit, 0-100." },
                 "selector": { "type": "string", "description": "Scope the snapshot with an observed @ref, CSS selector, or xpath= selector." },
-                "includeUrls": { "type": "boolean", "default": false, "description": "Include href URLs on links." },
-                "quiet": { "type": "boolean", "default": false, "description": "Camoufox only: wait up to 3s for a 250ms mutation-silent window before capturing. Reduces race windows on volatile pages; not a stability guarantee." }
+                "quiet": { "type": "boolean", "description": "Wait up to 3s for a 250ms mutation-silent window before capturing." }
             }),
             &[],
         ),
         tool(
             TOOL_PAGE_OUTLINE,
             "Outline page",
-            "Return a bounded DOM-derived heading and landmark-like outline for the selected frame. Uses the unique main element when present, otherwise the document root. An explicit root must match exactly one element in the selected frame. Camoufox only.",
+            "Return a bounded DOM-derived heading and landmark outline for the selected frame. Camoufox only.",
             json!({
                 "selector": { "type": "string", "description": "Optional unique root as an observation @ref, CSS selector, or xpath= selector." }
             }),
@@ -1054,7 +1039,7 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_PAGE_LINKS,
             "List page links",
-            "Return a cursor-paginated link inventory from one native accessibility snapshot with actionable refs, accessible text, resolved URLs, and nearest heading context. Operates only in the selected frame; select an iframe first when needed. Pass selector only on the first page and then follow nextCursor. Camoufox only.",
+            "Return a bounded cursor-paginated link inventory with refs, text, and URLs. Operates only in the selected frame. Camoufox only.",
             json!({
                 "selector": { "type": "string", "description": "Optional unique first-page root as an observation @ref, CSS selector, or xpath= selector." },
                 "cursor": { "type": "string", "description": "Opaque nextCursor from the preceding page. Do not combine with selector." },
@@ -1065,7 +1050,7 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_DOM_CHUNK,
             "Read DOM chunk",
-            "Return cursor-paginated structured DOM element records with document-scoped actionable @dN refs. Operates only in the selected frame; select an iframe first when needed. Detects document changes between chunks; navigation, frame changes, snapshots, and mutating actions invalidate the refs. Pass selector only on the first page and then follow nextCursor. Camoufox only.",
+            "Return cursor-paginated structured DOM element records with document-scoped actionable @dN refs. Camoufox only.",
             json!({
                 "selector": { "type": "string", "description": "Optional unique first-page root as an observation @ref, CSS selector, or xpath= selector." },
                 "cursor": { "type": "string", "description": "Opaque nextCursor from the preceding chunk. Do not combine with selector." },
@@ -1119,7 +1104,7 @@ fn tools() -> Vec<Value> {
             let mut definition = tool(
                 TOOL_HOVER_HOLD,
                 "Hover hold",
-                "Camoufox only: keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs. Screenshots and reads continue during the hold. Pass stop=true to stop instead of a selector.",
+                "Keep native mouse micro-movement at the selector so hover-revealed UI stays visible. Auto-stops before input actions, navigation, tab or frame changes, session close, or maxMs.",
                 json!({
                     "selector": selector_schema(),
                     "maxMs": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 30000, "description": "Maximum hold duration in milliseconds. Only valid when starting a hold." },
@@ -1177,14 +1162,9 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_SCREENSHOT,
             "Take screenshot",
-            "Capture a screenshot and return the saved path. Small PNG/JPEG screenshots are also returned as image content.",
+            "Capture a screenshot and return the saved path. Small PNG screenshots are also returned as image content.",
             json!({
                 "path": { "type": "string", "description": "Optional output path." },
-                "selector": { "type": "string", "description": "Optional observed @ref, CSS selector, or xpath= selector to capture." },
-                "fullPage": { "type": "boolean", "default": false },
-                "annotate": { "type": "boolean", "default": false, "description": "Number visible elements in the screenshot." },
-                "format": { "type": "string", "enum": ["png", "jpeg"], "description": "Screenshot format." },
-                "quality": { "type": "integer", "minimum": 0, "maximum": 100, "description": "JPEG quality." },
                 "screenshotDir": { "type": "string", "description": "Default output directory when path is omitted." }
             }),
             &[],
@@ -1246,7 +1226,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_DOWNLOAD,
             "Download file",
-            "Click an element once and save the download. Camoufox refuses existing destinations; after a save-only failure, use wait_for_download without replaying the click. A session that requires a reset must be closed instead.",
+            "Click an element once and save the download. Camoufox refuses existing destinations; after a save-only failure, use wait_for_download without replaying the click.",
             json!({ "selector": selector_schema(), "path": { "type": "string" } }),
             &["selector", "path"],
         ),
@@ -1260,7 +1240,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_WAIT_FOR_DOWNLOAD,
             "Wait for download",
-            "Wait for a browser download and save it to disk. Camoufox saves the oldest retained unconsumed active-tab event, or waits for the next; existing destinations are refused. Never replay the triggering click after a save failure.",
+            "Wait for a browser download and save it to disk. Camoufox saves the oldest retained unconsumed active-tab event, or waits for the next; existing destinations are refused.",
             json!({ "path": { "type": "string", "description": "Optional output path." }, "waitTimeoutMs": wait_timeout_schema() }),
             &[],
         ),
@@ -1366,22 +1346,15 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_NETWORK_REQUEST,
             "Network request detail",
-            "Show one request by id, including sensitive headers, POST data, and available response body. Camoufox returns binary bodies as base64 and explicitly marks pending, unavailable, or capped data.",
+            "Show one request by id, including sensitive headers, POST data, and available response body. Binary bodies are base64; pending/unavailable/capped data is explicitly marked.",
             json!({ "requestId": { "type": "string" } }),
             &["requestId"],
         ),
         tool(
             TOOL_NETWORK_WEBSOCKETS,
             "WebSocket events",
-            "Camoufox only: read bounded WebSocket lifecycle and sent/received frame events across tabs. Payloads may contain secrets. Binary frames are base64; dropped and truncated data are explicit.",
+            "Read bounded WebSocket lifecycle and sent/received frame events across tabs. Payloads may contain secrets. Binary frames are base64; dropped and truncated data are explicit.",
             json!({ "clear": { "type": "boolean" }, "filter": { "type": "string" } }),
-            &[],
-        ),
-        tool(
-            TOOL_NETWORK_WORKERS,
-            "Worker visibility",
-            "Camoufox only: list current-page dedicated workers and current-origin service-worker registrations. This is not service-worker traffic interception or worker debugging.",
-            json!({}),
             &[],
         ),
         tool(
@@ -1486,7 +1459,7 @@ fn parity_tools() -> Vec<Value> {
         tool(
             TOOL_DIALOG_ACCEPT,
             "Dialog accept",
-            "Accept a JavaScript dialog. Camoufox instead arms one active-tab decision for 30 seconds BEFORE the triggering action; navigation or tab close clears it. Unexpected dialogs are auto-dismissed.",
+            "Accept a JavaScript dialog. Camoufox arms one active-tab decision for 30 seconds BEFORE the triggering action; navigation or tab close clears it.",
             json!({ "text": { "type": "string" } }),
             &[],
         ),
@@ -1568,13 +1541,6 @@ fn parity_tools() -> Vec<Value> {
             &["id"],
         ),
         tool(
-            TOOL_SESSION,
-            "Session",
-            "Show current session.",
-            json!({}),
-            &[],
-        ),
-        tool(
             TOOL_SESSION_LIST,
             "Session list",
             "List active sessions.",
@@ -1582,19 +1548,9 @@ fn parity_tools() -> Vec<Value> {
             &[],
         ),
         tool(
-            TOOL_SESSION_ID,
-            "Session id",
-            "Generate a stable session id from the current working tree, cwd, or Git root.",
-            json!({
-                "scope": { "type": "string", "enum": ["worktree", "cwd", "git-root"], "default": "worktree" },
-                "prefix": { "type": "string", "description": "Optional readable prefix for the generated id." }
-            }),
-            &[],
-        ),
-        tool(
             TOOL_SESSION_INFO,
             "Session info",
-            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; runtime.inputBackend reports the dispatch backend (juggler or os-native) and runtime.vncUrl is the live noVNC view when os-native is active; runtime.vncDomainUrl is its fixed OrbStack domain (https://agent-browser-bubble-<session>.orb.local) when the session is named; top-level active describes the daemon only.",
+            "Show session, daemon, launch, and restore diagnostics. For Camoufox, runtime.launched, browserConnected, recoveryRequired, and closeReason describe browser liveness; runtime.inputBackend reports the dispatch backend (juggler or os-native) and runtime.vncUrl is the live noVNC view when os-native is active.",
             json!({}),
             &[],
         ),
@@ -1623,14 +1579,14 @@ fn parity_tools() -> Vec<Value> {
             TOOL_DOCTOR,
             "Doctor",
             "Diagnose the installation.",
-            json!({ "offline": { "type": "boolean" }, "quick": { "type": "boolean" }, "fix": { "type": "boolean" }, "webgpu": { "type": "boolean", "description": "Also run a live WebGPU render probe (launches a second Chrome)." }, "headed": { "type": "boolean", "description": "Run the WebGPU probe headed to validate the capture path (auto-Xvfb on displayless Linux). Explicit true/false overrides AGENT_BROWSER_HEADED/config." }, "debug": { "type": "boolean", "description": "Verbose diagnostics from the probes' scratch daemons." } }),
+            json!({ "offline": { "type": "boolean" }, "quick": { "type": "boolean" }, "fix": { "type": "boolean" }, "headed": { "type": "boolean", "description": "Run the doctor's live launch probe headed. Explicit true/false overrides AGENT_BROWSER_HEADED/config." }, "debug": { "type": "boolean", "description": "Verbose diagnostics from the probes' scratch daemons." } }),
             &[],
         ),
         tool(
             TOOL_INSTALL,
             "Install",
-            "Install browser binaries. engine=camoufox explicitly provisions a private Python environment and browser cache (Python 3.10+ required); withDeps is unsupported for Camoufox. Installation may take several minutes and is never automatic at browser startup.",
-            json!({ "withDeps": { "type": "boolean" } }),
+            "Explicitly provision the private Camoufox Python environment and browser cache. Python 3.10+ is required. This may take several minutes; installation is never automatic at browser startup.",
+            json!({}),
             &[],
         ),
         tool(
@@ -1841,16 +1797,13 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_IS_ENABLED
             | TOOL_IS_CHECKED
             | TOOL_NETWORK_REQUEST
-            | TOOL_NETWORK_WORKERS
             | TOOL_STORAGE_GET
             | TOOL_COOKIES_GET
             | TOOL_TAB_LIST
             | TOOL_DIALOG_STATUS
             | TOOL_STATE_LIST
             | TOOL_STATE_SHOW
-            | TOOL_SESSION
             | TOOL_SESSION_LIST
-            | TOOL_SESSION_ID
             | TOOL_SESSION_INFO
             | TOOL_SKILLS_LIST
             | TOOL_SKILLS_GET
@@ -1861,10 +1814,8 @@ fn is_read_only_tool(name: &str) -> bool {
 fn is_open_world_tool(name: &str) -> bool {
     !matches!(
         name,
-        TOOL_SESSION
-            | TOOL_GESTURES
+        TOOL_GESTURES
             | TOOL_SESSION_LIST
-            | TOOL_SESSION_ID
             | TOOL_SESSION_INFO
             | TOOL_SKILLS_LIST
             | TOOL_SKILLS_GET
@@ -2002,7 +1953,6 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_NETWORK_UNROUTE => call_optional_one(arguments, &["network", "unroute"], "url"),
         TOOL_NETWORK_REQUESTS => call_network_requests(arguments),
         TOOL_NETWORK_WEBSOCKETS => call_network_websockets(arguments),
-        TOOL_NETWORK_WORKERS => call_literal(arguments, &["network", "workers"]),
         TOOL_NETWORK_REQUEST => call_one_string(arguments, "network request", "requestId"),
         TOOL_NETWORK_HAR_START => {
             let mut args: Vec<String> = ["network", "har", "start"]
@@ -2043,9 +1993,7 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_BATCH => call_batch(arguments),
         TOOL_CONFIRM => call_one_string(arguments, "confirm", "id"),
         TOOL_DENY => call_one_string(arguments, "deny", "id"),
-        TOOL_SESSION => call_literal(arguments, &["session"]),
         TOOL_SESSION_LIST => call_literal(arguments, &["session", "list"]),
-        TOOL_SESSION_ID => call_session_id(arguments),
         TOOL_SESSION_INFO => call_literal(arguments, &["session", "info"]),
         TOOL_SKILLS_LIST => call_literal(arguments, &["skills", "list"]),
         TOOL_SKILLS_GET => call_skills_get(arguments),
@@ -2184,7 +2132,7 @@ fn paginated_page_args(arguments: &Value, command: &str) -> Result<Vec<String>, 
 
 /// Build the CLI args for the open tool. Explicit booleans are forwarded as
 /// `--flag true|false` so an MCP caller can override env/config defaults
-/// (e.g. webgpu: false with AGENT_BROWSER_WEBGPU=1 set); an absent field
+/// (e.g. headed: false with AGENT_BROWSER_HEADED=1 set); an absent field
 /// sends nothing and leaves the env/config resolution to the CLI.
 fn open_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
     let mut args = Vec::new();
@@ -2195,10 +2143,6 @@ fn open_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
     if let Some(adblock) = optional_bool(arguments, "adblock")? {
         args.push("--adblock".to_string());
         args.push(adblock.to_string());
-    }
-    if let Some(webgpu) = optional_bool(arguments, "webgpu")? {
-        args.push("--webgpu".to_string());
-        args.push(webgpu.to_string());
     }
     if let Some(webmcp) = optional_bool(arguments, "webmcp")? {
         args.push("--no-webmcp".to_string());
@@ -2247,23 +2191,9 @@ fn call_read(arguments: &Value) -> Result<Value, ProtocolError> {
     call_cli_tool(arguments, args, None)
 }
 
-/// Preserve Chrome's interactive default without requesting unsupported Camoufox filtering.
+/// Preserve the shared snapshot contract while the CLI resolves defaults.
 fn call_snapshot(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = vec!["snapshot".to_string()];
-    let camoufox = arguments
-        .get("engine")
-        .and_then(Value::as_str)
-        .map(|engine| engine == "camoufox")
-        .unwrap_or_else(|| env::var("AGENT_BROWSER_ENGINE").as_deref() == Ok("camoufox"));
-    if optional_bool(arguments, "interactive")?.unwrap_or(!camoufox) {
-        args.push("-i".to_string());
-    }
-    if optional_bool(arguments, "compact")?.unwrap_or(false) {
-        args.push("-c".to_string());
-    }
-    if optional_bool(arguments, "includeUrls")?.unwrap_or(false) {
-        args.push("-u".to_string());
-    }
     if let Some(depth) = optional_u64(arguments, "depth")? {
         args.push("-d".to_string());
         args.push(depth.to_string());
@@ -2430,31 +2360,14 @@ fn call_wait_download(arguments: &Value) -> Result<Value, ProtocolError> {
 
 fn call_screenshot(arguments: &Value) -> Result<Value, ProtocolError> {
     let mut args = Vec::new();
-    if optional_bool(arguments, "annotate")?.unwrap_or(false) {
-        args.push("--annotate".to_string());
-    }
-    if let Some(format) = optional_string(arguments, "format")? {
-        args.push("--screenshot-format".to_string());
-        args.push(format);
-    }
-    if let Some(quality) = optional_u64(arguments, "quality")? {
-        args.push("--screenshot-quality".to_string());
-        args.push(quality.to_string());
-    }
     if let Some(dir) = optional_string(arguments, "screenshotDir")? {
         args.push("--screenshot-dir".to_string());
         args.push(dir);
     }
 
     args.push("screenshot".to_string());
-    if let Some(selector) = optional_string(arguments, "selector")? {
-        args.push(selector);
-    }
     if let Some(path) = optional_string(arguments, "path")? {
         args.push(path);
-    }
-    if optional_bool(arguments, "fullPage")?.unwrap_or(false) {
-        args.push("--full".to_string());
     }
     call_cli_tool(arguments, args, None)
 }
@@ -2754,23 +2667,6 @@ fn call_state_rename(arguments: &Value) -> Result<Value, ProtocolError> {
     )
 }
 
-fn call_session_id(arguments: &Value) -> Result<Value, ProtocolError> {
-    let mut args = vec![
-        "session".to_string(),
-        "id".to_string(),
-        "--json".to_string(),
-    ];
-    if let Some(scope) = optional_string(arguments, "scope")? {
-        args.push("--scope".to_string());
-        args.push(scope);
-    }
-    if let Some(prefix) = optional_string(arguments, "prefix")? {
-        args.push("--prefix".to_string());
-        args.push(prefix);
-    }
-    call_cli_tool(arguments, args, None)
-}
-
 fn call_batch(arguments: &Value) -> Result<Value, ProtocolError> {
     let commands_value = optional_value(arguments, "commands")?
         .ok_or_else(|| ProtocolError::invalid_params("commands must be an array"))?;
@@ -2836,7 +2732,6 @@ fn doctor_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
         }
     }
     for (key, flag) in [
-        ("webgpu", "--webgpu"),
         ("headed", "--headed"),
         ("debug", "--debug"),
     ] {
@@ -3410,12 +3305,13 @@ mod tests {
             .iter()
             .find(|t| t["name"].as_str() == Some(TOOL_OPEN))
             .unwrap();
-        assert!(open["description"]
+        assert!(!open["description"]
             .as_str()
-            .is_some_and(|description| description.contains("WebMCP availability metadata")));
+            .unwrap()
+            .contains("WebMCP availability metadata"));
         let props = &open["inputSchema"]["properties"];
         assert!(props.get("headed").is_some());
-        assert!(props.get("webgpu").is_some());
+        assert!(props.get("webgpu").is_none());
         assert!(props.get("webmcp").is_some());
     }
 
@@ -3425,14 +3321,10 @@ mod tests {
         assert_eq!(open_args(&json!({})).unwrap(), vec!["open"]);
 
         // Explicit true and false are both forwarded, so MCP callers can
-        // override AGENT_BROWSER_WEBGPU/config just like `--webgpu false`.
+        // override env/config just like `--headed false`.
         assert_eq!(
-            open_args(&json!({ "webgpu": false, "url": "https://example.com" })).unwrap(),
-            vec!["--webgpu", "false", "open", "https://example.com"]
-        );
-        assert_eq!(
-            open_args(&json!({ "headed": true, "webgpu": true })).unwrap(),
-            vec!["--headed", "true", "--webgpu", "true", "open"]
+            open_args(&json!({ "headed": true })).unwrap(),
+            vec!["--headed", "true", "open"]
         );
         assert_eq!(
             open_args(&json!({ "headed": false })).unwrap(),
@@ -3446,13 +3338,18 @@ mod tests {
             open_args(&json!({ "webmcp": true })).unwrap(),
             vec!["--no-webmcp", "false", "open"]
         );
+        // webgpu no longer exists in the schema or in open_args forwarding.
+        assert_eq!(
+            open_args(&json!({ "webgpu": false, "url": "https://example.com" })).unwrap(),
+            vec!["open", "https://example.com"]
+        );
     }
 
 
 
 
     #[test]
-    fn doctor_tool_exposes_webgpu_option() {
+    fn doctor_tool_exposes_options() {
         let tools = tools();
         let doctor = tools
             .iter()
@@ -3462,7 +3359,7 @@ mod tests {
         assert!(props.get("offline").is_some());
         assert!(props.get("quick").is_some());
         assert!(props.get("fix").is_some());
-        assert!(props.get("webgpu").is_some());
+        assert!(props.get("webgpu").is_none());
         assert!(props.get("headed").is_some());
         assert!(props.get("debug").is_some());
     }
@@ -3478,12 +3375,17 @@ mod tests {
         // Value-taking booleans forwarded both ways so env/config can be
         // overridden.
         assert_eq!(
-            doctor_args(&json!({ "webgpu": true, "headed": false })).unwrap(),
-            vec!["doctor", "--webgpu", "true", "--headed", "false"]
+            doctor_args(&json!({ "headed": false })).unwrap(),
+            vec!["doctor", "--headed", "false"]
         );
         assert_eq!(
             doctor_args(&json!({ "debug": true })).unwrap(),
             vec!["doctor", "--debug", "true"]
+        );
+        // webgpu no longer exists in the doctor schema or arg forwarding.
+        assert_eq!(
+            doctor_args(&json!({ "webgpu": true, "headed": false })).unwrap(),
+            vec!["doctor", "--headed", "false"]
         );
     }
 
@@ -3956,7 +3858,6 @@ mod tests {
                 ToolProfile::Network,
                 &[
                     TOOL_NETWORK_REQUEST,
-                    TOOL_NETWORK_WORKERS,
                     TOOL_NETWORK_WEBSOCKETS,
                 ],
             ),

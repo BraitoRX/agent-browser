@@ -641,7 +641,7 @@ class Worker:
         budget = _ActionBudget(self.deadline_ms)
         attempts_before = int(getattr(runtime, "_input_attempts", 0))
         context = runtime.GestureContextClass(runtime, max(1, budget.remaining_ms()))
-        if spec.name in {"drag", "hold", "path"} and not getattr(context, "frame_is_main", True):
+        if spec.name in {"drag", "hold"} and not getattr(context, "frame_is_main", True):
             raise BackendError(CODE_UNSUPPORTED, f"{spec.name} requires frame main; selected-frame targets are not supported")
         failed = False
         failure: Optional[BaseException] = None
