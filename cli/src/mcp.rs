@@ -3306,7 +3306,7 @@ fn response_text(value: &Value) -> Option<String> {
         }
 
         if let Some(data) = obj.get("data") {
-            if ["headings", "links", "nodes"]
+            if ["headings", "links", "nodes", "elements", "points"]
                 .iter()
                 .any(|key| data.get(*key).and_then(Value::as_array).is_some())
             {

@@ -90,7 +90,7 @@ Use this procedure for routine maintenance of the configured macOS setup. Do not
 Configuration and documentation references recorded on 2026-09-14. This section is a procedure; the persistence acceptance scope is recorded below:
 
 - Repository: `/Users/braito/Documents/Code/Projects/agent-browser-camoufox/agent-browser`.
-- MCP entry: `camofox_browser`, in `~/.config/opencode/opencode.jsonc` under `mcp.servers`.
+- MCP entry: `browser`, in `~/.config/opencode/opencode.jsonc` under `mcp.servers`. (Renamed from `camofox_browser`; verified 2026-09-17 via `GET /api/mcp`.)
 - Configured executable: the repository's `cli/target/release/agent-browser`, not an upstream package or a PATH-resolved executable.
 - Arguments: `--engine camoufox --session opencode-camoufox mcp --tools core,gestures,network,state,debug,tabs`.
 - OpenCode location for this setup: `/Users/braito/Documents/Code/Projects`. This is the conversation location, not the nested repository and not the browser session name. For a conversation at another location, use its actual OpenCode location instead.
@@ -110,19 +110,19 @@ cd "$REPO"
 cargo build --release --manifest-path cli/Cargo.toml
 ```
 
-3. If a browser reset is authorized, call the configured MCP `agent_browser_close` for `session: "opencode-camoufox"`, with no `all` flag. OpenCode exposes it as `camofox_browser_agent_browser_close`. If MCP is unavailable, the equivalent scoped CLI command is:
+3. If a browser reset is authorized, call the configured MCP `agent_browser_close` for `session: "browser"`, with no `all` flag. OpenCode exposes it as `browser_agent_browser_close`. If MCP is unavailable, the equivalent scoped CLI command is:
 
 ```bash
 REPO='/Users/braito/Documents/Code/Projects/agent-browser-camoufox/agent-browser'
-"$REPO/cli/target/release/agent-browser" --engine camoufox --session opencode-camoufox close --json
+"$REPO/cli/target/release/agent-browser" --engine camoufox --session browser close --json
 ```
 
-4. Reconnect only the MCP entry in the correct OpenCode location. Use OpenCode's authenticated `api` CLI, not an unauthenticated HTTP request or a whole-service restart. These endpoints take no request body:
+4. Reconnect only the MCP entry in the correct OpenCode location. Use OpenCode's authenticated `api` CLI, not an unauthenticated HTTP request or a whole-service restart. The working routes are the experimental ones (the legacy `/api/mcp/{server}/disconnect` shape returns 404; verified 2026-09-17). These endpoints take no request body:
 
 ```bash
 LOCATION='/Users/braito/Documents/Code/Projects'
-opencode api POST "/api/mcp/camofox_browser/disconnect?location[directory]=$LOCATION"
-opencode api POST "/api/mcp/camofox_browser/connect?location[directory]=$LOCATION"
+opencode api POST "/api/experimental/mcp/browser/disconnect?location[directory]=$LOCATION"
+opencode api POST "/api/experimental/mcp/browser/connect?location[directory]=$LOCATION"
 opencode api GET "/api/mcp?location[directory]=$LOCATION"
 ```
 
