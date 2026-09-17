@@ -98,6 +98,9 @@ class FakePage:
     def is_closed(self):
         return self._closed
 
+    async def bring_to_front(self):
+        return None
+
     async def close(self):
         if self._closed:
             return
@@ -172,7 +175,7 @@ class LifecycleTests(unittest.TestCase):
             runtime.require_active()
         self.assertEqual(raised.exception.code, CODE_NO_ACTIVE_TAB)
         with self.assertRaises(BackendError) as raised:
-            runtime.switch_tab(tab.tab_id)
+            asyncio.run(runtime.switch_tab(tab.tab_id))
         self.assertEqual(raised.exception.code, CODE_INVALID)
 
     def test_nonactive_close_keeps_active_without_adoption(self):
@@ -196,7 +199,7 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(BackendError) as raised:
             runtime.require_active()
         self.assertEqual(raised.exception.code, CODE_NO_ACTIVE_TAB)
-        switched = runtime.switch_tab("second")
+        switched = asyncio.run(runtime.switch_tab("second"))
         self.assertEqual(switched["tabId"], "t2")
         self.assertTrue(switched["active"])
 
@@ -330,7 +333,7 @@ class LifecycleTests(unittest.TestCase):
             asyncio.run(runtime.new_tab(None, None))
         self.assertEqual(raised.exception.code, CODE_SESSION_CLOSED)
         with self.assertRaises(BackendError) as raised:
-            runtime.switch_tab("t1")
+            asyncio.run(runtime.switch_tab("t1"))
         self.assertEqual(raised.exception.code, CODE_SESSION_CLOSED)
         with self.assertRaises(BackendError) as raised:
             runtime.require_active()

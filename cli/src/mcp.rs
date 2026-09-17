@@ -58,6 +58,7 @@ const TOOL_WAIT_FOR_DOWNLOAD: &str = "agent_browser_wait_for_download";
 const TOOL_SCREENSHOT: &str = "agent_browser_screenshot";
 const TOOL_GET_TEXT: &str = "agent_browser_get_text";
 const TOOL_GET_HTML: &str = "agent_browser_get_html";
+const TOOL_HTML_SEARCH: &str = "agent_browser_html_search";
 const TOOL_GET_VALUE: &str = "agent_browser_get_value";
 const TOOL_GET_ATTR: &str = "agent_browser_get_attr";
 const TOOL_GET_COUNT: &str = "agent_browser_get_count";
@@ -287,7 +288,7 @@ impl McpConfig {
             return profile.description();
         }
         match profile {
-            ToolProfile::Core => "Everyday Camoufox automation with navigation, native AI snapshots, semantic locators (find), DOM reads and interaction, full-page HTML reads, waits, viewport PNG screenshots, tab basics, isolated-world JavaScript eval, close, and profile discovery.",
+            ToolProfile::Core => "Everyday Camoufox automation with navigation, native AI snapshots, semantic locators (find), DOM reads and interaction, full-page HTML reads, waits, viewport and full-page PNG screenshots, tab basics, isolated-world JavaScript eval, close, and profile discovery.",
             ToolProfile::Network => "Camoufox network interception, request inspection, HAR capture, headers, credentials, and offline mode.",
             ToolProfile::State => "Camoufox cookies, storage, session diagnostics, and bundled skills.",
             ToolProfile::Debug => "Camoufox download handling, console and error reads, batched commands, runtime installation, and pending-action confirm/deny.",
@@ -364,6 +365,7 @@ const CORE_PROFILE_TOOLS: &[&str] = &[
     TOOL_WAIT_FOR_LOAD,
     TOOL_SCREENSHOT,
     TOOL_GET_TEXT,
+    TOOL_HTML_SEARCH,
     TOOL_GET_URL,
     TOOL_GET_TITLE,
     TOOL_TAB_NEW,
@@ -383,8 +385,7 @@ const GESTURES_PROFILE_TOOLS: &[&str] = &[
     TOOL_SKILLS_GET,
 ];
 
-const WEBMCP_PROFILE_TOOLS: &[&str] = &[
-];
+const WEBMCP_PROFILE_TOOLS: &[&str] = &[];
 
 const NETWORK_PROFILE_TOOLS: &[&str] = &[
     TOOL_SET_HEADERS,
@@ -448,12 +449,12 @@ const TABS_PROFILE_TOOLS: &[&str] = &[
     TOOL_DIALOG_DISMISS,
 ];
 
-const MOBILE_PROFILE_TOOLS: &[&str] = &[
-];
+const MOBILE_PROFILE_TOOLS: &[&str] = &[];
 
 const CAMOUFOX_CORE_TOOLS: &[&str] = &[
     TOOL_FIND,
     TOOL_GET_HTML,
+    TOOL_HTML_SEARCH,
     TOOL_SCROLL_INTO_VIEW,
     TOOL_GET_ATTR,
     TOOL_GET_VALUE,
@@ -545,7 +546,10 @@ fn is_camoufox_tool(name: &str) -> bool {
 }
 
 fn is_camoufox_page_tool(name: &str) -> bool {
-    matches!(name, TOOL_PAGE_OUTLINE | TOOL_PAGE_LINKS | TOOL_DOM_CHUNK)
+    matches!(
+        name,
+        TOOL_PAGE_OUTLINE | TOOL_PAGE_LINKS | TOOL_DOM_CHUNK | TOOL_HTML_SEARCH
+    )
 }
 
 /// Run the MCP stdio server until stdin closes or a `shutdown` request is
@@ -747,7 +751,7 @@ fn initialize_result(params: Option<&Value>, config: &McpConfig) -> Value {
             "version": env!("CARGO_PKG_VERSION")
         },
         "instructions": format!(
-            "Use the typed agent_browser_* tools to control a browser. Active MCP tools profile(s): {}. Prefer agent_browser_snapshot after navigation to obtain stable element refs before clicking or typing. Use agent_browser_tools_profiles to see available startup profiles.",
+            "Use the typed agent_browser_* tools to control a browser. Active MCP tools profile(s): {}. Discovery order: take a screenshot first and work from what you see; for long pages scroll with PageDown/PageUp and take a fresh screenshot per viewport before coordinate gestures. Use agent_browser_html_search to locate content in the live page HTML and get CSS paths without dumping the page into context. Use find or scoped eval for exact selectors. Use agent_browser_snapshot only as a last resort for genuinely complex structure; full snapshots and tab_list on ad-heavy pages return very large output. Use agent_browser_tools_profiles to see available startup profiles.",
             config.profile_names().join(", ")
         )
     })
@@ -831,7 +835,7 @@ fn camoufox_tool(mut tool: Value) -> Value {
         TOOL_CLOSE => Some("Close the named browser session without deleting its persistent profile. Tabs and transient state end; persistent cookies and site storage remain. Leave a user's persistent browser open unless closure or recovery is requested."),
         TOOL_READ => Some("Read rendered body text from the selected frame, not a URL fetch or markdown extractor. Use scoped DOM queries or eval when accessibility snapshots omit content. Returns frameId/frameUrl."),
         TOOL_SNAPSHOT => Some("Capture the native AI accessibility tree with refs, link URLs and pointer-cursor markers already included. No Chrome filtering options. Every snapshot, including a scoped one, replaces exposed refs; navigation, frame detachment and scope changes clear them. DOM-only changes can still cause native locator failures. Use DOM queries for content absent from this accessibility view. Pass quiet:true on volatile pages to wait up to 3s for a 250ms mutation-silent window before capturing."),
-        TOOL_SCREENSHOT => Some("Capture the top-level viewport as PNG, returning its path and captureId for coordinate gestures. Element crops, full-page capture, annotation and JPEG are not supported."),
+        TOOL_SCREENSHOT => Some("Capture the viewport as PNG, or the full scrollable page with fullPage. Returns its path and, for viewport captures, a captureId for coordinate gestures. An inline visual image is attached when small enough. Element crops, annotation and JPEG are not supported."),
         TOOL_EVAL => Some("Evaluate JavaScript in the selected frame's isolated world using stdin. DOM access is available; page-script globals are not guaranteed. Scripts may mutate the page and invalidate coordinate captures. Traverse open shadowRoot explicitly in JavaScript; closed shadow roots are not exposed. Returns frameId/frameUrl."),
         TOOL_FRAME_SWITCH => Some("Select an observation/CSS frame using a tab-local frame-N ID from tab_list/snapshot, a unique iframe CSS selector relative to the selected frame, or an exposed iframe @ref. Supports nested/cross-origin frames. Clears refs/captures. A detached selected frame fails rather than falling back. Navigation, URL/title/load waits and screenshots remain top-level."),
         TOOL_FRAME_MAIN => Some("Return observation and CSS scope to the main frame, including after selected-frame detachment. Clears refs and coordinate captures."),
@@ -1162,15 +1166,29 @@ fn tools() -> Vec<Value> {
         tool(
             TOOL_SCREENSHOT,
             "Take screenshot",
-            "Capture a screenshot and return the saved path. Small PNG screenshots are also returned as image content.",
+            "Capture the viewport as PNG, or the full scrollable page with fullPage. Returns its path and, for viewport captures, a captureId for coordinate gestures. An inline visual image is attached when small enough. Element crops, annotation and JPEG are not supported.",
             json!({
                 "path": { "type": "string", "description": "Optional output path." },
-                "screenshotDir": { "type": "string", "description": "Default output directory when path is omitted." }
+                "screenshotDir": { "type": "string", "description": "Default output directory when path is omitted." },
+                "fullPage": { "type": "boolean", "description": "Capture the entire scrollable page instead of the viewport. Full-page captures return no captureId and cannot be used for coordinate gestures." }
             }),
             &[],
         ),
         tool(TOOL_GET_TEXT, "Get text", "Get visible text from an element.", json!({ "selector": selector_schema() }), &["selector"]),
         tool(TOOL_GET_HTML, "Get HTML", "Get innerHTML from an element. Use selector `html` to read the whole document element's contents.", json!({ "selector": selector_schema() }), &["selector"]),
+        tool(
+            TOOL_HTML_SEARCH,
+            "Search page HTML",
+            "Search the live page HTML server-side and return only matching excerpts with CSS paths. The full HTML never enters the conversation. Prefer this over full snapshots or get_html for locating content; use snapshot only as last resort.",
+            json!({
+                "query": { "type": "string", "description": "Literal text to search for, case-insensitive. Required unless regex is set." },
+                "regex": { "type": "string", "description": "Python-style regular expression; overrides query when both are provided. Invalid patterns fail with a clear error." },
+                "selector": { "type": "string", "description": "Optional CSS selector restricting the search to the first matching element's subtree." },
+                "maxResults": { "type": "integer", "minimum": 1, "maximum": 20, "default": 5, "description": "Maximum excerpts to return." },
+                "contextChars": { "type": "integer", "minimum": 1, "maximum": 400, "default": 120, "description": "Characters of surrounding context per excerpt." }
+            }),
+            &["query"],
+        ),
         tool(TOOL_GET_VALUE, "Get value", "Get an input value.", json!({ "selector": selector_schema() }), &["selector"]),
         tool(TOOL_GET_URL, "Get URL", "Get the current page URL.", json!({}), &[]),
         tool(TOOL_GET_TITLE, "Get title", "Get the current page title.", json!({}), &[]),
@@ -1787,6 +1805,7 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_WAIT_FOR_FUNCTION
             | TOOL_GET_TEXT
             | TOOL_GET_HTML
+            | TOOL_HTML_SEARCH
             | TOOL_GET_VALUE
             | TOOL_GET_ATTR
             | TOOL_GET_COUNT
@@ -1932,6 +1951,7 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_SCREENSHOT => call_screenshot(arguments),
         TOOL_GET_TEXT => call_get_selector(arguments, "text"),
         TOOL_GET_HTML => call_get_selector(arguments, "html"),
+        TOOL_HTML_SEARCH => call_html_search(arguments),
         TOOL_GET_VALUE => call_get_selector(arguments, "value"),
         TOOL_GET_ATTR => call_get_attr(arguments),
         TOOL_GET_COUNT => call_get_selector(arguments, "count"),
@@ -2369,7 +2389,61 @@ fn call_screenshot(arguments: &Value) -> Result<Value, ProtocolError> {
     if let Some(path) = optional_string(arguments, "path")? {
         args.push(path);
     }
-    call_cli_tool(arguments, args, None)
+    if optional_bool(arguments, "fullPage")?.unwrap_or(false) {
+        args.push("--full".to_string());
+    }
+    args.push("--inline-image".to_string());
+
+    validate_arguments_object(arguments)?;
+    let session = optional_string(arguments, "session")?;
+    let timeout_ms = optional_timeout(arguments)?;
+    let cli_args = cli_tool_args(arguments, args, session.as_deref())?;
+    let run = run_cli(&cli_args, None, timeout_ms).map_err(|e| {
+        ProtocolError::invalid_params(format!("Failed to run agent-browser: {}", e))
+    })?;
+    let parsed = serde_json::from_str::<Value>(run.stdout.trim()).ok();
+    let Some(parsed) = parsed else {
+        return Ok(tool_result_from_run(run));
+    };
+    let image = parsed
+        .get("data")
+        .and_then(|data| data.get("image"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+    let mut sanitized = parsed.clone();
+    if let Some(data) = sanitized
+        .get_mut("data")
+        .and_then(|value| value.as_object_mut())
+    {
+        data.remove("image");
+    }
+    let sanitized_stdout = serde_json::to_string(&sanitized).unwrap_or_default();
+    let sanitized_run = CliRun {
+        exit_code: run.exit_code,
+        stdout: sanitized_stdout,
+        stderr: run.stderr,
+    };
+    let mut result = tool_result_from_run(sanitized_run);
+    if image.is_some() {
+        let parsed_success = parsed
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if run.exit_code == Some(0) && parsed_success {
+            if let Some(image) = image {
+                if image.len() <= (MAX_IMAGE_BYTES as usize) * 4 / 3 {
+                    result["content"].as_array_mut().map(|content| {
+                        content.push(json!({
+                            "type": "image",
+                            "data": image,
+                            "mimeType": "image/png",
+                        }))
+                    });
+                }
+            }
+        }
+    }
+    Ok(result)
 }
 
 fn call_get_selector(arguments: &Value, what: &str) -> Result<Value, ProtocolError> {
@@ -2379,6 +2453,44 @@ fn call_get_selector(arguments: &Value, what: &str) -> Result<Value, ProtocolErr
         vec!["get".to_string(), what.to_string(), selector],
         None,
     )
+}
+
+fn call_html_search(arguments: &Value) -> Result<Value, ProtocolError> {
+    let mut args = vec![
+        "html-search".to_string(),
+        required_string(arguments, "query")?,
+    ];
+    if let Some(regex) = optional_string(arguments, "regex")? {
+        if !regex.is_empty() {
+            args.push("--regex".to_string());
+            args.push(regex);
+        }
+    }
+    if let Some(selector) = optional_string(arguments, "selector")? {
+        if !selector.is_empty() {
+            args.push("--selector".to_string());
+            args.push(selector);
+        }
+    }
+    if let Some(max_results) = optional_u64(arguments, "maxResults")? {
+        if !(1..=20).contains(&max_results) {
+            return Err(ProtocolError::invalid_params(
+                "maxResults must be between 1 and 20",
+            ));
+        }
+        args.push("--max-results".to_string());
+        args.push(max_results.to_string());
+    }
+    if let Some(context_chars) = optional_u64(arguments, "contextChars")? {
+        if !(1..=400).contains(&context_chars) {
+            return Err(ProtocolError::invalid_params(
+                "contextChars must be between 1 and 400",
+            ));
+        }
+        args.push("--context-chars".to_string());
+        args.push(context_chars.to_string());
+    }
+    call_cli_tool(arguments, args, None)
 }
 
 fn call_get_attr(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -2731,10 +2843,7 @@ fn doctor_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
             args.push(flag.to_string());
         }
     }
-    for (key, flag) in [
-        ("headed", "--headed"),
-        ("debug", "--debug"),
-    ] {
+    for (key, flag) in [("headed", "--headed"), ("debug", "--debug")] {
         if let Some(value) = optional_bool(arguments, key)? {
             args.push(flag.to_string());
             args.push(value.to_string());
@@ -2930,9 +3039,7 @@ fn append_common_global_args(
 ) -> Result<(), ProtocolError> {
     if let Some(engine) = optional_string(arguments, "engine")? {
         if !matches!(engine.as_str(), "camoufox") {
-            return Err(ProtocolError::invalid_params(
-                "engine must be camoufox",
-            ));
+            return Err(ProtocolError::invalid_params("engine must be camoufox"));
         }
         args.extend(["--engine".to_string(), engine]);
     }
@@ -3225,6 +3332,11 @@ fn response_text(value: &Value) -> Option<String> {
                     serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
                 );
             }
+            if data.get("matches").and_then(|v| v.as_array()).is_some() {
+                return Some(
+                    serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+                );
+            }
             if let Some(capture) = data.get("visualCapture").and_then(|v| v.as_object()) {
                 if let Some(capture_id) = capture.get("captureId").and_then(|v| v.as_str()) {
                     let path = data.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -3297,7 +3409,6 @@ fn write_json_line(stdout: &mut io::Stdout, value: &Value) -> io::Result<()> {
 mod tests {
     use super::*;
 
-
     #[test]
     fn open_tool_exposes_launch_options() {
         let tools = tools();
@@ -3344,9 +3455,6 @@ mod tests {
             vec!["open", "https://example.com"]
         );
     }
-
-
-
 
     #[test]
     fn doctor_tool_exposes_options() {
@@ -3443,7 +3551,6 @@ mod tests {
         assert!(result.get("nextCursor").is_none());
     }
 
-
     #[test]
     fn parse_mcp_config_accepts_tools_profiles() {
         let config = parse_mcp_config(&["--tools".into(), "core,network".into()]).unwrap();
@@ -3479,7 +3586,6 @@ mod tests {
         assert_eq!(err.code, -32602);
         assert!(err.message.contains("not enabled"));
     }
-
 
     #[test]
     fn response_text_uses_read_content_before_url_metadata() {
@@ -3536,7 +3642,6 @@ mod tests {
 
         assert_eq!(args, vec!["click", "@e1", "--new-tab"]);
     }
-
 
     #[test]
     fn common_global_args_use_equals_form_for_string_restore_key() {
@@ -3671,8 +3776,6 @@ mod tests {
         // Must stay in sync with the CLI parser's accepted --content values.
         assert_eq!(modes, &vec![json!("all"), json!("text"), json!("none")]);
     }
-
-
 
     #[test]
     fn required_string_reads_present_field() {
@@ -3856,10 +3959,7 @@ mod tests {
         let cases: [(ToolProfile, &[&str]); 3] = [
             (
                 ToolProfile::Network,
-                &[
-                    TOOL_NETWORK_REQUEST,
-                    TOOL_NETWORK_WEBSOCKETS,
-                ],
+                &[TOOL_NETWORK_REQUEST, TOOL_NETWORK_WEBSOCKETS],
             ),
             (ToolProfile::Debug, &[TOOL_DOWNLOADS]),
             (ToolProfile::Tabs, &[TOOL_DIALOG_STATUS]),
@@ -3880,10 +3980,6 @@ mod tests {
         }
     }
 
-
-
-
-
     #[test]
     fn camoufox_page_tool_text_keeps_structured_records() {
         let response = json!({
@@ -3897,8 +3993,6 @@ mod tests {
         assert!(text.contains("@d1"));
         assert!(text.contains("https://example.com"));
     }
-
-
 
     #[test]
     fn camoufox_inspection_request_detail_forwards_request_id() {
@@ -3920,8 +4014,6 @@ mod tests {
         assert_eq!(command["action"], "request_detail");
         assert_eq!(command["requestId"], "n1");
     }
-
-
 
     #[test]
     fn camoufox_inspection_wait_for_download_is_not_read_only() {

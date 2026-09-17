@@ -12,7 +12,12 @@ Fast browser automation CLI for AI agents. The default Chrome/Chromium backend u
 
 A Camoufox-started MCP server exposes an engine-specific catalog, not the full Chrome surface. Its native snapshots already include URLs/cursor markers and replace exposed refs on every scoped or unscoped snapshot. Core includes `agent_browser_find` with semantic locators (`role`, `text`, `label`, `placeholder`, `alt`, `title`, `testid`, `first`, `last`, `nth`), full-page HTML reads via `get html "html"` / `agent_browser_get_html`, `agent_browser_hover_hold` for keeping hover-revealed UI visible while observing it, HTML/attribute/value/count/bounds/state queries, and native reveal. The `page-outline`, `page-links`, and `dom-chunk` commands remain CLI-only for Camoufox and are not exposed as MCP tools on any profile. Use the `tabs` profile for explicit frame scope from observed frame IDs; see the specialized skill for nested frames, open shadow roots and output limits. `V1` is the private protocol/runtime namespace, not an old tool version to replace with OpenCode V2.
 
-If the selected engine is `camoufox`, load `agent-browser skills get camoufox` before acting. The examples below otherwise describe upstream Chrome behavior, not Camoufox parity. In particular, Camoufox uses native AI snapshots without `-i` or `-c`, viewport-only PNG captures, fresh capture IDs for coordinates, and stable `tN` tabs. Evaluation uses Camoufox's default isolated world; read shared DOM state rather than page-owned globals. It rejects network containment, Chrome profile import, state-file/auth-vault restoration, CDP, and other unsupported features rather than switching engines. See [the Camoufox reference](references/camoufox.md). A source-built binary passed bounded local macOS acceptance, not full release certification; do not substitute an upstream installed binary or infer acceptance on another platform/application.
+If the selected engine is `camoufox`, load `agent-browser skills get camoufox` before acting. The examples below otherwise describe upstream Chrome behavior, not Camoufox parity. In particular, Camoufox uses native AI snapshots without `-i` or `-c`, viewport and full-page PNG captures with the image attached inline in MCP responses, fresh capture IDs for coordinates, and stable `tN` tabs. Evaluation uses Camoufox's default isolated world; read shared DOM state rather than page-owned globals. It rejects network containment, Chrome profile import, state-file/auth-vault restoration, CDP, and other unsupported features rather than switching engines. See [the Camoufox reference](references/camoufox.md). A source-built binary passed bounded local macOS acceptance, not full release certification; do not substitute an upstream installed binary or infer acceptance on another platform/application.
+
+Camoufox includes `agent_browser_html_search` (CLI `html-search`): server-side
+search over freshly captured frame HTML returning bounded excerpts with CSS
+paths, so locating content never requires dumping the page or its HTML into the
+conversation.
 
 Camoufox supports dedicated persistent profiles through `--profile /absolute/path`, `AGENT_BROWSER_PROFILE`, config `profile`, and MCP `profile`. Reuse the configured profile and inspect `session info` for `persistentProfile`/`profilePath`; do not switch to a fresh profile as recovery. Do not export login storage without authorization. Persistent storage survives close, but site-side expiry and session-only storage are not guaranteed. Leave a user's persistent browser open after a task unless they request closure or explicit-close recovery is required; this overrides generic cleanup examples below. `--idle-timeout 0` keeps the daemon from closing merely because it is idle.
 
@@ -137,6 +142,23 @@ agent-browser get title                   # page title
 agent-browser get url                     # current URL
 agent-browser get count ".item"           # count matching elements
 ```
+
+To locate content without dumping the page into context, search the live HTML
+server-side:
+
+```bash
+agent-browser html-search "Total"                          # literal, case-insensitive
+agent-browser html-search price --regex "price[=:]\\s*\\d+"
+agent-browser html-search checkout --selector "main#results" --max-results 10
+```
+
+Each call captures the selected frame's HTML fresh, searches it, and returns
+matching excerpts with approximate CSS paths plus `totalMatches`,
+`capturedChars`, and `truncated`. `--max-results` (1-20, default 5) bounds the
+list and `--context-chars` (1-400, default 120) bounds each excerpt; the output
+itself is capped and reports `truncated` when the cap cut matches. On Camoufox
+this is the preferred way to find where content lives; reserve full snapshots
+for genuinely complex structure.
 
 For large rendered pages on Camoufox, read the whole document element's inner HTML with `get html "html"` and locate elements semantically with `find`, for example `find role button text --name "Submit"`; the read-only `text` subaction prints the element's text and a unique CSS selector reusable by any selector-based command, and acting subactions reject zero and ambiguous matches before any input. The CLI `page-outline`, `page-links --limit 50`, and `dom-chunk --limit 100` commands remain available for cursor-paginated headings, actionable link refs, and low-level element records with `@dN` refs; follow the returned `nextCursor` without repeating the selector. These pagination commands are not exposed as MCP tools on any profile.
 

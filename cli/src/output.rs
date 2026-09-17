@@ -510,6 +510,7 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                             | "page_outline"
                             | "page_links"
                             | "dom_chunk"
+                            | "html_search"
                     )
                 ))
         {
@@ -1641,6 +1642,34 @@ Examples:
   agent-browser get html @d12
 "##
         }
+        "html-search" => {
+            r##"
+agent-browser html-search - Search live page HTML server-side with Camoufox
+
+Usage: agent-browser html-search <query> [--regex <pattern>] [--selector <selector>]
+                [--max-results <1-20>] [--context-chars <1-400>]
+
+Captures the selected frame's HTML fresh on every call, searches it, and returns
+only matching excerpts with approximate CSS paths. The full HTML never enters the
+conversation. Prefer this over full snapshots or get html for locating content;
+use a snapshot only as a last resort for genuinely complex structure.
+
+The query is literal and case-insensitive. A --regex (Python syntax) overrides
+the query when both are provided; invalid patterns fail with a clear error.
+A --selector restricts the search to the first matching element's subtree.
+
+Options:
+  --regex <pattern>      Python-style regular expression; overrides the query
+  --selector <selector>  Restrict the search to one element's subtree
+  --max-results <count>  Return 1 to 20 excerpts (default: 5)
+  --context-chars <n>    Characters of surrounding context, 1 to 400 (default: 120)
+
+Examples:
+  agent-browser html-search "Total"
+  agent-browser html-search price --regex "price[=:]\\s*\\d+"
+  agent-browser html-search checkout --selector "main#results" --max-results 10
+"##
+        }
 
         // === Core Actions ===
         "click" => {
@@ -2144,26 +2173,25 @@ Examples:
             r##"
 agent-browser screenshot - Take a screenshot
 
-Usage: agent-browser screenshot [selector] [path]
+Usage: agent-browser screenshot [path] [--full] [--inline-image]
 
-Captures a screenshot of the current page. If no path is provided,
-saves to a temporary directory with a generated filename.
-Headless Chromium screenshots hide native scrollbars for consistent image output.
-Pass --hide-scrollbars false when launching to keep native scrollbars visible.
+Captures the active page as PNG. Without --full, only the current viewport
+is captured and the result carries a captureId usable for coordinate
+gestures. With --full, the entire scrollable page is captured; full-page
+captures carry no captureId and are refused when the document is taller
+than 30000px. If no path is provided, saves to a temporary directory with
+a generated filename. The PNG is always written to disk; --inline-image
+additionally prints the base64 image inside --json output so MCP clients
+can display it directly.
+
+On this engine, annotation, JPEG output, quality, and element captures
+are not supported.
 
 Options:
   --full, -f           Capture full page (not just viewport)
-  --annotate           Overlay numbered labels on interactive elements.
-                       Each label [N] corresponds to ref @eN from snapshot.
-                       Prints a legend mapping labels to element roles/names.
-                       With --json, annotations are included in the response.
-                       Supported on Chromium and Lightpanda.
+  --inline-image       Include base64 PNG data in --json output
   --screenshot-dir <path>  Default output directory for screenshots
                        (or AGENT_BROWSER_SCREENSHOT_DIR env)
-  --screenshot-quality <0-100>  JPEG quality (0-100, only applies to jpeg format)
-                       (or AGENT_BROWSER_SCREENSHOT_QUALITY env)
-  --screenshot-format <fmt>  Image format: png (default) or jpeg
-                       (or AGENT_BROWSER_SCREENSHOT_FORMAT env)
 
 Global Options:
   --json               Output as JSON
@@ -2173,11 +2201,7 @@ Examples:
   agent-browser screenshot
   agent-browser screenshot ./screenshot.png
   agent-browser screenshot --full ./full-page.png
-  agent-browser screenshot --annotate              # Labeled screenshot + legend
-  agent-browser screenshot --annotate ./page.png   # Save annotated screenshot
-  agent-browser screenshot --annotate --json       # JSON output with annotations
-  agent-browser screenshot --screenshot-dir ./shots # Save to custom directory
-  agent-browser screenshot --screenshot-format jpeg --screenshot-quality 80
+  agent-browser screenshot --inline-image --json
 "##
         }
         "pdf" => {

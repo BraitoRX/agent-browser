@@ -81,7 +81,7 @@ Shared conventions: `selector` accepts CSS or native aria refs `@eN` / `@fNeN` (
 | `page_outline` | `selector?` | Bounded DOM-derived root/headings/landmark-like regions plus link/form/interactive counts for selected frame; unique `main` or document root by default |
 | `page_links` | first page: `selector?`, `limit?` (1–200, default 50); continuation: `cursor`, optional unchanged `limit` | Cursor-paginated links from one native AI snapshot with actionable refs, text, raw/resolved URLs, nearest heading section, totals and page version |
 | `dom_chunk` | first page: `selector?`, `limit?` (1–500, default 100); continuation: `cursor`, optional unchanged `limit` | Cursor-paginated preorder element records with document-scoped actionable `@dN` refs, fingerprint/revision validation, totals and explicit 50000-node inventory cap |
-| `screenshot` | `path?`, `screenshotDir?`; `selector`, `fullPage`, `annotate`, non-png `format`, `quality` rejected before capture | `{path, format:"png", scale:"css", visualCapture}` |
+| `screenshot` | `path?`, `screenshotDir?`, `fullPage?`, `inline?`; `selector`, `annotate`, non-png `format`, `quality` rejected before capture | `{path, format:"png", scale:"css", fullPage, visualCapture?, image?}`; viewport captures register the gesture captureId; full-page captures set `visualCapture: null`, register no captureId, refuse documents above 30000px scrollHeight, and refuse inline payloads above the 8 MiB inline limit |
 | `click` | `selector` or `target`, `button?`, `count?` (1..2), `newTab?` must be false | gesture data + `{action:"click"}` |
 | `dblclick` | `selector`, `button?` | double click |
 | `fill` | `selector`, `value` | conventional nonhuman fill |

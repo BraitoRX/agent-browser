@@ -381,6 +381,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "screenshot" => &[
             "path",
             "screenshotDir",
+            "inline",
             "selector",
             "fullPage",
             "annotate",
@@ -441,6 +442,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         "page_outline" => &["selector"],
         "page_links" => &["selector", "cursor", "limit"],
         "dom_chunk" => &["selector", "cursor", "limit"],
+        "html_search" => &["query", "regex", "selector", "maxResults", "contextChars"],
         "getbyrole" => &["role", "subaction", "name", "exact", "value"],
         "getbytext" => &["text", "subaction", "exact", "value"],
         "getbylabel" => &["label", "subaction", "exact", "value"],
@@ -475,7 +477,7 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
         }
     }
     for field in match action {
-        "screenshot" => &["fullPage", "annotate"][..],
+        "screenshot" => &["annotate"][..],
         "snapshot" => &["interactive", "compact"][..],
         "click" => &["newTab"][..],
         "launch" => &["noXvfb", "webmcp"][..],
@@ -496,7 +498,10 @@ pub fn normalize_command(command: &Value) -> Result<Value, String> {
                 .get("format")
                 .is_some_and(|value| value.as_str() != Some("png"))
         {
-            return Err("Camoufox screenshots support viewport PNG only".to_string());
+            return Err(
+                "Camoufox screenshots support PNG only; element screenshots are not supported"
+                    .to_string(),
+            );
         }
     }
     if action.starts_with("wait") {
@@ -910,6 +915,22 @@ mod tests {
             &json!({"id":"6", "action":"launch", "adblock":true, "storageState":"state.json"})
         )
         .is_err());
+    }
+
+    #[test]
+    fn camoufox_screenshot_normalize_allows_full_page_and_inline() {
+        let shot = json!({
+            "id":"1", "action":"screenshot", "path":"page.png",
+            "fullPage":true, "inline":true
+        });
+        assert_eq!(normalize_command(&shot).unwrap(), shot);
+        assert!(
+            normalize_command(&json!({"id":"2", "action":"screenshot", "annotate":true})).is_err()
+        );
+        assert!(
+            normalize_command(&json!({"id":"3", "action":"screenshot", "selector":"#hero"}))
+                .is_err()
+        );
     }
 
     #[test]

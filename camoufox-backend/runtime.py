@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import platform
@@ -53,6 +54,8 @@ from osnative_input import (
 from persistent_profile import PersistentProfile
 
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+SCREENSHOT_INLINE_LIMIT = 8 * 1024 * 1024
+SCREENSHOT_MAX_FULL_PAGE_HEIGHT = 30_000
 LEADING_JS_TRIVIA_RE = re.compile(r"[\s\ufeff]+|//[^\r\n\u2028\u2029]*|/\*[\s\S]*?\*/")
 RETURN_STATEMENT_RE = re.compile(r"return(?![\w$\\\u200c\u200d])")
 EVAL_RETURN_ERROR = "eval script contains a top-level return; wrap the script in an IIFE, for example: (() => { return document.title; })()"
@@ -356,6 +359,109 @@ def _absolute_url(base: str, url: str) -> str:
 def _clip_string(value: Any, limit: int) -> Tuple[str, bool]:
     text = "" if value is None else str(value)
     return text[:limit], len(text) > limit
+
+
+_HTML_SEARCH_OUTPUT_BUDGET = 8000
+_HTML_SEARCH_EXCERPT_MARK = " ... "
+_HTML_SEARCH_TAG_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9]*)((?:\"[^\"]*\"|'[^']*'|[^<>])*)>")
+_HTML_SEARCH_ATTR_ID_RE = re.compile(r"\bid\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))")
+_HTML_SEARCH_ATTR_CLASS_RE = re.compile(r"\bclass\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s>]+))")
+_HTML_SEARCH_VOID_TAGS = frozenset({
+    "area", "base", "br", "col", "embed", "hr", "img", "input",
+    "link", "meta", "source", "track", "wbr",
+})
+_HTML_SEARCH_CSS_PATH_LIMIT = 120
+
+
+def _html_attr_values(match: Optional[re.Match]) -> List[str]:
+    if match is None:
+        return []
+    return [group for group in match.groups() if group is not None]
+
+
+def _html_search_excerpt(html: str, start: int, end: int, context_chars: int) -> str:
+    left = max(0, start - context_chars)
+    right = min(len(html), end + context_chars)
+    excerpt = html[left:right]
+    prefix = _HTML_SEARCH_EXCERPT_MARK.strip() if left > 0 else ""
+    suffix = _HTML_SEARCH_EXCERPT_MARK.strip() if right < len(html) else ""
+    return prefix + excerpt + suffix
+
+
+def _html_search_matches(html: str, query: str, regex: Optional[str]) -> List[Tuple[int, int]]:
+    if regex is not None:
+        try:
+            pattern = re.compile(regex, re.IGNORECASE | re.DOTALL)
+        except re.error as error:
+            raise BackendError(CODE_INVALID, f"invalid regex: {error}") from error
+        return [match.span() for match in pattern.finditer(html) if match.start() != match.end()]
+    needle = query.casefold()
+    haystack = html.casefold()
+    span = len(needle)
+    matches = []
+    offset = haystack.find(needle)
+    while offset != -1:
+        matches.append((offset, offset + span))
+        offset = haystack.find(needle, offset + 1)
+    return matches
+
+
+async def _html_scope_subtree(frame: Any, html: str, selector: str) -> str:
+    scope = frame.locator(selector).first
+    try:
+        start = await scope.evaluate(
+            "(element) => Math.max(document.documentElement.outerHTML.indexOf(element.outerHTML), 0)"
+        )
+        scoped_html = await scope.evaluate("(element) => element.outerHTML")
+    except Exception as error:
+        raise BackendError(CODE_INVALID, f"selector scope failed: {error}") from error
+    if not isinstance(start, int) or isinstance(start, bool) or start < 0:
+        return html
+    end = start + len(scoped_html)
+    if end > len(html) or start >= end:
+        return html
+    return html[start:end]
+
+
+def _html_css_path_at(html: str, start: int, end: int) -> str:
+    path_limit = _HTML_SEARCH_CSS_PATH_LIMIT
+    opener = None
+    for match in _HTML_SEARCH_TAG_RE.finditer(html, 0, start):
+        if match.group(1).lower() in _HTML_SEARCH_VOID_TAGS:
+            continue
+        opener = match
+    if opener is None:
+        return "html"
+    attrs = opener.group(2) or ""
+    tag = opener.group(1).lower()
+    id_values = _html_attr_values(_HTML_SEARCH_ATTR_ID_RE.search(attrs))
+    class_values = _html_attr_values(_HTML_SEARCH_ATTR_CLASS_RE.search(attrs))
+    segments = [tag]
+    if id_values:
+        segments.append(f"#{id_values[0]}")
+    elif class_values:
+        segments.append("." + ".".join(class_values[0].split()[:3]))
+    path = "".join(segments)
+    if len(path) > path_limit:
+        path = path[:path_limit]
+    return path
+
+
+def _html_search_envelope_size(captured_chars: int, entries: List[Dict[str, Any]]) -> int:
+    try:
+        return len(
+            json.dumps(
+                {
+                    "matches": entries,
+                    "totalMatches": 1,
+                    "capturedChars": captured_chars,
+                    "truncated": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+    except (TypeError, ValueError):
+        return _HTML_SEARCH_OUTPUT_BUDGET + 1
 
 
 class Tab:
@@ -1247,6 +1353,10 @@ class CamoufoxRuntime:
         page = await self._open_tab_page()
         tab = self._register_tab(page, label=label)
         self.active_id = tab.tab_id
+        try:
+            await asyncio.wait_for(page.bring_to_front(), timeout=5)
+        except Exception as exc:
+            raise BackendError(CODE_ERROR, f"failed to focus tab: {type(exc).__name__}") from exc
         if url is not None:
             await page.goto(url, wait_until="load")
         return {
@@ -1284,13 +1394,17 @@ class CamoufoxRuntime:
                 break
         return await self.context.new_page()
 
-    def switch_tab(self, ident: Optional[str]) -> Dict[str, Any]:
+    async def switch_tab(self, ident: Optional[str]) -> Dict[str, Any]:
         self.require_open_session()
         if not self._is_live():
             raise BackendError(CODE_NOT_LAUNCHED, "browser is not launched; send a launch command first")
         if ident is None:
             raise BackendError(CODE_INVALID, "'tabId' is required (stable tab id such as t1 or a label)")
         tab = self.require_tab(ident, live=True)
+        try:
+            await asyncio.wait_for(tab.page.bring_to_front(), timeout=5)
+        except Exception as exc:
+            raise BackendError(CODE_ERROR, f"failed to focus tab: {type(exc).__name__}") from exc
         self.captures.invalidate_all()
         self.active_id = tab.tab_id
         return {"tabId": tab.tab_id, "label": tab.label, "url": tab.page.url, "active": True}
@@ -1604,6 +1718,40 @@ class CamoufoxRuntime:
         frame = self.active_scope()
         outline = await self._collect_outline(frame, selector)
         return {**outline, **self._page_frame_metadata(page, tab)}
+
+    async def page_html_search(
+        self,
+        query: str,
+        regex: Optional[str],
+        selector: Optional[str],
+        max_results: int,
+        context_chars: int,
+    ) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        frame = self.active_scope()
+        html = await frame.evaluate("() => document.documentElement.outerHTML")
+        if not isinstance(html, str):
+            raise BackendError(CODE_INVALID, "the selected frame returned no HTML to search")
+        if selector is not None:
+            html = await _html_scope_subtree(frame, html, selector)
+        matches = _html_search_matches(html, query, regex)
+        excerpts: List[Dict[str, Any]] = []
+        truncated = len(matches) > max_results
+        for start, end in matches[:max_results]:
+            css_path = _html_css_path_at(html, start, end)
+            excerpt = _html_search_excerpt(html, start, end, context_chars)
+            entry = {"cssPath": css_path, "excerpt": excerpt}
+            if _html_search_envelope_size(len(html), excerpts + [entry]) > _HTML_SEARCH_OUTPUT_BUDGET:
+                truncated = True
+                break
+            excerpts.append(entry)
+        return {
+            "matches": excerpts,
+            "totalMatches": len(matches),
+            "capturedChars": len(html),
+            "truncated": truncated,
+            **self._page_frame_metadata(page, tab),
+        }
 
     async def page_links(
         self,
@@ -2158,11 +2306,27 @@ class CamoufoxRuntime:
         *,
         path: Optional[str],
         screenshot_dir: Optional[str],
+        full_page: bool = False,
+        inline: bool = False,
     ) -> Dict[str, Any]:
         page, tab = self.require_active()
         before = await self.capture_identity()
         try:
-            data = await page.screenshot(scale="css")
+            if full_page:
+                scroll_height = await page.evaluate("() => document.documentElement.scrollHeight")
+                if not isinstance(scroll_height, (int, float)) or isinstance(scroll_height, bool):
+                    raise BackendError(
+                        CODE_INVALID,
+                        f"full-page screenshot refused: document scrollHeight is not measurable, limit is {SCREENSHOT_MAX_FULL_PAGE_HEIGHT}px",
+                    )
+                if scroll_height > SCREENSHOT_MAX_FULL_PAGE_HEIGHT:
+                    raise BackendError(
+                        CODE_INVALID,
+                        f"full-page screenshot refused: document scrollHeight is {int(scroll_height)}px, limit is {SCREENSHOT_MAX_FULL_PAGE_HEIGHT}px",
+                    )
+                data = await page.screenshot(scale="css", full_page=True)
+            else:
+                data = await page.screenshot(scale="css")
         except TypeError as exc:
             raise BackendError(
                 CODE_ERROR,
@@ -2178,26 +2342,44 @@ class CamoufoxRuntime:
         identity = await self.capture_identity()
         if identity != before:
             raise BackendError(CODE_STALE_CAPTURE, "page moved during screenshot; take a fresh screenshot")
-        viewport_width = identity["viewportWidth"]
-        viewport_height = identity["viewportHeight"]
-        if abs(image_width - viewport_width) > 1 or abs(image_height - viewport_height) > 1:
-            raise BackendError(CODE_STALE_CAPTURE, "screenshot dimensions do not match the CSS viewport")
-        device_pixel_ratio = identity["devicePixelRatio"]
         self.captures.invalidate_all()
-        capture_id = self.captures.register(
-            {
-                "imageWidth": image_width,
-                "imageHeight": image_height,
-                "viewportWidth": viewport_width,
-                "viewportHeight": viewport_height,
-                "devicePixelRatio": device_pixel_ratio,
-                "scrollX": identity["scrollX"],
-                "scrollY": identity["scrollY"],
-                "url": identity["url"],
-                "tabId": tab.tab_id,
-                "capturedAt": iso_now(),
-            }
-        )
+        if full_page:
+            if inline and len(data) > SCREENSHOT_INLINE_LIMIT:
+                raise BackendError(
+                    CODE_INVALID,
+                    f"full-page screenshot PNG is {len(data)} bytes and exceeds the inline limit of {SCREENSHOT_INLINE_LIMIT} bytes; reduce the viewport width or take viewport screenshots",
+                )
+            capture_id = None
+            visual_capture: Optional[Dict[str, Any]] = None
+            if inline and len(data) <= SCREENSHOT_INLINE_LIMIT:
+                image = base64.b64encode(bytes(data)).decode("ascii")
+            else:
+                image = None
+        else:
+            viewport_width = identity["viewportWidth"]
+            viewport_height = identity["viewportHeight"]
+            if abs(image_width - viewport_width) > 1 or abs(image_height - viewport_height) > 1:
+                raise BackendError(CODE_STALE_CAPTURE, "screenshot dimensions do not match the CSS viewport")
+            device_pixel_ratio = identity["devicePixelRatio"]
+            capture_id = self.captures.register(
+                {
+                    "imageWidth": image_width,
+                    "imageHeight": image_height,
+                    "viewportWidth": viewport_width,
+                    "viewportHeight": viewport_height,
+                    "devicePixelRatio": device_pixel_ratio,
+                    "scrollX": identity["scrollX"],
+                    "scrollY": identity["scrollY"],
+                    "url": identity["url"],
+                    "tabId": tab.tab_id,
+                    "capturedAt": iso_now(),
+                }
+            )
+            if inline and len(data) <= SCREENSHOT_INLINE_LIMIT:
+                image = base64.b64encode(bytes(data)).decode("ascii")
+            else:
+                image = None
+            visual_capture = None
         if path is not None:
             destination = Path(path).expanduser()
         elif screenshot_dir is not None:
@@ -2206,12 +2388,9 @@ class CamoufoxRuntime:
             destination = self._screenshots_dir() / f"{uuid.uuid4()}.png"
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(bytes(data))
-        capture = self.captures.get(capture_id) or {}
-        return {
-            "path": str(destination),
-            "format": "png",
-            "scale": "css",
-            "visualCapture": {
+        if capture_id is not None:
+            capture = self.captures.get(capture_id) or {}
+            visual_capture = {
                 key: capture.get(key)
                 for key in (
                     "captureId",
@@ -2225,8 +2404,17 @@ class CamoufoxRuntime:
                     "url",
                     "capturedAt",
                 )
-            },
+            }
+        result: Dict[str, Any] = {
+            "path": str(destination),
+            "format": "png",
+            "scale": "css",
+            "fullPage": full_page,
+            "visualCapture": visual_capture,
         }
+        if image is not None:
+            result["image"] = image
+        return result
 
     def session_info(self, registry_names: List[str]) -> Dict[str, Any]:
         self.reconcile_session()

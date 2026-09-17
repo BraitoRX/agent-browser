@@ -150,7 +150,7 @@ BROWSER_ACTIONS = {
     "console", "errors", "websockets", "cookies_get", "cookies_set", "cookies_clear",
     "storage_get", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
     "har_start", "har_stop", "dialog", "download", "waitfordownload", "downloads",
-    "page_outline", "page_links", "dom_chunk",
+    "page_outline", "page_links", "dom_chunk", "html_search",
     "getbyrole", "getbytext", "getbylabel", "getbyplaceholder", "getbyalttext",
     "getbytitle", "getbytestid", "nth",
 }
@@ -186,7 +186,7 @@ ACTION_FIELDS = {
     "frame": {"selector"},
     "mainframe": set(),
     "snapshot": {"selector", "maxDepth", "interactive", "compact", "urls", "cursor", "quiet"},
-    "screenshot": {"path", "screenshotDir", "selector", "fullPage", "annotate", "format", "quality"},
+    "screenshot": {"path", "screenshotDir", "inline", "selector", "fullPage", "annotate", "format", "quality"},
     "click": {"selector", "target", "button", "count", "newTab"},
     "dblclick": {"selector", "button"},
     "fill": {"selector", "value"},
@@ -234,6 +234,7 @@ ACTION_FIELDS = {
     "page_outline": {"selector"},
     "page_links": {"selector", "cursor", "limit"},
     "dom_chunk": {"selector", "cursor", "limit"},
+    "html_search": {"query", "regex", "selector", "maxResults", "contextChars"},
     "getbyrole": {"role", "subaction", "name", "exact", "value"},
     "getbytext": {"text", "subaction", "exact", "value"},
     "getbylabel": {"label", "subaction", "exact", "value"},
@@ -841,8 +842,8 @@ class Worker:
         path = optional_str(payload.get("path"), "path", max_len=4096)
         selector = optional_str(payload.get("selector"), "selector")
         screenshot_dir = optional_str(payload.get("screenshotDir"), "screenshotDir", max_len=4096)
-        if optional_bool(payload.get("fullPage"), "fullPage", False):
-            raise BackendError(CODE_UNSUPPORTED, "fullPage screenshots are not supported by the V1 camoufox backend")
+        full_page = optional_bool(payload.get("fullPage"), "fullPage", False)
+        inline = optional_bool(payload.get("inline"), "inline", False)
         if optional_bool(payload.get("annotate"), "annotate", False):
             raise BackendError(CODE_UNSUPPORTED, "annotated screenshots are not supported by the V1 camoufox backend")
         if selector is not None:
@@ -852,7 +853,7 @@ class Worker:
             raise BackendError(CODE_UNSUPPORTED, "only PNG screenshots are supported by the V1 camoufox backend")
         if payload.get("quality") is not None:
             raise BackendError(CODE_UNSUPPORTED, "PNG quality is not applicable; remove 'quality'")
-        return await runtime.screenshot(path=path, screenshot_dir=screenshot_dir)
+        return await runtime.screenshot(path=path, screenshot_dir=screenshot_dir, full_page=full_page, inline=inline)
 
     async def do_click(self, runtime, payload: Dict[str, Any]) -> Dict[str, Any]:
         double = bool(payload.get("_double"))
@@ -1090,7 +1091,7 @@ class Worker:
             label = optional_str(payload.get("label"), "label", max_len=256)
             return await runtime.new_tab(url, label)
         if action == "tab_switch":
-            return runtime.switch_tab(optional_str(payload.get("tabId"), "tabId"))
+            return await runtime.switch_tab(optional_str(payload.get("tabId"), "tabId"))
 
         if action in ("console", "errors", "websockets"):
             runtime.require_open_session()
@@ -1272,6 +1273,14 @@ class Worker:
             return await self.do_find(runtime, action, payload)
         if action in QUERY_ACTIONS:
             return await self.do_query(runtime, action, payload)
+        if action == "html_search":
+            query = require_str(payload.get("query"), "query")
+            regex = optional_str(payload.get("regex"), "regex")
+            selector = optional_str(payload.get("selector"), "selector")
+            max_results = optional_int(payload.get("maxResults"), "maxResults", 1, 20, 5)
+            context_chars = optional_int(payload.get("contextChars"), "contextChars", 1, 400, 120)
+            assert max_results is not None and context_chars is not None
+            return await runtime.page_html_search(query, regex, selector, max_results, context_chars)
         if action == "page_outline":
             selector = optional_str(payload.get("selector"), "selector")
             return await runtime.page_outline(selector)

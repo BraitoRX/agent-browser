@@ -89,7 +89,6 @@ fn normalize_navigation_url(url: &str) -> String {
     }
 }
 
-
 /// Parse a cookies file in one of three auto-detected formats:
 ///
 /// 1. JSON array — `[{"name":"x","value":"y"}, ...]`
@@ -379,6 +378,7 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             "dom-chunk [selector] [--cursor <cursor>] [--limit <1-500>]",
             500,
         ),
+        "html-search" => parse_html_search(&rest, &id),
         "gestures" => {
             if rest.len() > 1 || rest.first().is_some_and(|name| name.starts_with('-')) {
                 return Err(ParseError::InvalidValue {
@@ -718,11 +718,16 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             // selector: @ref or CSS selector
             // path: file path (contains / or . or ends with known extension)
             let mut full_page = false;
+            let mut inline = false;
             let positional: Vec<&str> = rest
                 .iter()
                 .filter(|arg| match **arg {
                     "--full" | "-f" => {
                         full_page = true;
+                        false
+                    }
+                    "--inline-image" => {
+                        inline = true;
                         false
                     }
                     _ => true,
@@ -757,7 +762,8 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             let mut cmd = json!({
                 "id": id, "action": "screenshot",
                 "path": path, "selector": selector,
-                "fullPage": full_page, "annotate": flags.annotate
+                "fullPage": full_page, "inline": inline,
+                "annotate": flags.annotate
             });
             if let Some(ref fmt) = flags.screenshot_format {
                 cmd["format"] = json!(fmt);
@@ -1485,7 +1491,132 @@ fn parse_paginated_page_command(
     Ok(command)
 }
 
-/// Parse the bounded Camoufox page outline command.
+/// Parse the bounded Camoufox HTML search command.
+fn parse_html_search(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "html-search <query> [--regex <pattern>] [--selector <selector>] [--max-results <1-20>] [--context-chars <1-400>]";
+    let mut query: Option<String> = None;
+    let mut regex: Option<String> = None;
+    let mut selector: Option<String> = None;
+    let mut max_results: Option<u64> = None;
+    let mut context_chars: Option<u64> = None;
+    let mut index = 0;
+    while index < rest.len() {
+        let flag_value = |_name: &str, flag: &str| -> Result<String, ParseError> {
+            rest.get(index + 1)
+                .copied()
+                .ok_or_else(|| ParseError::MissingArguments {
+                    context: format!("html-search {flag}"),
+                    usage: USAGE,
+                })
+                .and_then(|raw| {
+                    if raw.starts_with('-') {
+                        Err(ParseError::InvalidValue {
+                            message: format!("{flag} expects a value"),
+                            usage: USAGE,
+                        })
+                    } else {
+                        Ok(raw.to_string())
+                    }
+                })
+        };
+        match rest[index] {
+            "--regex" => {
+                if regex.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--regex may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                regex = Some(flag_value("--regex", "--regex")?);
+                index += 2;
+            }
+            "--selector" => {
+                if selector.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--selector may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                selector = Some(flag_value("--selector", "--selector")?);
+                index += 2;
+            }
+            "--max-results" => {
+                if max_results.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-results may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let raw = flag_value("--max-results", "--max-results")?;
+                let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--max-results expects an integer, got '{}'", raw),
+                    usage: USAGE,
+                })?;
+                if !(1..=20).contains(&value) {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-results must be between 1 and 20".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                max_results = Some(value);
+                index += 2;
+            }
+            "--context-chars" => {
+                if context_chars.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--context-chars may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let raw = flag_value("--context-chars", "--context-chars")?;
+                let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--context-chars expects an integer, got '{}'", raw),
+                    usage: USAGE,
+                })?;
+                if !(1..=400).contains(&value) {
+                    return Err(ParseError::InvalidValue {
+                        message: "--context-chars must be between 1 and 400".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                context_chars = Some(value);
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown option: {}", value),
+                    usage: USAGE,
+                });
+            }
+            value => {
+                query = match query {
+                    None => Some(value.to_string()),
+                    Some(existing) => Some(format!("{existing} {value}")),
+                };
+                index += 1;
+            }
+        }
+    }
+    let query = query.ok_or_else(|| ParseError::MissingArguments {
+        context: "html-search".to_string(),
+        usage: USAGE,
+    })?;
+    let mut command = json!({ "id": id, "action": "html_search", "query": query });
+    if let Some(value) = regex {
+        command["regex"] = json!(value);
+    }
+    if let Some(value) = selector {
+        command["selector"] = json!(value);
+    }
+    if let Some(value) = max_results {
+        command["maxResults"] = json!(value);
+    }
+    if let Some(value) = context_chars {
+        command["contextChars"] = json!(value);
+    }
+    Ok(command)
+}
+
 fn parse_get(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     const VALID: &[&str] = &[
         "text", "html", "value", "attr", "url", "title", "count", "box",
@@ -2160,10 +2291,6 @@ mod tests {
         );
     }
 
-
-
-
-
     #[test]
     fn test_network_route_resource_type() {
         let cmd = parse_command(
@@ -2440,28 +2567,7 @@ mod tests {
         assert_eq!(cmd["url"], "https://example.com");
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     // === Set Headers Tests ===
-
-
-
 
     #[test]
     fn test_back() {
@@ -2749,6 +2855,59 @@ mod tests {
     }
 
     #[test]
+    fn html_search_parses_literal_query_and_defaults() {
+        let cmd = parse_command(&args("html-search checkout total"), &default_flags()).unwrap();
+        assert_eq!(cmd["action"], "html_search");
+        assert_eq!(cmd["query"], "checkout total");
+        assert_eq!(cmd["regex"], Value::Null);
+        assert_eq!(cmd["selector"], Value::Null);
+        assert_eq!(cmd["maxResults"], Value::Null);
+        assert_eq!(cmd["contextChars"], Value::Null);
+    }
+
+    #[test]
+    fn html_search_parses_optional_flags() {
+        let cmd = parse_command(
+            &args("html-search price --regex price[=:]\\s*\\d+ --selector main#results --max-results 20 --context-chars 400"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "html_search");
+        assert_eq!(cmd["query"], "price");
+        assert_eq!(cmd["regex"], "price[=:]\\s*\\d+");
+        assert_eq!(cmd["selector"], "main#results");
+        assert_eq!(cmd["maxResults"], 20);
+        assert_eq!(cmd["contextChars"], 400);
+    }
+
+    #[test]
+    fn html_search_requires_query_and_rejects_bounds_and_duplicates() {
+        assert!(parse_command(&args("html-search"), &default_flags()).is_err());
+
+        let max_results = parse_command(&args("html-search q --max-results 21"), &default_flags());
+        assert!(matches!(max_results, Err(ParseError::InvalidValue { .. })));
+
+        let context_chars =
+            parse_command(&args("html-search q --context-chars 0"), &default_flags());
+        assert!(matches!(
+            context_chars,
+            Err(ParseError::InvalidValue { .. })
+        ));
+
+        let duplicate = parse_command(&args("html-search q --regex a --regex b"), &default_flags());
+        assert!(matches!(duplicate, Err(ParseError::InvalidValue { .. })));
+
+        let unknown = parse_command(&args("html-search q --unknown"), &default_flags());
+        assert!(matches!(unknown, Err(ParseError::InvalidValue { .. })));
+
+        let missing_value = parse_command(&args("html-search q --selector"), &default_flags());
+        assert!(matches!(
+            missing_value,
+            Err(ParseError::MissingArguments { .. })
+        ));
+    }
+
+    #[test]
     fn camoufox_page_pagination_rejects_conflicts_and_bounds() {
         let conflict = parse_command(
             &args("page-links main --cursor l-token-50"),
@@ -2926,20 +3085,25 @@ mod tests {
         assert_eq!(cmd["path"], "out.png");
     }
 
-
-
-
-
-
-
-
-
     #[test]
     fn test_screenshot_with_path() {
         let cmd = parse_command(&args("screenshot ./output.png"), &default_flags()).unwrap();
         assert_eq!(cmd["action"], "screenshot");
         assert_eq!(cmd["selector"], serde_json::Value::Null);
         assert_eq!(cmd["path"], "./output.png");
+    }
+
+    #[test]
+    fn test_screenshot_full_inline_image() {
+        let cmd = parse_command(
+            &args("screenshot --full ./x.png --inline-image"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "screenshot");
+        assert_eq!(cmd["fullPage"], true);
+        assert_eq!(cmd["inline"], true);
+        assert_eq!(cmd["path"], "./x.png");
     }
 
     // === Snapshot ===
@@ -2966,7 +3130,10 @@ mod tests {
     #[test]
     fn test_snapshot_interactive_cursor() {
         let result = parse_command(&args("snapshot -i -C"), &default_flags());
-        assert!(result.is_err(), "expected interactive+cursor to be rejected");
+        assert!(
+            result.is_err(),
+            "expected interactive+cursor to be rejected"
+        );
     }
 
     #[test]
@@ -3063,24 +3230,9 @@ mod tests {
 
     // === Clipboard Tests ===
 
-
-
-
-
-
-
-
-
     // === Unknown command ===
 
     // === Profile (CDP Tracing) Tests ===
-
-
-
-
-
-
-
 
     // === Eval Tests ===
 
@@ -3184,14 +3336,6 @@ mod tests {
 
     // === Protocol alignment tests ===
 
-
-
-
-
-
-
-
-
     #[test]
     fn test_find_first_no_value() {
         let cmd = parse_command(&args("find first a click"), &default_flags()).unwrap();
@@ -3278,9 +3422,6 @@ mod tests {
         assert!(cmd.get("path").is_none());
     }
 
-
-
-
     #[test]
     fn test_wait_download_short_flag() {
         let cmd = parse_command(&args("wait -d ./file.pdf"), &default_flags()).unwrap();
@@ -3361,73 +3502,11 @@ mod tests {
 
     // === Connect (CDP) tests ===
 
-
-
-
-
-
-
-
-
-
-
     // === Runtime stream control tests ===
-
-
-
-
-
-
-
-
-
-
-
 
     // === Trace Tests ===
 
-
-
-
     // === Diff Tests ===
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
     // === Scroll Tests ===
 
@@ -3501,7 +3580,6 @@ mod tests {
 
     // === CDP URL ===
 
-
     // === Batch Tests ===
 
     #[test]
@@ -3554,11 +3632,4 @@ mod tests {
         let cmd = parse_command(&args("batch"), &default_flags()).unwrap();
         assert!(cmd.get("commands").is_none());
     }
-
-
-
-
-
-
-
 }

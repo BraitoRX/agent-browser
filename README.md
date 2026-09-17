@@ -13,6 +13,8 @@ Upstream packages do **not** contain this backend. Build this fork before using 
 - Ambient hover hold: `agent_browser_hover_hold` (CLI `hover-hold`) keeps native mouse micro-movement on a selector so hover-revealed UI that auto-hides stays visible while you screenshot and read it; any input or lifecycle action stops the hold first, and explicit `hover-hold stop` reports the held duration.
 - Inspection and explicit controls: network request metadata and detail, console/errors, WebSockets, workers, cookies, storage, dialogs, downloads, routing, extra headers, offline mode, and bounded HAR export.
 - Structured page inspection: `page-outline`, `page-links`, and `dom-chunk` CLI commands with actionable refs, plus semantic `find` locators that resolve to a reusable unique CSS selector.
+- Server-side HTML search: `html-search` (MCP `agent_browser_html_search`) captures the selected frame's HTML fresh on every call and returns only matching excerpts with approximate CSS paths, keeping full-page HTML out of the conversation. Literal case-insensitive queries, optional Python-style `--regex`, optional `--selector` scoping, and bounded result/context sizes.
+- Visual screenshots: `screenshot` (MCP `agent_browser_screenshot`) captures the viewport or, with `--full`/`fullPage`, the whole scrollable page (capped at 30000px of document height; full-page captures carry no captureId). MCP attaches the PNG inline as an image content block when it fits the size budget, so the browser runs inside the container bubble and the MCP client still sees the picture; CLI `--inline-image` prints the base64 image inside `--json` output. Annotation, JPEG, quality, and element crops are not supported.
 - The input-dispatch guards that stop a hung synthesized mouse event from wedging the browser (see [Critical changelog](CRITICAL_CHANGELOG.md)).
 
 ## Setup without replacing an existing browser
@@ -28,6 +30,7 @@ export AGENT_BROWSER_SESSION=camoufox-task
 export AGENT_BROWSER_MOTION=human-fast
 "$AB" open https://example.com
 "$AB" snapshot --json
+"$AB" html-search "Example Domain" --json
 "$AB" gestures drag --json
 "$AB" skills get camoufox
 ```
