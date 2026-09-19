@@ -511,6 +511,8 @@ pub fn print_response_with_opts(resp: &Response, action: Option<&str>, opts: &Ou
                             | "page_links"
                             | "dom_chunk"
                             | "html_search"
+                            | "element_inspect"
+                            | "element_expand"
                     )
                 ))
         {
@@ -1668,6 +1670,58 @@ Examples:
   agent-browser html-search "Total"
   agent-browser html-search price --regex "price[=:]\\s*\\d+"
   agent-browser html-search checkout --selector "main#results" --max-results 10
+"##
+        }
+        "element-inspect" => {
+            r##"
+agent-browser element-inspect - Inspect one element with Camoufox
+
+Usage: agent-browser element-inspect (--selector <css> | --element-id <id> | --ref <@eN|@dN>)
+                [--geometry] [--max-queries <1-256>]
+
+Resolves exactly one target to a structured element card with a stable
+elementId, tag, role, accessible name, state, and related-element budget.
+Read-only: it never sends input and does not invalidate coordinate captures.
+The response carries kind "element_card".
+
+Provide exactly one of --selector (CSS or xpath=), --element-id (stable id from
+an earlier card or expansion), or --ref (snapshot or DOM ref such as @e5 or @d5).
+
+Options:
+  --selector <css>       CSS or xpath= selector for the element
+  --element-id <id>      Stable element id from a previous card or expansion
+  --ref <@eN|@dN>        Snapshot or document ref for the element
+  --geometry             Add bounding box and viewport position to the card
+  --max-queries <count>  Registry query budget, 1 to 256
+
+Examples:
+  agent-browser element-inspect --selector "#checkout"
+  agent-browser element-inspect --ref @e5 --geometry
+  agent-browser element-inspect --element-id el_a --max-queries 12
+"##
+        }
+        "element-expand" => {
+            r##"
+agent-browser element-expand - Expand an element relation with Camoufox
+
+Usage: agent-browser element-expand <element-id> [--relation <parent|ancestors|siblings|subtree>]
+                [--limit <1-200>] [--max-queries <1-256>]
+
+Expands one relationship around a known element and returns a bounded
+element_expansion payload. The element id must come from a previous
+element-inspect or element-expand call. Read-only: it never sends input and
+does not invalidate coordinate captures. The response carries kind
+"element_expansion".
+
+Options:
+  --relation <name>      Relationship to expand (default: parent)
+  --limit <count>        Return 1 to 200 related elements
+  --max-queries <count>  Registry query budget, 1 to 256
+
+Examples:
+  agent-browser element-expand el_a
+  agent-browser element-expand el_a --relation ancestors --limit 5
+  agent-browser element-expand el_a --relation subtree --limit 200
 "##
         }
 
@@ -3632,6 +3686,8 @@ Core Commands:
   page-outline [sel]         Structured headings and landmarks (Camoufox)
   page-links [sel]           Paginated actionable links (Camoufox)
   dom-chunk [sel]            Paginated DOM with @dN refs (Camoufox)
+  element-inspect            One element card by selector, id, or ref (Camoufox)
+  element-expand <id>        Expand parent, ancestors, siblings, or subtree (Camoufox)
   eval <js>                  Run JavaScript
   connect <port|url>         Connect to browser via CDP
   close [--all]              Close browser (--all closes every session)

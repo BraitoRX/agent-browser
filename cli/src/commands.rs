@@ -379,6 +379,9 @@ fn parse_command_inner(args: &[String], flags: &Flags) -> Result<Value, ParseErr
             500,
         ),
         "html-search" => parse_html_search(&rest, &id),
+        "element-inspect" => parse_element_inspect(&rest, &id),
+        "element-expand" => parse_element_expand(&rest, &id),
+        "visual-target" => parse_visual_target(&rest, &id),
         "gestures" => {
             if rest.len() > 1 || rest.first().is_some_and(|name| name.starts_with('-')) {
                 return Err(ParseError::InvalidValue {
@@ -1613,6 +1616,373 @@ fn parse_html_search(rest: &[&str], id: &str) -> Result<Value, ParseError> {
     }
     if let Some(value) = context_chars {
         command["contextChars"] = json!(value);
+    }
+    Ok(command)
+}
+
+fn parse_element_inspect(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "element-inspect (--selector <css> | --element-id <id> | --ref <@eN|@dN>) [--geometry] [--max-queries <1-256>]";
+    let mut selector: Option<String> = None;
+    let mut element_id: Option<String> = None;
+    let mut reference: Option<String> = None;
+    let mut fields: Vec<String> = Vec::new();
+    let mut max_queries: Option<u64> = None;
+    let mut index = 0;
+    while index < rest.len() {
+        let flag_value = |flag: &str| -> Result<String, ParseError> {
+            rest.get(index + 1)
+                .copied()
+                .ok_or_else(|| ParseError::MissingArguments {
+                    context: format!("element-inspect {flag}"),
+                    usage: USAGE,
+                })
+                .and_then(|raw| {
+                    if raw.starts_with('-') {
+                        Err(ParseError::InvalidValue {
+                            message: format!("{flag} expects a value"),
+                            usage: USAGE,
+                        })
+                    } else {
+                        Ok(raw.to_string())
+                    }
+                })
+        };
+        match rest[index] {
+            "--selector" => {
+                if selector.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--selector may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                selector = Some(flag_value("--selector")?);
+                index += 2;
+            }
+            "--element-id" => {
+                if element_id.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--element-id may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                element_id = Some(flag_value("--element-id")?);
+                index += 2;
+            }
+            "--ref" => {
+                if reference.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--ref may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                reference = Some(flag_value("--ref")?);
+                index += 2;
+            }
+            "--geometry" => {
+                if !fields.iter().any(|field| field == "geometry") {
+                    fields.push("geometry".to_string());
+                }
+                index += 1;
+            }
+            "--max-queries" => {
+                if max_queries.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-queries may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let raw = flag_value("--max-queries")?;
+                let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--max-queries expects an integer, got '{}'", raw),
+                    usage: USAGE,
+                })?;
+                if !(1..=256).contains(&value) {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-queries must be between 1 and 256".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                max_queries = Some(value);
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown option: {}", value),
+                    usage: USAGE,
+                });
+            }
+            value => {
+                if selector.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "Expected at most one selector".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                selector = Some(value.to_string());
+                index += 1;
+            }
+        }
+    }
+    let targets = [&selector, &element_id, &reference]
+        .into_iter()
+        .filter(|value| value.is_some())
+        .count();
+    if targets != 1 {
+        return Err(ParseError::InvalidValue {
+            message: "element-inspect requires exactly one of --selector, --element-id, or --ref"
+                .to_string(),
+            usage: USAGE,
+        });
+    }
+    let mut command = json!({ "id": id, "action": "element_inspect" });
+    if let Some(value) = selector {
+        command["selector"] = json!(value);
+    }
+    if let Some(value) = element_id {
+        command["elementId"] = json!(value);
+    }
+    if let Some(value) = reference {
+        command["ref"] = json!(value);
+    }
+    if !fields.is_empty() {
+        command["fields"] = json!(fields);
+    }
+    if let Some(value) = max_queries {
+        command["maxQueries"] = json!(value);
+    }
+    Ok(command)
+}
+
+fn parse_visual_target(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "visual-target <capture-id> <x> <y> [--expect-element-id <id>]";
+    let mut capture_id: Option<String> = None;
+    let mut point: Vec<f64> = Vec::new();
+    let mut expect_element_id: Option<String> = None;
+    let mut index = 0;
+    while index < rest.len() {
+        let flag_value = |flag: &str| -> Result<String, ParseError> {
+            rest.get(index + 1)
+                .copied()
+                .ok_or_else(|| ParseError::MissingArguments {
+                    context: format!("visual-target {flag}"),
+                    usage: USAGE,
+                })
+                .and_then(|raw| {
+                    if raw.starts_with('-') {
+                        Err(ParseError::InvalidValue {
+                            message: format!("{flag} expects a value"),
+                            usage: USAGE,
+                        })
+                    } else {
+                        Ok(raw.to_string())
+                    }
+                })
+        };
+        match rest[index] {
+            "--capture-id" => {
+                if capture_id.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--capture-id may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                capture_id = Some(flag_value("--capture-id")?);
+                index += 2;
+            }
+            "--expect-element-id" => {
+                if expect_element_id.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--expect-element-id may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                expect_element_id = Some(flag_value("--expect-element-id")?);
+                index += 2;
+            }
+            value if value.starts_with('-') && value.len() > 1 && value[1..].parse::<f64>().is_err() => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown option: {}", value),
+                    usage: USAGE,
+                });
+            }
+            value => {
+                if capture_id.is_none() {
+                    capture_id = Some(value.to_string());
+                    index += 1;
+                    continue;
+                }
+                let parsed = value.parse::<f64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("expected a number, got '{}'", value),
+                    usage: USAGE,
+                })?;
+                if !parsed.is_finite() {
+                    return Err(ParseError::InvalidValue {
+                        message: "coordinates must be finite numbers".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                if point.len() >= 2 {
+                    return Err(ParseError::InvalidValue {
+                        message: "Expected exactly two coordinates".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                point.push(parsed);
+                index += 1;
+            }
+        }
+    }
+    let capture_id = capture_id.ok_or_else(|| ParseError::MissingArguments {
+        context: "visual-target".to_string(),
+        usage: USAGE,
+    })?;
+    if point.len() != 2 {
+        return Err(ParseError::MissingArguments {
+            context: "visual-target coordinates".to_string(),
+            usage: USAGE,
+        });
+    }
+    let mut command = json!({
+        "id": id,
+        "action": "visual_target",
+        "captureId": capture_id,
+        "x": point[0],
+        "y": point[1],
+    });
+    if let Some(value) = expect_element_id {
+        command["expectElementId"] = json!(value);
+    }
+    Ok(command)
+}
+
+fn parse_element_expand(rest: &[&str], id: &str) -> Result<Value, ParseError> {
+    const USAGE: &str = "element-expand <element-id> [--relation <parent|ancestors|siblings|subtree>] [--limit <1-200>] [--max-queries <1-256>]";
+    const RELATIONS: &[&str] = &["parent", "ancestors", "siblings", "subtree"];
+    let mut element_id: Option<String> = None;
+    let mut relation: Option<String> = None;
+    let mut limit: Option<u64> = None;
+    let mut max_queries: Option<u64> = None;
+    let mut index = 0;
+    while index < rest.len() {
+        let flag_value = |flag: &str| -> Result<String, ParseError> {
+            rest.get(index + 1)
+                .copied()
+                .ok_or_else(|| ParseError::MissingArguments {
+                    context: format!("element-expand {flag}"),
+                    usage: USAGE,
+                })
+                .and_then(|raw| {
+                    if raw.starts_with('-') {
+                        Err(ParseError::InvalidValue {
+                            message: format!("{flag} expects a value"),
+                            usage: USAGE,
+                        })
+                    } else {
+                        Ok(raw.to_string())
+                    }
+                })
+        };
+        match rest[index] {
+            "--element-id" => {
+                if element_id.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--element-id may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                element_id = Some(flag_value("--element-id")?);
+                index += 2;
+            }
+            "--relation" => {
+                if relation.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--relation may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let value = flag_value("--relation")?;
+                if !RELATIONS.contains(&value.as_str()) {
+                    return Err(ParseError::InvalidValue {
+                        message: format!("--relation must be one of: {}", RELATIONS.join(", ")),
+                        usage: USAGE,
+                    });
+                }
+                relation = Some(value);
+                index += 2;
+            }
+            "--limit" => {
+                if limit.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--limit may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let raw = flag_value("--limit")?;
+                let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--limit expects an integer, got '{}'", raw),
+                    usage: USAGE,
+                })?;
+                if !(1..=200).contains(&value) {
+                    return Err(ParseError::InvalidValue {
+                        message: "--limit must be between 1 and 200".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                limit = Some(value);
+                index += 2;
+            }
+            "--max-queries" => {
+                if max_queries.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-queries may be specified only once".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                let raw = flag_value("--max-queries")?;
+                let value = raw.parse::<u64>().map_err(|_| ParseError::InvalidValue {
+                    message: format!("--max-queries expects an integer, got '{}'", raw),
+                    usage: USAGE,
+                })?;
+                if !(1..=256).contains(&value) {
+                    return Err(ParseError::InvalidValue {
+                        message: "--max-queries must be between 1 and 256".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                max_queries = Some(value);
+                index += 2;
+            }
+            value if value.starts_with('-') => {
+                return Err(ParseError::InvalidValue {
+                    message: format!("Unknown option: {}", value),
+                    usage: USAGE,
+                });
+            }
+            value => {
+                if element_id.is_some() {
+                    return Err(ParseError::InvalidValue {
+                        message: "Expected at most one element id".to_string(),
+                        usage: USAGE,
+                    });
+                }
+                element_id = Some(value.to_string());
+                index += 1;
+            }
+        }
+    }
+    let element_id = element_id.ok_or_else(|| ParseError::MissingArguments {
+        context: "element-expand".to_string(),
+        usage: USAGE,
+    })?;
+    let mut command = json!({ "id": id, "action": "element_expand", "elementId": element_id });
+    if let Some(value) = relation {
+        command["relation"] = json!(value);
+    }
+    if let Some(value) = limit {
+        command["limit"] = json!(value);
+    }
+    if let Some(value) = max_queries {
+        command["maxQueries"] = json!(value);
     }
     Ok(command)
 }
@@ -2905,6 +3275,146 @@ mod tests {
             missing_value,
             Err(ParseError::MissingArguments { .. })
         ));
+    }
+
+    #[test]
+    fn element_inspect_parses_targets_geometry_and_budget() {
+        let css = parse_command(&args("element-inspect --selector #a"), &default_flags()).unwrap();
+        assert_eq!(css["action"], "element_inspect");
+        assert_eq!(css["selector"], "#a");
+        assert_eq!(css["elementId"], Value::Null);
+        assert_eq!(css["ref"], Value::Null);
+
+        let ref_cmd = parse_command(&args("element-inspect --ref @e5"), &default_flags()).unwrap();
+        assert_eq!(ref_cmd["action"], "element_inspect");
+        assert_eq!(ref_cmd["ref"], "@e5");
+
+        let geometry = parse_command(
+            &args("element-inspect --element-id el_a --geometry"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(geometry["elementId"], "el_a");
+        assert_eq!(geometry["fields"], json!(["geometry"]));
+
+        let budget = parse_command(
+            &args("element-inspect --selector #a --geometry --max-queries 12"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(budget["maxQueries"], 12);
+        assert_eq!(budget["fields"], json!(["geometry"]));
+    }
+
+    #[test]
+    fn element_inspect_rejects_missing_duplicate_and_bad_targets() {
+        let missing = parse_command(&args("element-inspect"), &default_flags());
+        assert!(matches!(missing, Err(ParseError::InvalidValue { .. })));
+
+        let two = parse_command(
+            &args("element-inspect --selector #a --ref @e5"),
+            &default_flags(),
+        );
+        assert!(matches!(two, Err(ParseError::InvalidValue { .. })));
+
+        let three = parse_command(
+            &args("element-inspect --selector #a --element-id el_a --ref @e5"),
+            &default_flags(),
+        );
+        assert!(matches!(three, Err(ParseError::InvalidValue { .. })));
+
+        let bad_budget = parse_command(
+            &args("element-inspect --selector #a --max-queries abc"),
+            &default_flags(),
+        );
+        assert!(matches!(bad_budget, Err(ParseError::InvalidValue { .. })));
+
+        let out_of_range = parse_command(
+            &args("element-inspect --selector #a --max-queries 0"),
+            &default_flags(),
+        );
+        assert!(matches!(
+            out_of_range,
+            Err(ParseError::InvalidValue { .. })
+        ));
+    }
+
+    #[test]
+    fn element_expand_parses_relation_limit_and_budget() {
+        let cmd = parse_command(
+            &args("element-expand --element-id el_x --relation ancestors --limit 5"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "element_expand");
+        assert_eq!(cmd["elementId"], "el_x");
+        assert_eq!(cmd["relation"], "ancestors");
+        assert_eq!(cmd["limit"], 5);
+
+        let positional = parse_command(
+            &args("element-expand el_y --relation siblings --max-queries 9"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(positional["elementId"], "el_y");
+        assert_eq!(positional["relation"], "siblings");
+        assert_eq!(positional["maxQueries"], 9);
+    }
+
+    #[test]
+    fn visual_target_parses_capture_point_and_expectation() {
+        let cmd = parse_command(
+            &args("visual-target cap_1 12.5 30 --expect-element-id el_top"),
+            &default_flags(),
+        )
+        .unwrap();
+        assert_eq!(cmd["action"], "visual_target");
+        assert_eq!(cmd["captureId"], "cap_1");
+        assert_eq!(cmd["x"], 12.5);
+        assert_eq!(cmd["y"], 30.0);
+        assert_eq!(cmd["expectElementId"], "el_top");
+
+        let plain = parse_command(&args("visual-target cap_9 1 2"), &default_flags()).unwrap();
+        assert_eq!(plain["captureId"], "cap_9");
+        assert!(plain.get("expectElementId").is_none());
+    }
+
+    #[test]
+    fn visual_target_rejects_missing_or_malformed_points() {
+        for case in [
+            "visual-target",
+            "visual-target cap_1",
+            "visual-target cap_1 10",
+            "visual-target cap_1 10 20 30",
+            "visual-target cap_1 abc 20",
+        ] {
+            let parsed = parse_command(&args(case), &default_flags());
+            assert!(parsed.is_err(), "{case} should be rejected");
+        }
+    }
+
+    #[test]
+    fn element_expand_rejects_bad_relation_and_missing_id() {
+        let bad_relation = parse_command(
+            &args("element-expand --element-id el_x --relation cousins"),
+            &default_flags(),
+        );
+        assert!(matches!(
+            bad_relation,
+            Err(ParseError::InvalidValue { .. })
+        ));
+
+        let missing = parse_command(&args("element-expand --relation parent"), &default_flags());
+        assert!(matches!(missing, Err(ParseError::MissingArguments { .. })));
+
+        let bad_limit = parse_command(
+            &args("element-expand el_x --limit 0"),
+            &default_flags(),
+        );
+        assert!(matches!(bad_limit, Err(ParseError::InvalidValue { .. })));
+
+        let unknown = parse_command(&args("element-expand el_x --unknown"), &default_flags());
+        assert!(matches!(unknown, Err(ParseError::InvalidValue { .. })));
     }
 
     #[test]

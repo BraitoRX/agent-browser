@@ -59,6 +59,9 @@ const TOOL_SCREENSHOT: &str = "agent_browser_screenshot";
 const TOOL_GET_TEXT: &str = "agent_browser_get_text";
 const TOOL_GET_HTML: &str = "agent_browser_get_html";
 const TOOL_HTML_SEARCH: &str = "agent_browser_html_search";
+const TOOL_ELEMENT_INSPECT: &str = "agent_browser_element_inspect";
+const TOOL_ELEMENT_EXPAND: &str = "agent_browser_element_expand";
+const TOOL_VISUAL_TARGET: &str = "agent_browser_visual_target";
 const TOOL_GET_VALUE: &str = "agent_browser_get_value";
 const TOOL_GET_ATTR: &str = "agent_browser_get_attr";
 const TOOL_GET_COUNT: &str = "agent_browser_get_count";
@@ -455,6 +458,9 @@ const CAMOUFOX_CORE_TOOLS: &[&str] = &[
     TOOL_FIND,
     TOOL_GET_HTML,
     TOOL_HTML_SEARCH,
+    TOOL_ELEMENT_INSPECT,
+    TOOL_ELEMENT_EXPAND,
+    TOOL_VISUAL_TARGET,
     TOOL_SCROLL_INTO_VIEW,
     TOOL_GET_ATTR,
     TOOL_GET_VALUE,
@@ -548,7 +554,13 @@ fn is_camoufox_tool(name: &str) -> bool {
 fn is_camoufox_page_tool(name: &str) -> bool {
     matches!(
         name,
-        TOOL_PAGE_OUTLINE | TOOL_PAGE_LINKS | TOOL_DOM_CHUNK | TOOL_HTML_SEARCH
+        TOOL_PAGE_OUTLINE
+            | TOOL_PAGE_LINKS
+            | TOOL_DOM_CHUNK
+            | TOOL_HTML_SEARCH
+            | TOOL_ELEMENT_INSPECT
+            | TOOL_ELEMENT_EXPAND
+            | TOOL_VISUAL_TARGET
     )
 }
 
@@ -1189,6 +1201,43 @@ fn tools() -> Vec<Value> {
             }),
             &["query"],
         ),
+        tool(
+            TOOL_ELEMENT_INSPECT,
+            "Inspect element",
+            "Resolve exactly one of selector, elementId, or ref to a structured element card with stable elementId, tag, role, accessible name, state, and geometry. Read-only and does not invalidate coordinate captures.",
+            json!({
+                "selector": { "type": "string", "description": "CSS or xpath= selector of the element to inspect." },
+                "elementId": { "type": "string", "description": "Stable element id returned by a previous inspect or expansion." },
+                "ref": { "type": "string", "description": "Snapshot reference such as @e5 or @d5." },
+                "fields": { "type": "array", "items": { "type": "string", "enum": ["geometry"] }, "maxItems": 8, "description": "Optional extra fields. geometry adds bounding box and viewport position." },
+                "maxQueries": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Maximum registry queries the backend may spend resolving this request." }
+            }),
+            &[],
+        ),
+        tool(
+            TOOL_ELEMENT_EXPAND,
+            "Expand element relation",
+            "Expand one element relationship: parent, ancestors, siblings, or subtree. Returns a bounded element_expansion payload. Read-only and does not invalidate coordinate captures.",
+            json!({
+                "elementId": { "type": "string", "description": "Stable element id returned by a previous inspect or expansion." },
+                "relation": { "type": "string", "enum": ["parent", "ancestors", "siblings", "subtree"], "default": "parent", "description": "Relationship to expand from the element." },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 200, "description": "Maximum related elements to return." },
+                "maxQueries": { "type": "integer", "minimum": 1, "maximum": 256, "description": "Maximum registry queries the backend may spend resolving this request." }
+            }),
+            &["elementId"],
+        ),
+        tool(
+            TOOL_VISUAL_TARGET,
+            "Resolve visual target",
+            "Resolve an image point from a viewport screenshot into a verified element target. Converts image pixels to CSS, revalidates the capture, and hit-tests the element stack. Returns the element identity, per-layer boxes, and an interior snappedPoint at the element box centre. Use the returned point for a later coordinate gesture instead of the raw caller estimate. Read-only: never dispatches input and never invalidates the capture.",
+            json!({
+                "captureId": { "type": "string", "description": "captureId from the latest viewport screenshot." },
+                "x": { "type": "number", "description": "Image x in pixels of that screenshot." },
+                "y": { "type": "number", "description": "Image y in pixels of that screenshot." },
+                "expectElementId": { "type": "string", "description": "Optional element id that must appear in the hit stack; a mismatch fails with a stale-ref error." }
+            }),
+            &["captureId", "x", "y"],
+        ),
         tool(TOOL_GET_VALUE, "Get value", "Get an input value.", json!({ "selector": selector_schema() }), &["selector"]),
         tool(TOOL_GET_URL, "Get URL", "Get the current page URL.", json!({}), &[]),
         tool(TOOL_GET_TITLE, "Get title", "Get the current page title.", json!({}), &[]),
@@ -1806,6 +1855,9 @@ fn is_read_only_tool(name: &str) -> bool {
             | TOOL_GET_TEXT
             | TOOL_GET_HTML
             | TOOL_HTML_SEARCH
+            | TOOL_ELEMENT_INSPECT
+            | TOOL_ELEMENT_EXPAND
+            | TOOL_VISUAL_TARGET
             | TOOL_GET_VALUE
             | TOOL_GET_ATTR
             | TOOL_GET_COUNT
@@ -1952,6 +2004,9 @@ fn call_tool(params: Option<&Value>, config: &McpConfig) -> Result<Value, Protoc
         TOOL_GET_TEXT => call_get_selector(arguments, "text"),
         TOOL_GET_HTML => call_get_selector(arguments, "html"),
         TOOL_HTML_SEARCH => call_html_search(arguments),
+        TOOL_ELEMENT_INSPECT => call_element_inspect(arguments),
+        TOOL_ELEMENT_EXPAND => call_element_expand(arguments),
+        TOOL_VISUAL_TARGET => call_visual_target(arguments),
         TOOL_GET_VALUE => call_get_selector(arguments, "value"),
         TOOL_GET_ATTR => call_get_attr(arguments),
         TOOL_GET_COUNT => call_get_selector(arguments, "count"),
@@ -2491,6 +2546,127 @@ fn call_html_search(arguments: &Value) -> Result<Value, ProtocolError> {
         args.push(context_chars.to_string());
     }
     call_cli_tool(arguments, args, None)
+}
+
+fn call_element_inspect(arguments: &Value) -> Result<Value, ProtocolError> {
+    call_cli_tool(arguments, element_inspect_args(arguments)?, None)
+}
+
+fn element_inspect_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
+    let selector = optional_string(arguments, "selector")?;
+    let element_id = optional_string(arguments, "elementId")?;
+    let reference = optional_string(arguments, "ref")?;
+    let targets = [&selector, &element_id, &reference]
+        .into_iter()
+        .filter(|value| value.is_some())
+        .count();
+    if targets != 1 {
+        return Err(ProtocolError::invalid_params(
+            "provide exactly one of selector, elementId, or ref",
+        ));
+    }
+    let mut args = vec!["element-inspect".to_string()];
+    if let Some(selector) = selector {
+        args.push("--selector".to_string());
+        args.push(selector);
+    }
+    if let Some(element_id) = element_id {
+        args.push("--element-id".to_string());
+        args.push(element_id);
+    }
+    if let Some(reference) = reference {
+        args.push("--ref".to_string());
+        args.push(reference);
+    }
+    if let Some(fields) = optional_string_array(arguments, "fields")? {
+        for field in &fields {
+            if field != "geometry" {
+                return Err(ProtocolError::invalid_params(format!(
+                    "fields contains unsupported value: {}",
+                    field
+                )));
+            }
+        }
+        if fields.iter().any(|field| field == "geometry") {
+            args.push("--geometry".to_string());
+        }
+    }
+    if let Some(max_queries) = optional_u64(arguments, "maxQueries")? {
+        if !(1..=256).contains(&max_queries) {
+            return Err(ProtocolError::invalid_params(
+                "maxQueries must be between 1 and 256",
+            ));
+        }
+        args.push("--max-queries".to_string());
+        args.push(max_queries.to_string());
+    }
+    Ok(args)
+}
+
+fn call_element_expand(arguments: &Value) -> Result<Value, ProtocolError> {
+    call_cli_tool(arguments, element_expand_args(arguments)?, None)
+}
+
+fn element_expand_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
+    let element_id = required_string(arguments, "elementId")?;
+    let mut args = vec!["element-expand".to_string(), element_id];
+    if let Some(relation) = optional_string(arguments, "relation")? {
+        if !["parent", "ancestors", "siblings", "subtree"].contains(&relation.as_str()) {
+            return Err(ProtocolError::invalid_params(
+                "relation must be one of: parent, ancestors, siblings, subtree",
+            ));
+        }
+        args.push("--relation".to_string());
+        args.push(relation);
+    }
+    if let Some(limit) = optional_u64(arguments, "limit")? {
+        if !(1..=200).contains(&limit) {
+            return Err(ProtocolError::invalid_params(
+                "limit must be between 1 and 200",
+            ));
+        }
+        args.push("--limit".to_string());
+        args.push(limit.to_string());
+    }
+    if let Some(max_queries) = optional_u64(arguments, "maxQueries")? {
+        if !(1..=256).contains(&max_queries) {
+            return Err(ProtocolError::invalid_params(
+                "maxQueries must be between 1 and 256",
+            ));
+        }
+        args.push("--max-queries".to_string());
+        args.push(max_queries.to_string());
+    }
+    Ok(args)
+}
+
+fn call_visual_target(arguments: &Value) -> Result<Value, ProtocolError> {
+    call_cli_tool(arguments, visual_target_args(arguments)?, None)
+}
+
+fn visual_target_args(arguments: &Value) -> Result<Vec<String>, ProtocolError> {
+    let capture_id = required_string(arguments, "captureId")?;
+    let x = arguments
+        .get("x")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| ProtocolError::invalid_params("x must be a finite number"))?;
+    let y = arguments
+        .get("y")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| ProtocolError::invalid_params("y must be a finite number"))?;
+    let mut args = vec![
+        "visual-target".to_string(),
+        capture_id,
+        x.to_string(),
+        y.to_string(),
+    ];
+    if let Some(expect) = optional_string(arguments, "expectElementId")? {
+        args.push("--expect-element-id".to_string());
+        args.push(expect);
+    }
+    Ok(args)
 }
 
 fn call_get_attr(arguments: &Value) -> Result<Value, ProtocolError> {
@@ -3306,6 +3482,22 @@ fn response_text(value: &Value) -> Option<String> {
         }
 
         if let Some(data) = obj.get("data") {
+            if matches!(
+                data.get("kind").and_then(Value::as_str),
+                Some("element_card") | Some("element_expansion")
+            ) {
+                return Some(
+                    serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+                );
+            }
+            if data.get("kind").and_then(Value::as_str) == Some("element_card")
+                || data.get("kind").and_then(Value::as_str) == Some("element_expansion")
+                || data.get("kind").and_then(Value::as_str) == Some("visual_target")
+            {
+                return Some(
+                    serde_json::to_string_pretty(data).unwrap_or_else(|_| data.to_string()),
+                );
+            }
             if ["headings", "links", "nodes", "elements", "points"]
                 .iter()
                 .any(|key| data.get(*key).and_then(Value::as_array).is_some())
@@ -4013,6 +4205,185 @@ mod tests {
             crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
         assert_eq!(command["action"], "request_detail");
         assert_eq!(command["requestId"], "n1");
+    }
+
+    #[test]
+    fn camoufox_element_tools_expose_schema_and_read_only_hints() {
+        let all = tools();
+        let inspect = all
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(TOOL_ELEMENT_INSPECT))
+            .unwrap();
+        assert_eq!(inspect["inputSchema"]["required"], Value::Null);
+        assert_eq!(inspect["inputSchema"]["properties"]["selector"]["type"], "string");
+        assert_eq!(inspect["inputSchema"]["properties"]["elementId"]["type"], "string");
+        assert_eq!(inspect["inputSchema"]["properties"]["ref"]["type"], "string");
+        assert_eq!(
+            inspect["inputSchema"]["properties"]["fields"]["items"]["enum"],
+            json!(["geometry"])
+        );
+        assert_eq!(
+            inspect["inputSchema"]["properties"]["maxQueries"]["maximum"],
+            256
+        );
+
+        let expand = all
+            .iter()
+            .find(|tool| tool["name"].as_str() == Some(TOOL_ELEMENT_EXPAND))
+            .unwrap();
+        assert_eq!(expand["inputSchema"]["required"], json!(["elementId"]));
+        assert_eq!(
+            expand["inputSchema"]["properties"]["relation"]["enum"],
+            json!(["parent", "ancestors", "siblings", "subtree"])
+        );
+        assert_eq!(expand["inputSchema"]["properties"]["limit"]["maximum"], 200);
+
+        assert!(CAMOUFOX_CORE_TOOLS.contains(&TOOL_ELEMENT_INSPECT));
+        assert!(CAMOUFOX_CORE_TOOLS.contains(&TOOL_ELEMENT_EXPAND));
+        assert!(is_read_only_tool(TOOL_ELEMENT_INSPECT));
+        assert!(is_read_only_tool(TOOL_ELEMENT_EXPAND));
+        assert!(is_camoufox_page_tool(TOOL_ELEMENT_INSPECT));
+        assert!(is_camoufox_page_tool(TOOL_ELEMENT_EXPAND));
+        assert_eq!(inspect["annotations"]["readOnlyHint"], true);
+        assert_eq!(expand["annotations"]["readOnlyHint"], true);
+    }
+
+    #[test]
+    fn camouflage_visual_target_args_forward_capture_and_point() {
+        let args = visual_target_args(&json!({
+            "captureId": "cap_1",
+            "x": 12.5,
+            "y": 30,
+            "expectElementId": "el_top"
+        }))
+        .unwrap();
+        assert_eq!(
+            args,
+            vec!["visual-target", "cap_1", "12.5", "30", "--expect-element-id", "el_top"]
+        );
+
+        let flags = crate::flags::parse_flags(&args);
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&args), &flags).unwrap();
+        assert_eq!(command["action"], "visual_target");
+        assert_eq!(command["captureId"], "cap_1");
+        assert_eq!(command["x"], 12.5);
+        assert_eq!(command["y"], 30.0);
+        assert_eq!(command["expectElementId"], "el_top");
+
+        for bad in [
+            json!({"x": 1, "y": 2}),
+            json!({"captureId": "cap_1", "y": 2}),
+            json!({"captureId": "cap_1", "x": "1", "y": 2}),
+            json!({"captureId": "cap_1", "x": 1, "y": "2"}),
+        ] {
+            assert!(
+                visual_target_args(&bad).is_err(),
+                "{bad} should be rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn camoufox_element_tool_args_forward_canonical_flags() {
+        let inspect = element_inspect_args(&json!({
+            "selector": "#a",
+            "fields": ["geometry"],
+            "maxQueries": 12
+        }))
+        .unwrap();
+        assert_eq!(
+            inspect,
+            vec!["element-inspect", "--selector", "#a", "--geometry", "--max-queries", "12"]
+        );
+
+        let reference = element_inspect_args(&json!({ "ref": "@e5" })).unwrap();
+        assert_eq!(reference, vec!["element-inspect", "--ref", "@e5"]);
+
+        let expand = element_expand_args(&json!({
+            "elementId": "el_x",
+            "relation": "ancestors",
+            "limit": 5
+        }))
+        .unwrap();
+        assert_eq!(
+            expand,
+            vec!["element-expand", "el_x", "--relation", "ancestors", "--limit", "5"]
+        );
+
+        let flags = crate::flags::parse_flags(&inspect);
+        let command =
+            crate::commands::parse_command(&crate::flags::clean_args(&inspect), &flags).unwrap();
+        assert_eq!(command["action"], "element_inspect");
+        assert_eq!(command["selector"], "#a");
+        assert_eq!(command["fields"], json!(["geometry"]));
+        assert_eq!(command["maxQueries"], 12);
+    }
+
+    #[test]
+    fn camoufox_element_tool_args_reject_invalid_requests() {
+        let none = element_inspect_args(&json!({}));
+        assert_eq!(none.unwrap_err().code, -32602);
+
+        let two = element_inspect_args(&json!({ "selector": "#a", "ref": "@e5" }));
+        assert_eq!(two.unwrap_err().code, -32602);
+
+        let bad_field = element_inspect_args(&json!({
+            "selector": "#a",
+            "fields": ["style"]
+        }));
+        assert_eq!(bad_field.unwrap_err().code, -32602);
+
+        let bad_budget = element_inspect_args(&json!({
+            "selector": "#a",
+            "maxQueries": 257
+        }));
+        assert_eq!(bad_budget.unwrap_err().code, -32602);
+
+        let missing_id = element_expand_args(&json!({ "relation": "parent" }));
+        assert_eq!(missing_id.unwrap_err().code, -32602);
+
+        let bad_relation = element_expand_args(&json!({
+            "elementId": "el_x",
+            "relation": "cousins"
+        }));
+        assert_eq!(bad_relation.unwrap_err().code, -32602);
+
+        let bad_limit = element_expand_args(&json!({ "elementId": "el_x", "limit": 0 }));
+        assert_eq!(bad_limit.unwrap_err().code, -32602);
+    }
+
+    #[test]
+    fn response_text_keeps_element_cards_and_expansions_as_json() {
+        let card = response_text(&json!({
+            "success": true,
+            "data": {
+                "kind": "element_card",
+                "url": "https://example.com",
+                "elementId": "el_a",
+                "tag": "button"
+            }
+        }))
+        .unwrap();
+        let card_json: Value = serde_json::from_str(&card).unwrap();
+        assert_eq!(card_json["kind"], "element_card");
+        assert_eq!(card_json["url"], "https://example.com");
+        assert!(card.contains("el_a"));
+
+        let expansion = response_text(&json!({
+            "success": true,
+            "data": {
+                "kind": "element_expansion",
+                "url": "https://example.com",
+                "elementId": "el_a",
+                "relation": "parent",
+                "nodes": []
+            }
+        }))
+        .unwrap();
+        let expansion_json: Value = serde_json::from_str(&expansion).unwrap();
+        assert_eq!(expansion_json["kind"], "element_expansion");
+        assert_eq!(expansion_json["relation"], "parent");
     }
 
     #[test]

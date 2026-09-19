@@ -17,9 +17,7 @@ with contextlib.redirect_stdout(io.StringIO()):
     import worker
 
 from worker import ACTION_FIELDS, BROWSER_ACTIONS, FIND_ACTIONS, MUTATING_ACTIONS
-
-
-FIND_CSS_SCRIPT_PREFIX = "(element) => { const path = [];"
+from worker import _FIND_VERIFIED_SELECTOR_SCRIPT
 
 
 class FindLocator:
@@ -39,7 +37,7 @@ class FindLocator:
 
     async def evaluate(self, script):
         self.calls.append(("evaluate", script))
-        if script.startswith(FIND_CSS_SCRIPT_PREFIX):
+        if script == _FIND_VERIFIED_SELECTOR_SCRIPT:
             return "#submit"
         return self.text
 

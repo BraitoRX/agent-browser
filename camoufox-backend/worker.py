@@ -139,6 +139,123 @@ def check_launch_options(payload: Dict[str, Any]) -> None:
         raise BackendError(CODE_UNSUPPORTED, "WebMCP is not supported by the Camoufox backend")
 
 
+_FIND_VERIFIED_SELECTOR_SCRIPT = """
+(element) => {
+  const KEY_ATTRIBUTES = ["data-testid", "data-test", "data-qa", "data-cy"];
+  const root = element.getRootNode ? element.getRootNode() : document;
+  const scope = root && root.querySelectorAll ? root : document;
+
+  const uniqueInScope = (path) => {
+    try {
+      const matches = scope.querySelectorAll(path);
+      return matches.length === 1 && matches[0] === element;
+    } catch (error) {
+      return false;
+    }
+  };
+
+  const escapeAttr = (value) => {
+    let out = "";
+    for (let index = 0; index < value.length; index += 1) {
+      const ch = value[index];
+      const code = value.charCodeAt(index);
+      if (ch === "\\\\") out += "\\\\\\\\";
+      else if (ch === "\\"") out += "\\\\\\"";
+      else if (code < 32) out += "\\\\" + code.toString(16) + " ";
+      else out += ch;
+    }
+    return out;
+  };
+
+  for (const attr of KEY_ATTRIBUTES) {
+    const value = element.getAttribute(attr);
+    if (!value) continue;
+    const path = "[" + attr + "=\\"" + escapeAttr(value) + "\\"]";
+    if (uniqueInScope(path)) return path;
+  }
+
+  if (element.id) {
+    try {
+      const byId = "#" + CSS.escape(element.id);
+      if (uniqueInScope(byId)) return byId;
+    } catch (error) {}
+  }
+
+  const nthOfType = (node) => {
+    let segment = (node.localName || node.tagName || "").toLowerCase();
+    if (!segment) return "";
+    const parent = node.parentElement;
+    if (parent) {
+      const sameTag = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+      if (sameTag.length > 1) segment += ":nth-of-type(" + (sameTag.indexOf(node) + 1) + ")";
+    }
+    return segment;
+  };
+
+  let anchorPath = null;
+  let anchorNode = null;
+  let ancestor = element.parentElement;
+  let levels = 0;
+  while (ancestor && ancestor.nodeType === 1 && levels < 12 && !anchorPath) {
+    levels += 1;
+    if (ancestor.id) {
+      try {
+        const path = "#" + CSS.escape(ancestor.id);
+        const matches = scope.querySelectorAll(path);
+        if (matches.length === 1 && matches[0] === ancestor) {
+          anchorPath = path;
+          anchorNode = ancestor;
+        }
+      } catch (error) {}
+    }
+    if (!anchorPath) {
+      for (const attr of KEY_ATTRIBUTES) {
+        const value = ancestor.getAttribute(attr);
+        if (!value) continue;
+        const path = "[" + attr + "=\\"" + escapeAttr(value) + "\\"]";
+        const matches = scope.querySelectorAll(path);
+        if (matches.length === 1 && matches[0] === ancestor) {
+          anchorPath = path;
+          anchorNode = ancestor;
+          break;
+        }
+      }
+    }
+    ancestor = ancestor.parentElement;
+  }
+
+  if (anchorPath && anchorNode) {
+    const segments = [];
+    let node = element;
+    while (node && node !== anchorNode && segments.length < 50) {
+      const segment = nthOfType(node);
+      if (!segment) break;
+      segments.unshift(segment);
+      node = node.parentElement;
+    }
+    if (node === anchorNode && segments.length) {
+      const path = anchorPath + " > " + segments.join(" > ");
+      if (uniqueInScope(path)) return path;
+    }
+  }
+
+  const full = [];
+  let node = element;
+  let depth = 0;
+  while (node && node.nodeType === 1 && depth < 50) {
+    const segment = nthOfType(node);
+    if (!segment) break;
+    full.unshift(segment);
+    node = node.parentElement;
+    depth += 1;
+  }
+  if (!full.length) return null;
+  const structural = full.join(" > ");
+  return uniqueInScope(structural) ? structural : null;
+}
+"""
+
+
 BROWSER_ACTIONS = {
     "launch", "navigate", "back", "forward", "reload", "url", "title", "content",
     "evaluate", "read", "snapshot", "screenshot", "click", "dblclick", "fill",
@@ -151,6 +268,7 @@ BROWSER_ACTIONS = {
     "storage_get", "storage_set", "storage_clear", "route", "unroute", "headers", "offline", "credentials",
     "har_start", "har_stop", "dialog", "download", "waitfordownload", "downloads",
     "page_outline", "page_links", "dom_chunk", "html_search",
+    "element_inspect", "element_expand", "visual_target",
     "getbyrole", "getbytext", "getbylabel", "getbyplaceholder", "getbyalttext",
     "getbytitle", "getbytestid", "nth",
 }
@@ -235,6 +353,9 @@ ACTION_FIELDS = {
     "page_links": {"selector", "cursor", "limit"},
     "dom_chunk": {"selector", "cursor", "limit"},
     "html_search": {"query", "regex", "selector", "maxResults", "contextChars"},
+    "element_inspect": {"selector", "elementId", "ref", "fields", "maxQueries"},
+    "element_expand": {"elementId", "relation", "limit", "maxQueries"},
+    "visual_target": {"captureId", "x", "y", "expectElementId"},
     "getbyrole": {"role", "subaction", "name", "exact", "value"},
     "getbytext": {"text", "subaction", "exact", "value"},
     "getbylabel": {"label", "subaction", "exact", "value"},
@@ -1045,17 +1166,13 @@ class Worker:
                 "scope, or find nth",
             )
         target = locator.first if count > 1 else locator
-        css = await self.deadline(target.evaluate(
-            "(element) => { const path = []; let el = element; while (el && el.nodeType === 1 && path.length < 50) "
-            "{ if (el.id) { try { if (document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) "
-            "{ path.unshift('#' + CSS.escape(el.id)); return path.join(' > '); } } catch (e) {} } "
-            "let selector = el.tagName.toLowerCase(); const parent = el.parentElement; if (parent) "
-            "{ const sameTag = Array.from(parent.children).filter((c) => c.tagName === el.tagName); "
-            "if (sameTag.length > 1) selector += ':nth-of-type(' + (sameTag.indexOf(el) + 1) + ')'; } "
-            "path.unshift(selector); el = parent; } return path.join(' > '); }"
-        ))
+        css = await self.deadline(target.evaluate(_FIND_VERIFIED_SELECTOR_SCRIPT))
         if not css:
-            raise BackendError(CODE_INVALID, "could not derive a unique CSS selector for the matched element")
+            raise BackendError(
+                CODE_INVALID,
+                "could not derive a verified unique CSS selector for the matched element; "
+                "no candidate resolved back to the same node",
+            )
         if subaction == "text":
             text = await self.deadline(target.evaluate(
                 "(element) => (element.textContent || '').trim().substring(0, 4096)"
@@ -1281,6 +1398,35 @@ class Worker:
             context_chars = optional_int(payload.get("contextChars"), "contextChars", 1, 400, 120)
             assert max_results is not None and context_chars is not None
             return await runtime.page_html_search(query, regex, selector, max_results, context_chars)
+        if action == "element_inspect":
+            selector = optional_str(payload.get("selector"), "selector")
+            element_id = optional_str(payload.get("elementId"), "elementId", max_len=256)
+            ref = optional_str(payload.get("ref"), "ref", max_len=256)
+            fields_raw = payload.get("fields")
+            fields = require_str_list(fields_raw, "fields", max_items=8, max_len=64) if fields_raw is not None else None
+            if fields is not None:
+                unknown = [field for field in fields if field not in ("geometry",)]
+                if unknown:
+                    raise BackendError(CODE_INVALID, f"'fields' contains unsupported values: {', '.join(unknown)}")
+            max_queries = optional_int(payload.get("maxQueries"), "maxQueries", 1, 256)
+            return await runtime.element_inspect(selector, element_id, ref, fields, max_queries)
+        if action == "element_expand":
+            element_id = require_str(payload.get("elementId"), "elementId", max_len=256)
+            relation = optional_enum(
+                payload.get("relation"), "relation",
+                ("parent", "ancestors", "siblings", "subtree"),
+                "parent",
+            )
+            assert relation is not None
+            limit = optional_int(payload.get("limit"), "limit", 1, 200)
+            max_queries = optional_int(payload.get("maxQueries"), "maxQueries", 1, 256)
+            return await runtime.element_expand(element_id, relation, limit, max_queries)
+        if action == "visual_target":
+            capture_id = require_str(payload.get("captureId"), "captureId", max_len=256)
+            image_x = ic.require_number(payload.get("x"), "x", 0.0, 1_000_000.0)
+            image_y = ic.require_number(payload.get("y"), "y", 0.0, 1_000_000.0)
+            expect_element_id = optional_str(payload.get("expectElementId"), "expectElementId", max_len=256)
+            return await runtime.visual_target(capture_id, image_x, image_y, expect_element_id)
         if action == "page_outline":
             selector = optional_str(payload.get("selector"), "selector")
             return await runtime.page_outline(selector)

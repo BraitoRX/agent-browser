@@ -40,6 +40,7 @@ from input_context import (
 )
 from browser_inspector import BrowserInspector
 from bubble import bubble_enabled, ensure_bubble_stack, stop_bubble_stack
+from element_registry import ElementCatalog
 from har_capture import HarCapture
 from interaction_events import InteractionEvents
 from network_observer import NetworkObserver
@@ -321,6 +322,36 @@ _DOM_CHUNK_SCRIPT = """
     DOM_ATTRIBUTE_VALUE_LIMIT,
     DOM_IDENTIFIER_LIMIT,
 )
+
+_CSS_PATH_SCRIPT = """
+(element) => {
+  const path = [];
+  let node = element;
+  let depth = 0;
+  while (node && node.nodeType === Node.ELEMENT_NODE && depth < 50) {
+    depth += 1;
+    if (node.id) {
+      try {
+        if (document.querySelectorAll('#' + CSS.escape(node.id)).length === 1) {
+          path.unshift('#' + CSS.escape(node.id));
+          return path.join(' > ');
+        }
+      } catch (error) {}
+    }
+    let segment = (node.localName || node.tagName || '').toLowerCase();
+    if (!segment) return null;
+    const parent = node.parentElement;
+    if (parent) {
+      const sameTag = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+      if (sameTag.length > 1) segment += ':nth-of-type(' + (sameTag.indexOf(node) + 1) + ')';
+    }
+    path.unshift(segment);
+    node = parent;
+  }
+  return path.length ? path.join(' > ') : null;
+}
+"""
+
 
 def configure_macos_headed_worker(headless: bool) -> None:
     """Keep the Python helper out of the Dock before Camoufox probes NSScreen."""
@@ -718,6 +749,7 @@ class CamoufoxRuntime:
         self.network_control = NetworkControl(self)
         self.inspector = BrowserInspector(self)
         self.interactions = InteractionEvents(self)
+        self.element_catalog = ElementCatalog(self)
         self._camoufox: Any = None
         self.browser: Any = None
         self.context: Any = None
@@ -1711,6 +1743,180 @@ class CamoufoxRuntime:
 
     def _page_frame_metadata(self, page: Any, tab: Tab) -> Dict[str, Any]:
         return {"url": page.url, "tabId": tab.tab_id, **self.scope_metadata()}
+
+    def _element_frame(self) -> Any:
+        return self.active_scope()
+
+    async def _ref_selector_for_element(self, page: Any, tab: Tab, ref: str) -> str:
+        name = ref[1:] if ref.startswith("@") else ref
+        spec = ic.parse_selector(name, "ref")
+        if spec.ref is None or spec.frame_prefix is not None:
+            raise BackendError(
+                CODE_INVALID,
+                "'ref' must be a main-frame snapshot or DOM ref such as @e12 or @d7; "
+                "iframe-prefixed refs are not supported by element inspection",
+            )
+        if spec.dom_ref:
+            if spec.ref not in tab.dom_refs:
+                raise BackendError(
+                    CODE_STALE_REF,
+                    f"ref '@{spec.ref}' is not an active DOM ref for tab {tab.tab_id}; "
+                    "it is stale or was not returned by the latest dom_chunk call",
+                )
+            return tab.dom_refs[spec.ref]
+        if spec.ref not in tab.refs:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' was not exposed by the latest snapshot of tab {tab.tab_id}; "
+                "take a fresh snapshot",
+            )
+        locator = page.locator(f"aria-ref={spec.ref}")
+        handle = await locator.element_handle()
+        if handle is None:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' no longer resolves to a page element; take a fresh snapshot",
+            )
+        try:
+            css = await handle.evaluate(_CSS_PATH_SCRIPT)
+        finally:
+            try:
+                await handle.dispose()
+            except Exception:
+                pass
+        if not isinstance(css, str) or not css:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"ref '@{spec.ref}' has no document-unique CSS path; pass 'selector' or 'elementId' instead",
+            )
+        return css
+
+    async def element_inspect(
+        self,
+        selector: Optional[str],
+        element_id: Optional[str],
+        ref: Optional[str],
+        fields: Optional[List[str]],
+        max_queries: Optional[int],
+    ) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        targets = [value for value in (selector, element_id, ref) if value is not None]
+        if len(targets) != 1:
+            raise BackendError(
+                CODE_INVALID,
+                "provide exactly one of 'selector', 'elementId', or 'ref'",
+            )
+        resolved_selector = selector
+        if ref is not None:
+            resolved_selector = await self._ref_selector_for_element(page, tab, ref)
+        budget = {"maxQueries": max_queries} if max_queries is not None else None
+        card = await self.element_catalog.inspect(
+            self._element_frame(),
+            selector=resolved_selector,
+            element_id=element_id,
+            fields=fields,
+            budget=budget,
+        )
+        return {**card, "url": page.url, "tabId": tab.tab_id, **self.scope_metadata()}
+
+    async def element_expand(
+        self,
+        element_id: str,
+        relation: str,
+        limit: Optional[int],
+        max_queries: Optional[int],
+    ) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        budget = {"maxQueries": max_queries} if max_queries is not None else None
+        expansion = await self.element_catalog.expand(
+            self._element_frame(),
+            element_id=element_id,
+            relation=relation,
+            limit=limit,
+            budget=budget,
+        )
+        return {**expansion, "url": page.url, "tabId": tab.tab_id, **self.scope_metadata()}
+
+    async def visual_target(
+        self,
+        capture_id: str,
+        x: float,
+        y: float,
+        expect_element_id: Optional[str],
+    ) -> Dict[str, Any]:
+        page, tab = self.require_active()
+        if not capture_id:
+            raise BackendError(CODE_INVALID, "'captureId' is required; take a viewport screenshot first")
+        frame = self._element_frame()
+        if frame is not page.main_frame:
+            raise BackendError(
+                CODE_INVALID,
+                "visual_target resolves points against the main viewport, but a non-main frame is selected; "
+                "use frame main before resolving a screenshot point, or inspect that frame with element_inspect",
+            )
+        capture = await self.require_capture(capture_id)
+        spec = TargetSpec(kind="coordinates", x=x, y=y, capture_id=capture_id)
+        css_x, css_y, _used = await self.resolve_capture_point(spec, capture_id)
+        identity = await self.capture_identity()
+        viewport_width = identity["viewportWidth"]
+        viewport_height = identity["viewportHeight"]
+        if css_x < 0 or css_y < 0 or css_x >= viewport_width or css_y >= viewport_height:
+            raise BackendError(
+                CODE_INVALID,
+                f"point ({css_x}, {css_y}) maps outside the current viewport "
+                f"({int(viewport_width)}x{int(viewport_height)}); take a fresh screenshot",
+            )
+        result = await self.element_catalog.hit_test(frame, x=css_x, y=css_y)
+        top = (result.get("layers") or [None])[0]
+        target = top
+        matched_expected = False
+        if expect_element_id is not None:
+            for layer in result.get("layers") or []:
+                if layer.get("elementId") == expect_element_id:
+                    target = layer
+                    matched_expected = True
+                    break
+        if target is None:
+            raise BackendError(
+                CODE_INVALID,
+                f"no element is present at ({css_x}, {css_y}); refine the point from a fresh screenshot",
+            )
+        if expect_element_id is not None and not matched_expected:
+            raise BackendError(
+                CODE_STALE_REF,
+                f"the expected element '{expect_element_id}' is not in the hit stack at "
+                f"({css_x}, {css_y}); the page moved or the point is wrong",
+            )
+        box = target.get("box") or {}
+        snapped = None
+        if all(isinstance(box.get(axis), (int, float)) for axis in ("x", "y", "width", "height")):
+            snapped = {
+                "x": round(box["x"] + box["width"] / 2, 2),
+                "y": round(box["y"] + box["height"] / 2, 2),
+            }
+        return {
+            "kind": "visual_target",
+            "captureId": capture_id,
+            "imagePoint": {"x": x, "y": y},
+            "cssPoint": {"x": round(css_x, 2), "y": round(css_y, 2)},
+            "elementId": target.get("elementId"),
+            "tag": target.get("tag"),
+            "role": target.get("role"),
+            "name": target.get("name"),
+            "box": box or None,
+            "snappedPoint": snapped,
+            "matchedExpected": matched_expected,
+            "topElementId": result.get("topElementId"),
+            "layers": result.get("layers") or [],
+            "omittedLayers": result.get("omittedLayers", 0),
+            "url": page.url,
+            "tabId": tab.tab_id,
+            "capture": {
+                key: capture.get(key)
+                for key in ("imageWidth", "imageHeight", "viewportWidth", "viewportHeight",
+                            "devicePixelRatio", "scrollX", "scrollY", "capturedAt")
+            },
+        }
 
     async def page_outline(self, selector: Optional[str]) -> Dict[str, Any]:
         """Return a bounded structural summary for the selected document scope."""
